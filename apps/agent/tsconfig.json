@@ -18,6 +18,12 @@
     },
     {
       "path": "../../packages/integrations/obs"
+    },
+    {
+      "path": "../../packages/integrations/twitch"
+    },
+    {
+      "path": "../../packages/cloud-protocol"
     }
   ]
 }

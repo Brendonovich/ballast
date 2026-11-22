@@ -12,9 +12,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ballast/core": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@ballast/module-obs": "workspace:*",
+    "@ballast/planner": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "@types/ws": "catalog:",

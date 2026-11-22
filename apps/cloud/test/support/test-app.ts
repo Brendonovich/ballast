@@ -10,7 +10,7 @@ import type {
   TwitchAccountRow,
 } from "../../src/store.ts";
 import type { RelayGatewayService } from "../../src/relay/gateway.ts";
-import { makeFakeTwitch, type FakeTwitch } from "./fake-twitch.ts";
+import { makeFakeTwitch, type FakeTwitch, type FakeTwitchOptions } from "./fake-twitch.ts";
 import { makeMemoryStore } from "./memory-store.ts";
 
 const tokenKey = (() => {
@@ -67,6 +67,7 @@ export interface TestApp {
 
 export const makeTestApp = async (options: {
   readonly relay?: RelayGatewayService;
+  readonly twitch?: FakeTwitchOptions;
 } = {}): Promise<TestApp> => {
   const config = makeCloudConfig({
     publicOrigin: "http://localhost:1338",
@@ -80,7 +81,7 @@ export const makeTestApp = async (options: {
   });
   const store = makeMemoryStore();
   const vault = await Effect.runPromise(makeTokenVault(config));
-  const twitch = makeFakeTwitch();
+  const twitch = makeFakeTwitch(options.twitch);
   const relay: RelaySink = { events: [], notifications: [] };
   const relayGateway: RelayGatewayService = options.relay ?? {
     enqueueEvent: (machineId, envelope) =>
@@ -131,6 +132,9 @@ export const makeTestApp = async (options: {
         webhookSecret: await Effect.runPromise(vault.seal(webhookSecret)),
       },
       machineId: null,
+      needsReauth: false,
+      refreshLock: null,
+      refreshLockUntil: 0,
       createdAt: now,
       updatedAt: now,
     };

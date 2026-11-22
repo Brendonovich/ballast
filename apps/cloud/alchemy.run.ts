@@ -14,7 +14,7 @@ export const RelayBinding = Cloudflare.DurableObject<Relay>("Relay", {
 
 export const BallastCloudWorker = Cloudflare.Worker("BallastCloudWorker", {
   main: "./src/worker.ts",
-  dev: { port: 1338, strictPort: true },
+  dev: { port: Number(process.env.BALLAST_DEV_PORT ?? "1338"), strictPort: true },
   env: {
     DB: BallastDatabase,
     RELAY: RelayBinding,
@@ -24,9 +24,7 @@ export const BallastCloudWorker = Cloudflare.Worker("BallastCloudWorker", {
     TWITCH_CLIENT_ID: Config.String("TWITCH_CLIENT_ID"),
     TWITCH_CLIENT_SECRET: Config.Redacted("TWITCH_CLIENT_SECRET"),
     BALLAST_TOKEN_KEY: Config.Redacted("BALLAST_TOKEN_KEY"),
-    BALLAST_TOKEN_PEPPER: Config.String("BALLAST_TOKEN_PEPPER").pipe(
-      Config.withDefault("ballast-dev-pepper"),
-    ),
+    BALLAST_TOKEN_PEPPER: Config.String("BALLAST_TOKEN_PEPPER"),
     BALLAST_TWITCH_MAX_SUBSCRIPTION_COST: Config.String(
       "BALLAST_TWITCH_MAX_SUBSCRIPTION_COST",
     ).pipe(Config.withDefault("10")),
@@ -41,11 +39,20 @@ export const BallastCloudWorker = Cloudflare.Worker("BallastCloudWorker", {
 
 export type CloudEnv = Cloudflare.InferEnv<typeof BallastCloudWorker>;
 
+/**
+ * `alchemy dev` must run without a Cloudflare account, so it keeps state in
+ * `.alchemy/state` on disk. Deploys still use the Cloudflare state-store Worker.
+ * The CLI sets ALCHEMY_DEV=true on the process that evaluates this stack.
+ */
+const isDev = ["1", "true", "yes", "on"].includes(
+  (process.env.ALCHEMY_DEV ?? "").toLowerCase(),
+);
+
 export default Alchemy.Stack(
   "Ballast",
   {
     providers: Cloudflare.providers(),
-    state: Cloudflare.state(),
+    state: isDev ? Alchemy.localState() : Cloudflare.state(),
   },
   Effect.gen(function* () {
     const worker = yield* BallastCloudWorker;

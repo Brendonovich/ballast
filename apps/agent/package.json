@@ -17,19 +17,21 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ballast/cloud-protocol": "workspace:*",
     "@ballast/core": "workspace:*",
     "@ballast/fake": "workspace:*",
     "@ballast/module-obs": "workspace:*",
+    "@ballast/module-twitch": "workspace:*",
     "@ballast/planner": "workspace:*",
     "@effect/platform-node": "catalog:",
     "effect": "catalog:",
-    "rolldown": "catalog:"
+    "rolldown": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
-    "@types/ws": "^8.18.2",
-    "vitest": "catalog:",
-    "ws": "^8.23.0"
+    "@types/ws": "catalog:",
+    "vitest": "catalog:"
   }
 }

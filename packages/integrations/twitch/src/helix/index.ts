@@ -1,6 +1,8 @@
 export { HelixError, isTransientStatus } from "./errors.ts";
 export { DEFAULT_HELIX_BASE_URL, HelixClient, layer, make } from "./client.ts";
 export type { HelixClientOptions, HelixClientService } from "./client.ts";
+export { helixRequests } from "./executor.ts";
+export type { HelixRequestExecutor } from "./executor.ts";
 export {
   ChannelInformation,
   CreateClipInput,
@@ -31,6 +33,7 @@ export {
   UpdateRedemptionStatusInput,
   User,
   defineRequest,
+  isRequestName,
   requests,
 } from "./requests.ts";
 export type {

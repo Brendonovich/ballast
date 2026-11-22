@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Fake from "@ballast/fake";
 import * as OBS from "@ballast/module-obs";
+import * as Twitch from "@ballast/module-twitch";
 import * as Effect from "effect/Effect";
 
 /**
@@ -20,6 +21,24 @@ export const topicConnectionTypes = Effect.gen(function* () {
   yield* OBS.CurrentProgramSceneChanged.subscribe(fake, (event) =>
     Effect.log(event.sceneName),
   );
+
+  const broadcaster = yield* Twitch.Account("broadcaster");
+  yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, (event) =>
+    Effect.log(event.reward.title),
+  );
+  // @ts-expect-error a Twitch topic requires a Twitch connection, not a Fake one
+  yield* Twitch.ChannelPointsRedemption.subscribe(fake, (event) =>
+    Effect.log(event.reward.title),
+  );
+
+  const sendChat = yield* broadcaster.helix("sendChatMessage");
+  yield* sendChat({
+    broadcaster_id: "1337",
+    sender_id: "1337",
+    message: "hi",
+  });
+  // @ts-expect-error Helix input fields are typed; message is required
+  yield* sendChat({ broadcaster_id: "1337", sender_id: "1337" });
 });
 
 describe("topic subscription types", () => {

@@ -7,6 +7,7 @@ import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import { FetchHttpClient } from "effect/http";
 import { diff, plan } from "@ballast/planner";
 import type { ManifestDiff } from "@ballast/planner";
 import type { Manifest, ParamManifest, ParamOptionSource } from "@ballast/core";
@@ -20,10 +21,20 @@ import { startObsDriver } from "./obs-driver.ts";
 import type { ObsDriver } from "./obs-driver.ts";
 import { startRuntimeSession } from "./runtime-session.ts";
 import type { RuntimeSession, RuntimeSettings } from "./runtime-session.ts";
+import { authorizeTwitchAccount } from "./twitch/auth.ts";
+import {
+  readStoredTwitchAccount,
+  resolveDataDir,
+  resolveTwitchAppConfig,
+} from "./twitch/config.ts";
+import type { TwitchMode } from "./twitch/config.ts";
+import { startTwitchRuntime } from "./twitch/runtime.ts";
 
 export interface RunOptions extends ConnectionOptions {
   readonly entry: string;
   readonly params: ReadonlyMap<string, string>;
+  readonly twitchModes: ReadonlyMap<string, TwitchMode>;
+  readonly cloudUrl: string | undefined;
 }
 
 type RequestHandler = (
@@ -195,10 +206,10 @@ const printDiff = (value: ManifestDiff): void => {
   console.log(JSON.stringify(value, null, 2));
 };
 
-const askConsent = (): Promise<boolean> => {
+const askQuestion = (question: string): Promise<boolean> => {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return rl
-    .question("Apply? [y/N] ")
+    .question(question)
     .then((answer) => {
       process.stdout.write("\n");
       return answer.trim().toLowerCase().startsWith("y");
@@ -211,6 +222,8 @@ const askConsent = (): Promise<boolean> => {
       rl.close();
     });
 };
+
+const askConsent = (): Promise<boolean> => askQuestion("Apply? [y/N] ");
 
 interface AppliedState {
   readonly manifest: Manifest;
@@ -299,6 +312,60 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
       const bus = new AgentEventBus();
       const obsSlots = new Map<string, ObsSlotState>();
       const runScope = yield* Scope.Scope;
+
+      const reauthorizeTwitch = (
+        slot: string,
+        scopes: ReadonlyArray<string>,
+      ): Effect.Effect<boolean, Error> =>
+        Effect.gen(function* () {
+          if (process.stdin.isTTY !== true || process.env["CI"] === "1") return false;
+          const stored = yield* Effect.tryPromise({
+            try: () => readStoredTwitchAccount(slot),
+            catch: (cause) =>
+              new Error(
+                "Could not read the stored Twitch token: " +
+                  (cause instanceof Error ? cause.message : String(cause)),
+              ),
+          });
+          if (stored === undefined) return false;
+
+          const config = yield* Effect.try({
+            try: () => resolveTwitchAppConfig(slot, options, stored),
+            catch: (cause) =>
+              cause instanceof Error ? cause : new Error(String(cause)),
+          });
+
+          const approved = yield* Effect.promise(() =>
+            askQuestion(
+              "[twitch:" +
+                slot +
+                "] the stored token is missing scopes: " +
+                scopes.join(", ") +
+                ". Re-authorize now? [y/N] ",
+            ),
+          );
+          if (!approved) return false;
+
+          yield* authorizeTwitchAccount({
+            slot,
+            config,
+            dataDir: resolveDataDir(),
+            scopes,
+          }).pipe(Effect.provide(FetchHttpClient.layer));
+          return true;
+        });
+
+      const twitch = yield* startTwitchRuntime({
+        options: {
+          connections: options.connections,
+          secrets: options.secrets,
+        },
+        twitchModes: options.twitchModes,
+        ...(options.cloudUrl === undefined ? {} : { cloudUrl: options.cloudUrl }),
+        publish: (key, payload) => bus.publish(key, payload),
+        reauthorize: reauthorizeTwitch,
+      });
+      yield* Effect.addFinalizer(() => twitch.close);
 
       const ensureObs = (
         manifest: Manifest,
@@ -392,6 +459,10 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
         Effect.mapError((error) => new Error(error.message)),
       );
 
+      yield* twitch.sync(initialManifest).pipe(
+        Effect.mapError((error) => new Error(error.message)),
+      );
+
       for (const slot of obsSlotsFor(initialManifest)) {
         yield* ensureObs(initialManifest, slot, runScope);
       }
@@ -410,6 +481,11 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
             return Effect.fail(`No OBS connection for slot "${slot}"`);
           }
           return state.driver.request(request, input);
+        }
+        if (integration === "twitch") {
+          return twitch.request(slot, request, input).pipe(
+            Effect.mapError((error) => error.message),
+          );
         }
         return Effect.fail(`No runtime handler for integration "${integration}"`);
       };
@@ -486,6 +562,20 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
             if (declared.has(slot)) continue;
             yield* Scope.close(state.scope, Exit.void);
             obsSlots.delete(slot);
+          }
+
+          const twitchSynced = yield* twitch.sync(nextManifest).pipe(
+            Effect.as(true),
+            Effect.catch((error) => {
+              console.error(`[run] twitch: ${error.message}`);
+              return Effect.succeed(false);
+            }),
+          );
+          if (!twitchSynced) {
+            console.log(
+              `[run] keeping worker generation ${applied.session.generation}; Twitch did not apply`,
+            );
+            return;
           }
 
           const nextValues = yield* refreshParamValues(

@@ -1,5 +1,6 @@
 import * as Ref from "effect/Ref";
 import {
+  topicManifestKey,
   type ConnectionManifest,
   type Manifest,
   type ParamManifest,
@@ -25,18 +26,12 @@ const upsertTopic = (
   topics: ReadonlyArray<TopicManifest>,
   topic: TopicManifest,
 ): ReadonlyArray<TopicManifest> => {
-  const existing = topics.find(
-    (candidate) =>
-      candidate.integration === topic.integration &&
-      candidate.slot === topic.slot &&
-      candidate.topic === topic.topic,
-  );
+  const key = topicManifestKey(topic);
+  const existing = topics.find((candidate) => topicManifestKey(candidate) === key);
   if (existing === undefined) return [...topics, topic];
 
   return topics.map((candidate) =>
-    candidate.integration === topic.integration &&
-    candidate.slot === topic.slot &&
-    candidate.topic === topic.topic
+    topicManifestKey(candidate) === key
       ? {
           ...candidate,
           scopes: [...new Set([...candidate.scopes, ...topic.scopes])],

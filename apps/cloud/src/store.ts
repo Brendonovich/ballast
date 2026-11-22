@@ -29,6 +29,11 @@ export const TwitchAccountRow = Schema.Struct({
   scopes: Schema.Array(Schema.String),
   secrets: AccountSecrets,
   machineId: Schema.NullOr(Schema.String),
+  /** Set when Twitch revoked the authorization and the user must reconnect. */
+  needsReauth: Schema.Boolean,
+  /** Token-refresh lease holder. Only this value may commit refreshed secrets. */
+  refreshLock: Schema.NullOr(Schema.String),
+  refreshLockUntil: Schema.Number,
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
 });
@@ -103,15 +108,41 @@ export interface CloudStoreService {
   readonly listAccountsByUser: (
     userId: string,
   ) => Effect.Effect<ReadonlyArray<TwitchAccountRow>>;
+  /**
+   * Commit refreshed token material. When `lockToken` is provided the update
+   * only applies while that token still holds the account's refresh lease,
+   * returning false if another request took over. Returns true otherwise.
+   */
   readonly updateAccountSecrets: (
     id: string,
     secrets: AccountSecrets,
     updatedAt: number,
-  ) => Effect.Effect<void>;
+    lockToken?: string,
+  ) => Effect.Effect<boolean>;
   readonly updateAccountMachine: (
     id: string,
     machineId: string | null,
     updatedAt: number,
+  ) => Effect.Effect<void>;
+  readonly setAccountNeedsReauth: (
+    id: string,
+    needsReauth: boolean,
+    updatedAt: number,
+  ) => Effect.Effect<void>;
+
+  /**
+   * Acquire the per-account refresh lease if it is free or expired. The lease
+   * stops two Workers refreshing the same rotating refresh token at once.
+   */
+  readonly tryAcquireRefreshLock: (
+    id: string,
+    lockToken: string,
+    now: number,
+    lockUntil: number,
+  ) => Effect.Effect<boolean>;
+  readonly releaseRefreshLock: (
+    id: string,
+    lockToken: string,
   ) => Effect.Effect<void>;
 
   // Pairing and machines
@@ -127,6 +158,18 @@ export interface CloudStoreService {
   ) => Effect.Effect<Option.Option<MachineRow>>;
   readonly touchMachine: (id: string, now: number) => Effect.Effect<void>;
 
+  // Rate limits
+  /**
+   * Increment a fixed-window counter and return the new count. Starting a new
+   * window resets the count to one.
+   */
+  readonly incrementRateLimit: (input: {
+    readonly key: string;
+    readonly windowStart: number;
+    readonly expiresAt: number;
+  }) => Effect.Effect<number>;
+  readonly pruneRateLimits: (before: number) => Effect.Effect<void>;
+
   // EventSub subscriptions
   readonly listSubscriptions: (accountId: string) => Effect.Effect<ReadonlyArray<SubscriptionRow>>;
   readonly findSubscriptionByProviderId: (
@@ -137,6 +180,7 @@ export interface CloudStoreService {
   readonly markSubscriptionRevoked: (
     providerId: string,
     now: number,
+    reason?: string,
   ) => Effect.Effect<void>;
 
   // Webhook dedupe

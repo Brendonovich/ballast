@@ -147,8 +147,10 @@ then issues an 8-character pairing code (15 min, single use).
 
 The callback page shows the pairing code. The agent has no user session and no browser
 integration in this slice; the code is how the agent gets a machine identity. Pairing-code
-login is a documented stub: production should add a device-code-like flow or a signed
-`ballast://` redirect, plus rate limiting and abuse controls.
+login is still a stub in UX terms, but attempts and code creation are now rate-limited:
+10 claims per client IP and 5 codes per Twitch user per 15 minutes, stored as fixed-window
+counters in D1 (`rate_limits`). A production flow should still replace the retyped code with
+a device-code-like flow or a signed `ballast://` redirect.
 
 **Token storage: D1 with application-level AES-256-GCM encryption.** The vault stores the
 refresh token, the cached access token and its expiry, and the EventSub webhook secret as
@@ -195,8 +197,12 @@ For every POST:
 5. `webhook_callback_verification`: return the challenge as `text/plain` 200.
 6. `notification`: dedupe by message id, find the subscription row by provider id, build the
    envelope, and enqueue it on the machine's relay. Return 204.
-7. `revocation`: mark the row `revoked`, notify the relay, return 204. The agent should
-   reconcile after a revocation; automatic resubscribe is a follow-up.
+7. `revocation`: read the reason from `subscription.status`. For
+   `notification_failures_exceeded` the gateway deletes the dead provider subscription and
+   creates it again with the stored condition and webhook secret (no agent round trip). For
+   `authorization_revoked` / `user_removed` it marks the account `needs_reauth`, marks the row
+   `revoked` with the reason, and notifies the relay; every other reason marks the row and
+   notifies, leaving recovery to the next reconcile. Return 204.
 8. Anything else: 400.
 
 Dedupe is two-layered:
@@ -278,6 +284,10 @@ One `Relay` DO per machine (`getByName(machineId)`). It is the only place events
   for a capability the manifest never declared.
 - The cloud decrypts the cached access token; if it expires within 60 s it refreshes and
   re-seals first. A 401 from Twitch triggers one forced refresh and retry.
+- Refreshes take a per-account lease in D1 (`refresh_lock` + `refresh_lock_until`, 30 s).
+  A competing request waits up to 2 s for the holder and then returns a retryable
+  `upstream_error`, so Twitch's rotating refresh token is not spent twice. Secrets are only
+  committed by the current lease holder; a stale holder cannot overwrite a newer token.
 - The response is `{ status, body, refreshed }`; status is passed through, so callers see
   Twitch's error body and can decide whether to retry.
 - There is no general-purpose URL proxy: only `/helix/` paths reach Twitch.
@@ -325,7 +335,9 @@ compatible.
 - No Twitch keys on the machine in cloud mode; no refresh tokens outside the cloud.
 - Local mode stores the local app's refresh token on the machine; this is the user's own
   credential and must move to the OS keychain before release.
-- Machine tokens are random, hashed at rest, and compared by hash lookup.
+- Machine tokens are random, hashed at rest, and compared by hash lookup. The pepper is a
+  required Worker secret with no dev default, so a deployment cannot silently share one.
+- Pairing claims and code creation are rate-limited in D1 per client IP and per user.
 - Webhook HMAC uses the raw body, timestamp tolerance, and a per-connection secret.
 - D1 rows hold only AES-GCM ciphertext for tokens and webhook secrets; the key is a Worker
   secret.
@@ -372,19 +384,22 @@ The agent should also handle the cloud's typed errors: `unauthorized` (re-pair),
 2. **Key management.** `BALLAST_TOKEN_KEY` is a static Worker secret. Rotation needs a key id
    or a re-encryption migration; a KMS/Secrets Store-backed key may be preferable before
    production.
-3. **Pairing UX and abuse.** Pairing codes are bearer-ish secrets shown in a browser; add
-   rate limits, attempt counters, shorter TTLs, and ideally a signed deep link or device-code
-   flow so the code never has to be retyped.
+3. **Pairing UX and abuse.** Pairing codes are bearer-ish secrets shown in a browser. Fixed-
+   window limits and a required pepper are in place; the remaining work is UX (signed deep
+   link or device-code flow so the code never has to be retyped) and distributed-attack
+   controls (for example a Cloudflare rate-limiting rule in front of the Worker).
 4. **Multiple machines per user.** Decide whether a connection can fan out to several relays,
    or whether each machine needs its own Twitch authorization. The current schema stores one
    `machine_id` on the account.
 5. **Conduits.** Revisit if per-user webhooks hit cost/count limits or a single app needs
    sharded throughput. The relay and envelope do not need to change.
-6. **Revocation recovery.** On `revocation`, should the cloud auto-resubscribe, or wait for the
-   agent's next reconcile? Auto-resubscribe risks a loop if Twitch revokes for a permanent
-   reason (e.g. missing scope).
-7. **Token refresh concurrency.** Two Helix calls can race a refresh. Twitch refresh tokens are
-   usually stable, but a per-account DO or an optimistic-lock column would make this exact.
+6. **Revocation recovery.** Resolved for the known recoverable reason: only
+   `notification_failures_exceeded` triggers an automatic resubscribe, so a permanent
+   revocation (missing scope, user removed) cannot loop. Other reasons notify and wait for the
+   next reconcile or the user.
+7. **Token refresh concurrency.** Resolved with a D1 lease plus a conditional secrets write;
+   see the Helix proxy section. If refresh volume ever justifies it, moving the lease into a
+   per-account DO is a mechanical change.
 8. **Local mode details.** Localhost redirect registration rules for user apps, device-code
    support for public clients, keychain storage, EventSub reconnect/resubscribe on the agent.
 9. **Inspector/replay API.** The relay keeps 24 h of events but no endpoint exposes them yet.
@@ -396,34 +411,32 @@ The agent should also handle the cloud's typed errors: `unauthorized` (re-pair),
 
 | Piece | State |
 |---|---|
-| OAuth start/callback, state, token exchange | **Real**, exercised with a fake Twitch token/Helix API in tests |
-| Token vault (AES-GCM in D1) | **Real**; unit tests use the in-memory store, and the `wrangler dev` run exercised the D1 SQL end to end |
-| Webhook HMAC, timestamp, challenge, dedupe, revocation | **Real**, unit + integration tested with real WebCrypto |
-| Subscription reconciliation + cost limit | **Real**, tested against a fake Twitch API |
-| Helix proxy + scope checks + refresh-on-401 | **Real**, tested with a fake Helix |
-| Machine pairing + token hashing | **Implemented**, but pairing UX is a documented stub |
-| Relay DO buffer/WS/ack | **Real DO class**, exercised locally through workerd with a real WebSocket client and local D1 |
+| OAuth start/callback, state, token exchange | **Real**, via `@ballast/module-twitch`'s OAuth client, exercised with a fake Twitch token/Helix API in tests |
+| Token vault (AES-GCM in D1) | **Real**; unit tests use the in-memory store, and `alchemy dev` exercised the D1 SQL end to end |
+| Webhook HMAC, timestamp, challenge, dedupe, revocation | **Real**, using the module's webhook verifier/message schemas; unit + integration tested with real WebCrypto |
+| Subscription reconciliation + cost limit | **Real**, with the module's registry validating known conditions and scopes; tested against a fake Twitch API |
+| Helix proxy + scope checks + refresh-on-401 | **Real**, tested with a fake Helix; refresh is serialised by a D1 lease |
+| Machine pairing + token hashing | **Implemented**, with per-IP/per-user rate limits; pairing UX remains a documented stub |
+| Relay DO buffer/WS/ack | **Real DO class**, exercised locally through `alchemy dev`/workerd with a real WebSocket client and local D1 |
 | Effect RPC client/server | **Schemas defined**; HTTP/JSON and WS/JSON served in this slice |
 | Conduits, key rotation, multi-machine | **Not implemented** |
 
 ### Verification
 
-- `pnpm --filter @ballast/cloud test`: 14 tests, including a Node HTTP server + real
+- `pnpm --filter @ballast/cloud test`: 21 tests, including a Node HTTP server + real
   `ws` client that receives a signed EventSub notification through the relay (webhook →
-  HMAC → dedupe → buffer → WebSocket).
+  HMAC → dedupe → buffer → WebSocket), rate limits, both revocation paths, and the refresh
+  lease.
 - `pnpm --filter @ballast/cloud-protocol test`: 4 schema tests.
-- `pnpm test` at the root: all workspace tests pass.
-- `pnpm typecheck`: passes for the whole workspace, including the new projects.
-- **`wrangler dev --local` end-to-end:** with local D1 migrations applied and a fake Twitch
-  HTTP server on `:4010`, the actual Worker + Relay DO ran on `:8787`. The script ran OAuth
-  start/callback, claimed a pairing code, reconciled one subscription, sent one signed
-  EventSub notification *before* connecting the agent socket, then connected a real `ws`
-  client and sent a second notification. Output:
+- **`alchemy dev` end-to-end, fully local:** the stack selects `Alchemy.localState()` in dev, so
+  it never boots `Cloudflare.state()` or authenticates to Cloudflare. D1 migrations and the
+  Worker + Relay DO run under workerd. With a fake Twitch HTTP server on `:4010`, the demo ran
+  OAuth, pairing, reconcile, an offline signed notification and a live one:
 
   ```
   oauth start: 302 http://127.0.0.1:4010/oauth2/authorize
-  oauth callback: 200 streamer H6KBTQNA
-  pairing claim: 200 m_Fr05JmXrT4uhhmY1YU4_3XiB
+  oauth callback: 200 {"userId":"12345",...,"pairingCode":"THCNX39E",...}
+  pairing claim: 200 m_9Md7i-zqW5zdpl3TieJmAOjZ
   reconcile: 200 cost 1 provider sub-local-1
   offline webhook: 204
   relay -> hello
@@ -434,20 +447,20 @@ The agent should also handle the cloud's typed errors: `unauthorized` (re-pair),
   ```
 
   This exercises the real D1 vault rows, HMAC ingress, subscription row lookup, DO storage and
-  WebSocket ack path. It uses dummy local Twitch credentials and a fake provider only.
-- **`alchemy dev`** was not used for the demo. It requires a Cloudflare account because
-  `Cloudflare.state()` bootstraps a state-store Worker; in this environment it found an
-  existing default profile and attempted to update that shared state store, so the run was
-  stopped before planning our resources. The `wrangler dev` run above uses the same Worker and
-  DO code without touching Cloudflare. The `@alchemy.run/cloudflare` patch from MacroGraph is
-  not needed: it only fixes Vite website hashing for deleted workspace directories, and this
-  stack has no Vite website.
+  WebSocket ack path. It uses dummy local Twitch credentials and a fake provider only, with
+  Cloudflare credentials unset and a throwaway `HOME` so no profile could be read.
+- The local dev run uses `Alchemy.localState()` (`.alchemy/state`) and local workerd storage
+  (`.alchemy/local`), based on the local providers in `alchemy/src/State/LocalState.ts`,
+  `@alchemy.run/cloudflare/src/Workers/LocalWorkerProvider.ts` and
+  `@alchemy.run/cloudflare/src/D1/Database.ts`. `wrangler dev` is no longer used, and
+  `wrangler.toml` was deleted so bindings cannot drift from `alchemy.run.ts`.
 
 ## Files
 
-- `apps/cloud/` — `alchemy.run.ts`, `src/{app,worker,config,secrets,store,d1-store,twitch-api,eventsub,http,errors}.ts`,
-  `src/relay/{state,buffer,gateway,relay-do}.ts`, `migrations/0001_init.sql`, tests,
-  `wrangler.toml` + `scripts/local-demo.mjs` for the local workerd loop.
+- `apps/cloud/` — `alchemy.run.ts`, `src/{app,worker,config,secrets,store,d1-store,twitch-api,http,errors}.ts`,
+  `src/relay/{state,buffer,gateway,relay-do}.ts`, `migrations/{0001_init,0002_hardening}.sql`, tests,
+  `scripts/local-demo.mjs` for the local `alchemy dev` loop. Protocol knowledge lives in
+  `@ballast/module-twitch` (`packages/integrations/twitch`), not in `apps/cloud`.
 - `packages/cloud-protocol/` — `src/{events,http,rpc,index}.ts`, tests.
 - Root `pnpm-workspace.yaml` catalog: `@alchemy.run/cloudflare`, `@cloudflare/workers-types`.
 - Root `tsconfig.json` references: `packages/cloud-protocol`, `apps/cloud`.

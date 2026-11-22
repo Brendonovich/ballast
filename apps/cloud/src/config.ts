@@ -44,7 +44,7 @@ export const makeCloudConfig = (values: {
   readonly twitchClientId: string;
   readonly twitchClientSecret: string;
   readonly tokenKey: string;
-  readonly tokenPepper?: string;
+  readonly tokenPepper: string;
   readonly defaultScopes?: ReadonlyArray<string>;
   readonly maxSubscriptionCost?: number;
   readonly webhookTimestampToleranceMs?: number;
@@ -56,7 +56,7 @@ export const makeCloudConfig = (values: {
   twitchClientId: values.twitchClientId,
   twitchClientSecret: Redacted.make(values.twitchClientSecret),
   tokenKey: parseKey(values.tokenKey),
-  tokenPepper: values.tokenPepper ?? "ballast-dev-pepper",
+  tokenPepper: values.tokenPepper,
   defaultScopes: values.defaultScopes ?? ["user:read:email", "channel:read:redemptions"],
   maxSubscriptionCost: values.maxSubscriptionCost ?? DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST,
   webhookTimestampToleranceMs: values.webhookTimestampToleranceMs ?? 10 * 60_000,
@@ -79,9 +79,7 @@ export const CloudConfigLive = Layer.effect(
       twitchClientId: Config.String("TWITCH_CLIENT_ID"),
       twitchClientSecret: Config.Redacted("TWITCH_CLIENT_SECRET"),
       tokenKey: Config.Redacted("BALLAST_TOKEN_KEY"),
-      tokenPepper: Config.String("BALLAST_TOKEN_PEPPER").pipe(
-        Config.withDefault("ballast-dev-pepper"),
-      ),
+      tokenPepper: Config.String("BALLAST_TOKEN_PEPPER"),
       maxSubscriptionCost: Config.Number("BALLAST_TWITCH_MAX_SUBSCRIPTION_COST").pipe(
         Config.withDefault(DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST),
       ),

@@ -10,6 +10,7 @@ import {
   type EventEnvelope,
   type RelayServerMessage,
 } from "@ballast/cloud-protocol";
+import { EventSub } from "@ballast/module-twitch";
 
 import type { RelayGatewayService } from "../src/relay/gateway.ts";
 import {
@@ -20,7 +21,6 @@ import {
   pendingEvents,
   type RelaySnapshot,
 } from "../src/relay/state.ts";
-import { computeEventSubSignature } from "../src/eventsub.ts";
 import { makeTestApp } from "./support/test-app.ts";
 
 class MemoryRelay {
@@ -250,12 +250,12 @@ describe("local end-to-end harness", () => {
         },
       });
       const signature = await Effect.runPromise(
-        computeEventSubSignature(
-          webhookSecret,
+        EventSub.computeSignature({
+          secret: webhookSecret,
           messageId,
           timestamp,
-          new TextEncoder().encode(payload),
-        ),
+          body: payload,
+        }),
       );
       const response = await fetch(
         `http://127.0.0.1:${port}/webhooks/twitch/eventsub/${account.id}`,

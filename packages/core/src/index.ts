@@ -7,6 +7,8 @@ export {
   ConnectionLocationSchema,
   ConnectionManifestSchema,
   TopicManifestSchema,
+  TopicConditionSchema,
+  TopicConditionValueSchema,
   RequestManifestSchema,
   UnresolvedManifestSchema,
   emptyManifest,
@@ -23,6 +25,8 @@ export type {
   ConnectionManifest,
   OnStale,
   TopicManifest,
+  TopicCondition,
+  TopicConditionValue,
   RequestManifest,
   UnresolvedManifest,
 } from "./manifest.ts";

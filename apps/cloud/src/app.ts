@@ -1,19 +1,17 @@
+import { EventSub, Protocol } from "@ballast/module-twitch";
 import {
-  EventSubDelivery,
   HelixRequest,
   PairingClaimRequest,
   ReconcileSubscriptionsRequest,
-  TwitchSubscriptionSpec,
   conditionKey,
   subscriptionKey,
   twitchSubscriptionCost,
-  twitchTopic,
   type EventEnvelope,
   type PairingClaimResponse,
   type TwitchConnection,
   type TwitchSubscription,
 } from "@ballast/cloud-protocol";
-import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Cause, Clock, Context, Duration, Effect, Layer, Option, Schema } from "effect";
 
 import { CloudConfig, type CloudConfigService } from "./config.ts";
 import { decodeJson, header, html, isJsonRequest, json, redirect, text } from "./http.ts";
@@ -26,11 +24,11 @@ import {
   internalError,
   missingScopes,
   notFound,
+  rateLimited,
   unauthorized,
   upstreamError,
   HttpError,
 } from "./errors.ts";
-import { verifyEventSubSignature } from "./eventsub.ts";
 import { RelayGateway, type RelayGatewayService } from "./relay/gateway.ts";
 import {
   hashMachineToken,
@@ -61,6 +59,17 @@ const oauthStateTtlMs = 10 * 60_000;
 const accessTokenMarginMs = 60_000;
 const machineNameLimit = 100;
 
+/** Pairing claims allowed per client IP in one window. */
+export const PAIRING_CLAIM_LIMIT = 10;
+/** Pairing codes a user may create in one window (each login creates one). */
+export const PAIRING_CODE_CREATE_LIMIT = 5;
+/** Both limits use Twitch's 15-minute pairing-code lifetime as their window. */
+export const PAIRING_RATE_WINDOW_MS = 15 * 60_000;
+/** How long a Worker holds the per-account token-refresh lease. */
+export const REFRESH_LOCK_MS = 30_000;
+/** How long a second request waits for another Worker's refresh to finish. */
+export const REFRESH_WAIT_MS = 2_000;
+
 const escapeHtml = (value: string): string =>
   value.replace(/[&<>"']/g, (character) => {
     switch (character) {
@@ -84,9 +93,19 @@ const bearerToken = (request: HttpRequest): string | undefined => {
   return match?.[1];
 };
 
+const clientIp = (request: HttpRequest): string => {
+  const direct = header(request, "cf-connecting-ip");
+  if (direct !== undefined && direct.length > 0) return direct.trim();
+  const forwarded = header(request, "x-forwarded-for");
+  const first = forwarded?.split(",")[0]?.trim();
+  return first === undefined || first.length === 0 ? "unknown" : first;
+};
+
 const asJson = (value: unknown): Schema.Json => Schema.decodeUnknownSync(Schema.Json)(value);
 
-const toConnection = (account: TwitchAccountRow): TwitchConnection => ({
+const toConnection = (
+  account: TwitchAccountRow,
+): TwitchConnection & { readonly needsReauth: boolean } => ({
   id: account.id,
   twitchUserId: account.twitchUserId,
   login: account.login,
@@ -94,6 +113,7 @@ const toConnection = (account: TwitchAccountRow): TwitchConnection => ({
   scopes: [...account.scopes],
   machineId: account.machineId,
   createdAt: account.createdAt,
+  needsReauth: account.needsReauth,
 });
 
 const toSubscription = (row: SubscriptionRow): TwitchSubscription => ({
@@ -136,6 +156,97 @@ const errorBody = (error: HttpError): unknown => ({
 });
 
 const errorResponse = (error: HttpError): HttpResponse => json(error.status, errorBody(error));
+
+/**
+ * EventSub revocations we can recover from without the user reconnecting.
+ * Every other reason (authorization/user removal, version removal, limits)
+ * needs a person or a manifest change.
+ */
+const recoverableRevocation = (reason: string): boolean =>
+  reason === "notification_failures_exceeded";
+
+const WebhookSubscription = Schema.Struct({
+  id: Schema.String,
+  status: Schema.String,
+  type: Schema.String,
+  version: Schema.String,
+  condition: Schema.Record(Schema.String, Schema.String),
+});
+type WebhookSubscription = Schema.Schema.Type<typeof WebhookSubscription>;
+
+const WebhookBodyOnly = Schema.Union([
+  Schema.Struct({ subscription: WebhookSubscription, challenge: Schema.String }),
+  Schema.Struct({ subscription: WebhookSubscription, event: Schema.Unknown }),
+  Schema.Struct({ subscription: WebhookSubscription }),
+]);
+
+type WebhookDelivery =
+  | {
+      readonly _tag: "verification";
+      readonly challenge: string;
+      readonly subscription: WebhookSubscription;
+    }
+  | {
+      readonly _tag: "notification";
+      readonly subscription: WebhookSubscription;
+      readonly event: unknown;
+    }
+  | {
+      readonly _tag: "revocation";
+      readonly subscription: WebhookSubscription;
+    };
+
+/**
+ * Twitch's webhook envelope, with the same lenient body-only acceptance that
+ * Twitch CLI uses. The module's typed notification decoder is deliberately
+ * not used here: the gateway relays payloads without knowing every topic's
+ * schema, and the agent decodes them against its integration catalog.
+ */
+const parseWebhook = (body: string): Effect.Effect<WebhookDelivery, HttpError> =>
+  Effect.gen(function* () {
+    const jsonValue = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+      body,
+    ).pipe(Effect.mapError(() => badRequest("Invalid EventSub delivery")));
+
+    const envelope = Option.getOrUndefined(
+      Schema.decodeUnknownOption(EventSub.EventSubWebhookMessage)(jsonValue),
+    );
+    if (envelope !== undefined) {
+      if (EventSub.isWebhookMessageType(envelope, "webhook_callback_verification"))
+        return {
+          _tag: "verification" as const,
+          challenge: envelope.payload.challenge,
+          subscription: envelope.payload.subscription,
+        };
+      if (EventSub.isWebhookMessageType(envelope, "notification"))
+        return {
+          _tag: "notification" as const,
+          subscription: envelope.payload.subscription,
+          event: envelope.payload.event,
+        };
+      return {
+        _tag: "revocation" as const,
+        subscription: envelope.payload.subscription,
+      };
+    }
+
+    const bodyOnly = yield* Schema.decodeUnknownEffect(WebhookBodyOnly)(jsonValue).pipe(
+      Effect.mapError(() => badRequest("Invalid EventSub delivery")),
+    );
+    if ("challenge" in bodyOnly)
+      return {
+        _tag: "verification" as const,
+        challenge: bodyOnly.challenge,
+        subscription: bodyOnly.subscription,
+      };
+    if ("event" in bodyOnly)
+      return {
+        _tag: "notification" as const,
+        subscription: bodyOnly.subscription,
+        event: bodyOnly.event,
+      };
+    return { _tag: "revocation" as const, subscription: bodyOnly.subscription };
+  });
 
 export interface CloudAppDeps {
   readonly config: CloudConfigService;
@@ -184,24 +295,123 @@ export const makeCloudApp = (
         return account.value;
       });
 
+    const enforceRateLimit = (
+      bucket: string,
+      limit: number,
+      now: number,
+    ): Effect.Effect<void, HttpError> =>
+      Effect.gen(function* () {
+        const windowStart = Math.floor(now / PAIRING_RATE_WINDOW_MS) * PAIRING_RATE_WINDOW_MS;
+        const count = yield* store.incrementRateLimit({
+          key: bucket,
+          windowStart,
+          expiresAt: windowStart + PAIRING_RATE_WINDOW_MS,
+        });
+        yield* store.pruneRateLimits(now);
+        if (count > limit)
+          return yield* rateLimited("Too many attempts; try again later", {
+            limit,
+            windowMs: PAIRING_RATE_WINDOW_MS,
+          });
+      });
+
+    const needsFreshToken = (account: TwitchAccountRow, force: boolean): boolean =>
+      force ||
+      account.secrets.accessToken === null ||
+      account.secrets.accessTokenExpiresAt - accessTokenMarginMs <= Date.now();
+
+    const refreshedAccount = (
+      account: TwitchAccountRow,
+      accessToken: string,
+      tokens: { readonly accessToken: string; readonly refreshToken: string | null; readonly expiresAt: number; readonly scopes: ReadonlyArray<string> },
+      secrets: TwitchAccountRow["secrets"],
+      refreshed: boolean,
+    ) => ({
+      accessToken,
+      account: {
+        ...account,
+        secrets,
+        scopes: tokens.scopes.length > 0 ? tokens.scopes : account.scopes,
+        needsReauth: false,
+        refreshLock: null,
+        refreshLockUntil: 0,
+      },
+      refreshed,
+    });
+
+    /**
+     * Get a usable access token, refreshing under a D1 lease so two Workers
+     * cannot race Twitch's rotating refresh token. A second request waits
+     * briefly for the holder, then reports a retryable upstream error.
+     */
     const accessTokenFor = (account: TwitchAccountRow, force: boolean) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        if (
-          !force &&
-          account.secrets.accessToken !== null &&
-          account.secrets.accessTokenExpiresAt - accessTokenMarginMs > now
-        ) {
+        if (!needsFreshToken(account, force) && account.secrets.accessToken !== null) {
           return {
             accessToken: yield* openSecret(account.secrets.accessToken),
             account,
             refreshed: false,
           };
         }
-        const refreshToken = yield* openSecret(account.secrets.refreshToken);
-        const tokens = yield* twitch
-          .refresh(refreshToken)
-          .pipe(
+
+        const lockToken = crypto.randomUUID();
+        const acquired = yield* store.tryAcquireRefreshLock(
+          account.id,
+          lockToken,
+          now,
+          now + REFRESH_LOCK_MS,
+        );
+
+        if (!acquired) {
+          const deadline = now + REFRESH_WAIT_MS;
+          let current = yield* store.findAccount(account.id);
+          while (Option.isSome(current) && Date.now() < deadline) {
+            const candidate = current.value;
+            const stillLocked =
+              candidate.refreshLock !== null && candidate.refreshLockUntil > Date.now();
+            const fresh =
+              candidate.secrets.accessToken !== null &&
+              candidate.secrets.accessTokenExpiresAt - accessTokenMarginMs > Date.now();
+            const changed =
+              candidate.secrets.accessToken !== null &&
+              candidate.secrets.accessToken.ciphertext !==
+                account.secrets.accessToken?.ciphertext;
+            if (
+              !stillLocked &&
+              fresh &&
+              (!force || changed) &&
+              candidate.secrets.accessToken !== null
+            ) {
+              return {
+                accessToken: yield* openSecret(candidate.secrets.accessToken),
+                account: candidate,
+                refreshed: false,
+              };
+            }
+            if (!stillLocked) break;
+            yield* Effect.sleep(Duration.millis(50));
+            current = yield* store.findAccount(account.id);
+          }
+          return yield* upstreamError(
+            "Another request is refreshing this connection's token; retry shortly",
+            { retryable: true },
+          );
+        }
+
+        return yield* Effect.gen(function* () {
+          const current = yield* store.findAccount(account.id);
+          if (Option.isNone(current)) return yield* notFound("Unknown Twitch connection");
+          if (
+            !needsFreshToken(current.value, force) &&
+            current.value.secrets.accessToken !== null
+          ) {
+            const accessToken = yield* openSecret(current.value.secrets.accessToken);
+            return { accessToken, account: current.value, refreshed: false };
+          }
+
+          const refreshToken = yield* openSecret(current.value.secrets.refreshToken);
+          const tokens = yield* twitch.refresh(refreshToken).pipe(
             Effect.mapError((error) =>
               upstreamError("Twitch rejected the stored refresh token", {
                 status: error.status,
@@ -209,27 +419,50 @@ export const makeCloudApp = (
               }),
             ),
           );
-        const access = yield* sealSecret(tokens.accessToken);
-        const refresh =
-          tokens.refreshToken === null
-            ? account.secrets.refreshToken
-            : yield* sealSecret(tokens.refreshToken);
-        const secrets = {
-          ...account.secrets,
-          refreshToken: refresh,
-          accessToken: access,
-          accessTokenExpiresAt: tokens.expiresAt,
-        };
-        yield* store.updateAccountSecrets(account.id, secrets, now);
-        return {
-          accessToken: tokens.accessToken,
-          account: {
-            ...account,
+          const access = yield* sealSecret(tokens.accessToken);
+          const refresh =
+            tokens.refreshToken === null
+              ? current.value.secrets.refreshToken
+              : yield* sealSecret(tokens.refreshToken);
+          const secrets = {
+            ...current.value.secrets,
+            refreshToken: refresh,
+            accessToken: access,
+            accessTokenExpiresAt: tokens.expiresAt,
+          };
+          const updatedAt = yield* Clock.currentTimeMillis;
+          const committed = yield* store.updateAccountSecrets(
+            current.value.id,
             secrets,
-            scopes: tokens.scopes.length > 0 ? tokens.scopes : account.scopes,
-          },
-          refreshed: true,
-        };
+            updatedAt,
+            lockToken,
+          );
+          if (!committed) {
+            const winner = yield* store.findAccount(current.value.id);
+            if (Option.isSome(winner) && winner.value.secrets.accessToken !== null) {
+              return {
+                accessToken: yield* openSecret(winner.value.secrets.accessToken),
+                account: winner.value,
+                refreshed: true,
+              };
+            }
+            return yield* upstreamError("The token refresh lease was lost; retry", {
+              retryable: true,
+            });
+          }
+          yield* store.setAccountNeedsReauth(current.value.id, false, updatedAt);
+          return refreshedAccount(
+            current.value,
+            tokens.accessToken,
+            tokens,
+            secrets,
+            true,
+          );
+        }).pipe(
+          Effect.ensuring(
+            store.releaseRefreshLock(account.id, lockToken).pipe(Effect.orDie),
+          ),
+        );
       });
 
     const appAccessToken = Effect.gen(function* () {
@@ -253,7 +486,7 @@ export const makeCloudApp = (
       Effect.gen(function* () {
         const account = yield* accountFor(machine, request.connectionId);
         const now = yield* Clock.currentTimeMillis;
-        const desired = new Map<string, TwitchSubscriptionSpec>();
+        const desired = new Map<string, ReconcileSubscriptionsRequest["subscriptions"][number]>();
         for (const spec of request.subscriptions) {
           if (!belongsToAccount(spec.condition, account.twitchUserId))
             return yield* badRequest(
@@ -262,6 +495,26 @@ export const makeCloudApp = (
             );
           if (spec.type.length === 0 || spec.version < 1 || spec.maxAgeMs < 0)
             return yield* badRequest("Invalid EventSub subscription spec", { spec });
+          if (EventSub.isSubscriptionType(spec.type)) {
+            const definition = EventSub.subscriptions[spec.type];
+            const condition = yield* Schema.decodeUnknownEffect(definition.condition)(
+              spec.condition,
+            ).pipe(
+              Effect.mapError(() =>
+                badRequest(`Invalid condition for ${spec.type}`, {
+                  condition: spec.condition,
+                }),
+              ),
+            );
+            const missing = definition.scopes.filter(
+              (scope) => !account.scopes.includes(scope),
+            );
+            if (missing.length > 0)
+              return yield* missingScopes(
+                `The connection has not granted the scopes ${spec.type} needs`,
+                { missing, type: spec.type, condition },
+              );
+          }
           const key = subscriptionKey(spec);
           if (desired.has(key))
             return yield* badRequest("Duplicate EventSub subscription", { key });
@@ -417,14 +670,14 @@ export const makeCloudApp = (
           createdAt: now,
           expiresAt: now + oauthStateTtlMs,
         });
-        const authorize = new URL(`${config.twitchIdBaseUrl}/oauth2/authorize`);
-        authorize.searchParams.set("client_id", config.twitchClientId);
-        authorize.searchParams.set("redirect_uri", redirectUri);
-        authorize.searchParams.set("response_type", "code");
-        authorize.searchParams.set("scope", scopes.join(" "));
-        authorize.searchParams.set("state", state);
-        authorize.searchParams.set("force_verify", "true");
-        return redirect(authorize.toString());
+        return redirect(
+          twitch.authorizeUrl({
+            redirectUri,
+            scopes,
+            state,
+            forceVerify: true,
+          }),
+        );
       });
 
     const handleOAuthCallback = (
@@ -448,10 +701,10 @@ export const makeCloudApp = (
         const tokens = yield* twitch
           .exchangeAuthorizationCode(code, stored.value.redirectUri)
           .pipe(
-            Effect.mapError((error) =>
+            Effect.mapError((failure) =>
               upstreamError("Twitch rejected the authorization code", {
-                status: error.status,
-                body: error.body,
+                status: failure.status,
+                body: failure.body,
               }),
             ),
           );
@@ -459,8 +712,8 @@ export const makeCloudApp = (
           return yield* upstreamError("Twitch did not return a refresh token");
 
         const twitchUser: TwitchUser = yield* twitch.getUser(tokens.accessToken).pipe(
-          Effect.mapError((error) =>
-            upstreamError("Could not read the Twitch user", { status: error.status }),
+          Effect.mapError((failure) =>
+            upstreamError("Could not read the Twitch user", { status: failure.status }),
           ),
         );
         const userId = twitchUser.id;
@@ -472,6 +725,8 @@ export const makeCloudApp = (
           createdAt: now,
           updatedAt: now,
         });
+
+        yield* enforceRateLimit(`pairing-create:${userId}`, PAIRING_CODE_CREATE_LIMIT, now);
 
         const existing = yield* store.findAccountByTwitchUser(userId, twitchUser.id);
         const accountId = Option.isSome(existing) ? existing.value.id : crypto.randomUUID();
@@ -493,6 +748,9 @@ export const makeCloudApp = (
           scopes: tokens.scopes.length > 0 ? tokens.scopes : stored.value.scopes,
           secrets,
           machineId: Option.isSome(existing) ? existing.value.machineId : null,
+          needsReauth: false,
+          refreshLock: null,
+          refreshLockUntil: 0,
           createdAt: Option.isSome(existing) ? existing.value.createdAt : now,
           updatedAt: now,
         };
@@ -527,9 +785,14 @@ export const makeCloudApp = (
 
     const handlePairingClaim = (request: HttpRequest): Effect.Effect<HttpResponse, HttpError> =>
       Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        yield* enforceRateLimit(
+          `pairing-claim:${clientIp(request)}`,
+          PAIRING_CLAIM_LIMIT,
+          now,
+        );
         const body = yield* decodeJson(PairingClaimRequest, request.body);
         const code = body.code.trim().toUpperCase();
-        const now = yield* Clock.currentTimeMillis;
         const pairing = yield* store.takePairingCode(code, now);
         if (Option.isNone(pairing))
           return yield* notFound("Pairing code is invalid or has expired");
@@ -614,22 +877,22 @@ export const makeCloudApp = (
 
         const first = yield* accessTokenFor(account, false);
         let response = yield* call(first.accessToken).pipe(
-          Effect.mapError((error) =>
+          Effect.mapError((failure) =>
             upstreamError("Twitch Helix request failed", {
-              status: error.status,
-              body: error.body,
+              status: failure.status,
+              body: failure.body,
             }),
           ),
         );
         let refreshed = first.refreshed;
         if (response.status === 401) {
-          const retry = yield* accessTokenFor(account, true);
+          const retry = yield* accessTokenFor(first.account, true);
           refreshed = true;
           response = yield* call(retry.accessToken).pipe(
-            Effect.mapError((error) =>
+            Effect.mapError((failure) =>
               upstreamError("Twitch Helix request failed", {
-                status: error.status,
-                body: error.body,
+                status: failure.status,
+                body: failure.body,
               }),
             ),
           );
@@ -641,6 +904,85 @@ export const makeCloudApp = (
         });
       });
 
+    const notifyRevoked = (
+      machineId: string,
+      connectionId: string,
+      type: string,
+      providerSubscriptionId: string,
+      revokedAt: number,
+    ): Effect.Effect<void, HttpError> =>
+      relay
+        .notify(machineId, {
+          _tag: "subscription_revoked",
+          connectionId,
+          subscriptionType: type,
+          providerSubscriptionId,
+          revokedAt,
+        })
+        .pipe(Effect.mapError(() => internalError("The relay could not be notified")));
+
+    const handleRevocation = (
+      account: TwitchAccountRow,
+      subscription: WebhookSubscription,
+      now: number,
+    ): Effect.Effect<void, HttpError> =>
+      Effect.gen(function* () {
+        const row = yield* store.findSubscriptionByProviderId(subscription.id);
+        if (Option.isNone(row)) {
+          yield* store.markSubscriptionRevoked(subscription.id, now, subscription.status);
+          return;
+        }
+        const stored = row.value;
+        const reason = subscription.status;
+
+        if (recoverableRevocation(reason)) {
+          const recovered = yield* Effect.gen(function* () {
+            const appTokenValue = yield* appAccessToken;
+            yield* twitch.deleteEventSubSubscription(appTokenValue, subscription.id).pipe(
+              Effect.catchTag("TwitchError", (failure) =>
+                failure.status === 404 ? Effect.void : Effect.fail(failure),
+              ),
+            );
+            const webhookSecret = yield* openSecret(account.secrets.webhookSecret);
+            return yield* twitch.createEventSubSubscription(appTokenValue, {
+              type: stored.type,
+              version: stored.version,
+              condition: stored.condition,
+              callback: `${config.publicOrigin}/webhooks/twitch/eventsub/${account.id}`,
+              secret: webhookSecret,
+            });
+          }).pipe(Effect.result);
+
+          if (recovered._tag === "Success") {
+            yield* store.upsertSubscription({
+              ...stored,
+              providerSubscriptionId: recovered.success.id,
+              status: "enabled",
+              lastError: null,
+              updatedAt: now,
+            });
+            return;
+          }
+          yield* store.markSubscriptionRevoked(
+            subscription.id,
+            now,
+            `${reason}: ${recovered.failure.message}`,
+          );
+        } else {
+          yield* store.markSubscriptionRevoked(subscription.id, now, reason);
+          if (reason === "authorization_revoked" || reason === "user_removed")
+            yield* store.setAccountNeedsReauth(account.id, true, now);
+        }
+
+        yield* notifyRevoked(
+          stored.machineId,
+          account.id,
+          stored.type,
+          subscription.id,
+          now,
+        );
+      });
+
     const handleWebhook = (
       request: HttpRequest,
       accountId: string,
@@ -648,66 +990,53 @@ export const makeCloudApp = (
       Effect.gen(function* () {
         const account = yield* store.findAccount(accountId);
         if (Option.isNone(account)) return yield* notFound("Unknown EventSub endpoint");
-        const messageId = header(request, "twitch-eventsub-message-id");
-        const timestamp = header(request, "twitch-eventsub-message-timestamp");
-        const signature = header(request, "twitch-eventsub-message-signature");
-        const messageType = header(request, "twitch-eventsub-message-type");
-        if (
-          messageId === undefined ||
-          timestamp === undefined ||
-          signature === undefined ||
-          messageType === undefined
-        )
+        const messageType = header(request, EventSub.MESSAGE_TYPE_HEADER);
+        if (messageType === undefined)
           return yield* badRequest("Missing Twitch EventSub headers");
-        const occurredAt = Date.parse(timestamp);
-        if (!Number.isFinite(occurredAt)) return yield* badRequest("Invalid EventSub timestamp");
         const now = yield* Clock.currentTimeMillis;
-        if (Math.abs(now - occurredAt) > config.webhookTimestampToleranceMs)
-          return yield* forbidden("EventSub timestamp is outside the allowed window");
-
         const webhookSecret = yield* openSecret(account.value.secrets.webhookSecret);
-        const verified = yield* verifyEventSubSignature(
-          webhookSecret,
-          messageId,
-          timestamp,
-          request.body,
-          signature,
-        ).pipe(Effect.catch(() => Effect.succeed(false)));
-        if (!verified) return yield* forbidden("Invalid EventSub signature");
 
-        const delivery = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(EventSubDelivery),
-        )(new TextDecoder().decode(request.body)).pipe(
-          Effect.mapError(() => badRequest("Invalid EventSub delivery")),
+        yield* EventSub.verifyWebhook({
+          headers: request.headers,
+          body: request.body,
+          secret: webhookSecret,
+          now,
+          toleranceMs: config.webhookTimestampToleranceMs,
+        }).pipe(
+          Effect.mapError((failure) =>
+            failure.code === "missing-header" ||
+            failure.code === "invalid-timestamp" ||
+            failure.code === "crypto-unavailable"
+              ? badRequest(failure.message)
+              : forbidden(failure.message),
+          ),
         );
+
+        const delivery = yield* parseWebhook(new TextDecoder().decode(request.body));
         if (!belongsToAccount(delivery.subscription.condition, account.value.twitchUserId))
           return yield* badRequest("EventSub condition does not belong to this connection");
 
-        if (messageType === "webhook_callback_verification") {
-          if (delivery.challenge === undefined) return yield* badRequest("Missing challenge");
+        if (delivery._tag === "verification") {
+          if (messageType !== "webhook_callback_verification")
+            return yield* badRequest("EventSub message type does not match its body");
           return text(200, delivery.challenge);
         }
 
-        if (messageType === "revocation") {
-          const subscription = yield* store.findSubscriptionByProviderId(
-            delivery.subscription.id,
-          );
-          yield* store.markSubscriptionRevoked(delivery.subscription.id, now);
-          if (Option.isSome(subscription)) {
-            yield* relay
-              .notify(subscription.value.machineId, {
-                _tag: "subscription_revoked",
-                connectionId: account.value.id,
-                subscriptionType: subscription.value.type,
-                providerSubscriptionId: delivery.subscription.id,
-                revokedAt: now,
-              })
-              .pipe(Effect.mapError(() => internalError("The relay could not be notified")));
-          }
+        if (delivery._tag === "revocation") {
+          if (messageType !== "revocation")
+            return yield* badRequest("EventSub message type does not match its body");
+          yield* handleRevocation(account.value, delivery.subscription, now);
           return { status: 204 };
         }
 
-        if (messageType !== "notification") return yield* badRequest("Unknown EventSub message type");
+        if (messageType !== "notification")
+          return yield* badRequest("EventSub message type does not match its body");
+        const messageId = header(request, EventSub.MESSAGE_ID_HEADER);
+        const timestamp = header(request, EventSub.MESSAGE_TIMESTAMP_HEADER);
+        if (messageId === undefined || timestamp === undefined)
+          return yield* badRequest("Missing Twitch EventSub headers");
+        const occurredAt = Date.parse(timestamp);
+        if (!Number.isFinite(occurredAt)) return yield* badRequest("Invalid EventSub timestamp");
         if (yield* store.hasWebhookDelivery(messageId)) return { status: 204 };
 
         const byProvider = yield* store.findSubscriptionByProviderId(delivery.subscription.id);
@@ -728,9 +1057,9 @@ export const makeCloudApp = (
         }
 
         const envelope: EventEnvelope = {
-          id: `twitch:${messageId}`,
-          integration: "twitch",
-          topic: twitchTopic(delivery.subscription.type),
+          id: `${Protocol.INTEGRATION}:${messageId}`,
+          integration: Protocol.INTEGRATION,
+          topic: Protocol.topicKey(delivery.subscription.type),
           connectionId: account.value.id,
           occurredAt,
           receivedAt: now,

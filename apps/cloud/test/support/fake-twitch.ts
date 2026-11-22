@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Duration, Effect } from "effect";
 
 import type {
   CreateEventSubSubscription,
@@ -13,6 +13,8 @@ export interface FakeTwitchOptions {
   readonly user?: TwitchUser;
   readonly tokens?: Partial<TwitchTokenSet>;
   readonly helix?: (call: HelixCall) => { readonly status: number; readonly body: unknown };
+  /** Adds latency to refresh so tests can exercise the refresh lease. */
+  readonly refreshDelayMs?: number;
 }
 
 export interface FakeTwitch {
@@ -45,11 +47,30 @@ export const makeFakeTwitch = (options: FakeTwitchOptions = {}): FakeTwitch => {
   let nextSubscription = 1;
 
   const service: TwitchApiService = {
+    authorizeUrl: (input) => {
+      const url = new URL("http://twitch.test/oauth2/authorize");
+      url.searchParams.set("client_id", "test-client-id");
+      url.searchParams.set("redirect_uri", input.redirectUri);
+      url.searchParams.set("response_type", "code");
+      url.searchParams.set("scope", input.scopes.join(" "));
+      url.searchParams.set("state", input.state);
+      if (input.forceVerify === true) url.searchParams.set("force_verify", "true");
+      return url.toString();
+    },
     exchangeAuthorizationCode: () => Effect.succeed(tokens),
     refresh: (refreshToken) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        if (options.refreshDelayMs !== undefined)
+          yield* Effect.sleep(Duration.millis(options.refreshDelayMs));
         refreshCalls.push(refreshToken);
         return { ...tokens, accessToken: `refreshed-${refreshCalls.length}` };
+      }),
+    validateToken: () =>
+      Effect.succeed({
+        userId: user.id,
+        login: user.login,
+        scopes: tokens.scopes,
+        expiresAt: Date.now() + 3_600_000,
       }),
     clientCredentials: Effect.succeed({
       accessToken: "app-access-token",

@@ -1,12 +1,13 @@
-// Local demo: requires `pnpm dev:local` (wrangler dev --local) to be running on :8787.
+// Local demo: requires `pnpm dev` (alchemy dev, local state + workerd) on :1338.
 // It starts a fake Twitch provider on :4010, runs OAuth/pairing/reconcile, sends a signed
 // EventSub notification while the agent is offline and another while it is connected, and
 // prints what the relay WebSocket delivers. No real Twitch credentials are used.
+// Override the cloud URL with BALLAST_CLOUD_URL (e.g. :1339).
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 
-const cloud = "http://127.0.0.1:8787";
+const cloud = process.env.BALLAST_CLOUD_URL ?? "http://127.0.0.1:1338";
 const twitch = "http://127.0.0.1:4010";
 const encoder = new TextEncoder();
 
@@ -53,6 +54,13 @@ const fakeTwitch = createServer(async (req, res) => {
           id: "12345",
           login: "streamer",
           display_name: "Streamer",
+          type: "",
+          broadcaster_type: "",
+          description: "",
+          profile_image_url: "",
+          offline_image_url: "",
+          view_count: 0,
+          created_at: "2020-01-01T00:00:00.000Z",
           email: "streamer@example.com",
         },
       ],
@@ -71,6 +79,7 @@ const fakeTwitch = createServer(async (req, res) => {
       version: payload.version,
       condition: payload.condition,
       status: "enabled",
+      created_at: new Date().toISOString(),
       transport: { method: "webhook", callback: payload.transport.callback },
     });
     return json(res, 202, { data: [providerSubscriptions.at(-1)] });
@@ -211,7 +220,7 @@ try {
   });
   console.log("offline webhook:", offlineResponse.status);
 
-  const socket = new WebSocket(`ws://127.0.0.1:8787/relay/${claim.body.machineId}`, {
+  const socket = new WebSocket(`${cloud.replace(/^http/, "ws")}/relay/${claim.body.machineId}`, {
     headers: { authorization: `Bearer ${machineToken}` },
   });
   const messages = [];

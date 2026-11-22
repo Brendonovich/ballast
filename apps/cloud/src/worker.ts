@@ -1,5 +1,6 @@
 import type { CloudEnv } from "../alchemy.run.ts";
 import { Effect, Result } from "effect";
+import { FetchHttpClient } from "effect/http";
 
 import { makeCloudApp, type CloudAppService } from "./app.ts";
 import { makeCloudConfig } from "./config.ts";
@@ -47,11 +48,12 @@ const appFor = (env: CloudEnv): Promise<CloudAppService> => {
         notify: (machineId, message) =>
           Effect.promise(() => env.RELAY.getByName(machineId).notify(machineId, message)),
       };
+      const twitch = yield* makeTwitchApi(config).pipe(Effect.provide(FetchHttpClient.layer));
       return yield* makeCloudApp({
         config,
         store: makeD1CloudStore(env.DB),
         vault,
-        twitch: makeTwitchApi(config),
+        twitch,
         relay,
       });
     }),

@@ -11,6 +11,7 @@ export interface MockObsServerOptions {
 
 export interface MockObsServer {
   readonly url: string;
+  readonly httpUrl: string;
   readonly port: number;
   readonly currentScene: () => string;
   readonly requests: () => ReadonlyArray<string>;
@@ -56,7 +57,18 @@ export const startMockObsServer = async (
     }
   };
 
-  const http = createServer();
+  const http = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (request.method === "GET" && url.pathname === "/demo/scene") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({ scene: currentScene, requests: [...requests] }),
+      );
+      return;
+    }
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("not found");
+  });
   const wss = new WebSocketServer({ server: http });
 
   wss.on("connection", (socket) => {
@@ -199,6 +211,7 @@ export const startMockObsServer = async (
 
   return {
     url: "ws://127.0.0.1:" + port,
+    httpUrl: "http://127.0.0.1:" + port,
     port,
     currentScene: () => currentScene,
     requests: () => [...requests],

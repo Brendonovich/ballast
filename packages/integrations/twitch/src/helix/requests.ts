@@ -549,3 +549,6 @@ export const requests = {
 
 export type Requests = typeof requests;
 export type RequestName = keyof Requests;
+
+export const isRequestName = (value: string): value is RequestName =>
+  Object.hasOwn(requests, value);

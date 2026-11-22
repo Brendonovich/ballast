@@ -5,5 +5,13 @@
     "outDir": "dist/types",
     "types": ["node", "@cloudflare/workers-types"]
   },
-  "include": ["src", "test", "alchemy.run.ts"]
+  "include": ["src", "test", "alchemy.run.ts"],
+  "references": [
+    {
+      "path": "../../packages/cloud-protocol"
+    },
+    {
+      "path": "../../packages/integrations/twitch"
+    }
+  ]
 }

@@ -14,6 +14,7 @@
     "@ballast/core": "workspace:*",
     "@ballast/fake": "workspace:*",
     "@ballast/module-obs": "workspace:*",
+    "@ballast/module-twitch": "workspace:*",
     "effect": "catalog:"
   }
 }

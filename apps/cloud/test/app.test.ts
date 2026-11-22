@@ -1,38 +1,89 @@
 import { describe, expect, it } from "vitest";
+import { EventSub } from "@ballast/module-twitch";
 import { Effect, Option } from "effect";
 
-import {
-  computeEventSubSignature,
-  verifyEventSubSignature,
-} from "../src/eventsub.ts";
+import { PAIRING_CLAIM_LIMIT, PAIRING_CODE_CREATE_LIMIT } from "../src/app.ts";
 import { makeTestApp } from "./support/test-app.ts";
 
 const json = (body: string | undefined) =>
   body === undefined ? undefined : JSON.parse(body) as unknown;
 
+const postRevocation = async (
+  test: Awaited<ReturnType<typeof makeTestApp>>,
+  account: { readonly id: string; readonly twitchUserId: string },
+  webhookSecret: string,
+  options: {
+    readonly messageId: string;
+    readonly status: string;
+  },
+) => {
+  const timestamp = new Date().toISOString();
+  const payload = JSON.stringify({
+    subscription: {
+      id: "sub-1",
+      status: options.status,
+      type: "channel.channel_points_custom_reward_redemption.add",
+      version: "1",
+      condition: { broadcaster_user_id: account.twitchUserId },
+    },
+  });
+  const signature = await Effect.runPromise(
+    EventSub.computeSignature({
+      secret: webhookSecret,
+      messageId: options.messageId,
+      timestamp,
+      body: payload,
+    }),
+  );
+  return test.request({
+    method: "POST",
+    path: `/webhooks/twitch/eventsub/${account.id}`,
+    headers: {
+      "twitch-eventsub-message-id": options.messageId,
+      "twitch-eventsub-message-timestamp": timestamp,
+      "twitch-eventsub-message-signature": signature,
+      "twitch-eventsub-message-type": "revocation",
+      "content-type": "application/json",
+    },
+    rawBody: payload,
+  });
+};
+
 describe("EventSub signature verification", () => {
-  it("accepts Twitch's documented HMAC scheme and rejects tampering", async () => {
+  it("delegates to the shared Twitch module's HMAC scheme", async () => {
     const messageId = "msg-1";
     const timestamp = "2026-11-22T10:00:00.000Z";
-    const body = new TextEncoder().encode('{"hello":"world"}');
+    const body = '{"hello":"world"}';
+    const headers = {
+      "twitch-eventsub-message-id": messageId,
+      "twitch-eventsub-message-timestamp": timestamp,
+      "twitch-eventsub-message-signature": "",
+      "twitch-eventsub-message-type": "notification",
+    };
     const signature = await Effect.runPromise(
-      computeEventSubSignature("secret", messageId, timestamp, body),
+      EventSub.computeSignature({ secret: "secret", messageId, timestamp, body }),
     );
-    expect(
-      await Effect.runPromise(
-        verifyEventSubSignature("secret", messageId, timestamp, body, signature),
+    expect(signature).toMatch(/^sha256=[0-9a-f]{64}$/);
+    await expect(
+      Effect.runPromise(
+        EventSub.verifyWebhook({
+          headers: { ...headers, "twitch-eventsub-message-signature": signature },
+          body,
+          secret: "secret",
+          now: Date.parse(timestamp),
+        }),
       ),
-    ).toBe(true);
-    expect(
-      await Effect.runPromise(
-        verifyEventSubSignature("secret", messageId, timestamp, new TextEncoder().encode("{}"), signature),
+    ).resolves.toBeUndefined();
+    await expect(
+      Effect.runPromise(
+        EventSub.verifyWebhook({
+          headers: { ...headers, "twitch-eventsub-message-signature": signature },
+          body: "{}",
+          secret: "secret",
+          now: Date.parse(timestamp),
+        }),
       ),
-    ).toBe(false);
-    expect(
-      await Effect.runPromise(
-        verifyEventSubSignature("other", messageId, timestamp, body, signature),
-      ),
-    ).toBe(false);
+    ).rejects.toMatchObject({ code: "invalid-signature" });
   });
 });
 
@@ -209,12 +260,12 @@ describe("EventSub webhook ingress", () => {
     const timestamp = options.timestamp ?? new Date().toISOString();
     const body = JSON.stringify(options.payload);
     const signature = await Effect.runPromise(
-      computeEventSubSignature(
-        options.secret ?? webhookSecret,
-        options.messageId,
+      EventSub.computeSignature({
+        secret: options.secret ?? webhookSecret,
+        messageId: options.messageId,
         timestamp,
-        new TextEncoder().encode(body),
-      ),
+        body,
+      }),
     );
     return test.request({
       method: "POST",
@@ -229,6 +280,8 @@ describe("EventSub webhook ingress", () => {
       rawBody: body,
     });
   };
+
+
 
   it("answers the challenge, verifies, dedupes and relays notifications", async () => {
     const test = await makeTestApp();
@@ -317,6 +370,202 @@ describe("EventSub webhook ingress", () => {
     ]);
     const stored = await Effect.runPromise(test.store.findSubscriptionByProviderId("sub-1"));
     expect(Option.getOrNull(stored)?.status).toBe("revoked");
+  });
+});
+
+
+describe("deployment hardening", () => {
+  const startOAuth = async (test: Awaited<ReturnType<typeof makeTestApp>>) => {
+    const start = await test.request({
+      method: "GET",
+      path: "/oauth/twitch/start?scopes=user:read:email,channel:read:redemptions",
+    });
+    const state = new URL(start.headers?.location ?? "").searchParams.get("state");
+    return test.request({
+      method: "GET",
+      path: `/oauth/twitch/callback?code=code-1&state=${state ?? ""}&format=json`,
+    });
+  };
+
+  it("rate-limits pairing claims per client IP", async () => {
+    const test = await makeTestApp();
+    for (let attempt = 0; attempt < PAIRING_CLAIM_LIMIT; attempt++) {
+      const response = await test.request({
+        method: "POST",
+        path: "/api/pairing/claim",
+        headers: { "cf-connecting-ip": "203.0.113.7" },
+        body: { code: "NOPE2345", machineName: "Attacker" },
+      });
+      expect(response.status).toBe(404);
+    }
+    const limited = await test.request({
+      method: "POST",
+      path: "/api/pairing/claim",
+      headers: { "cf-connecting-ip": "203.0.113.7" },
+      body: { code: "NOPE2345", machineName: "Attacker" },
+    });
+    expect(limited.status).toBe(429);
+    expect(json(limited.body)).toMatchObject({
+      error: { tag: "forbidden", details: { limit: PAIRING_CLAIM_LIMIT } },
+    });
+  });
+
+  it("rate-limits pairing-code creation per user", async () => {
+    const test = await makeTestApp();
+    for (let attempt = 0; attempt < PAIRING_CODE_CREATE_LIMIT; attempt++) {
+      const callback = await startOAuth(test);
+      expect(callback.status).toBe(200);
+    }
+    const limited = await startOAuth(test);
+    expect(limited.status).toBe(429);
+  });
+
+  it("resubscribes after a recoverable revocation", async () => {
+    const test = await makeTestApp();
+    const { account, webhookSecret } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+    await test.seedSubscription(account, machine.machineId, { providerSubscriptionId: "sub-1" });
+
+    const revocation = await postRevocation(test, account, webhookSecret, {
+      messageId: "revoke-recoverable",
+      status: "notification_failures_exceeded",
+    });
+    expect(revocation.status).toBe(204);
+    expect(test.twitch.deletedSubscriptions).toEqual(["sub-1"]);
+    expect(test.twitch.createdSubscriptions).toHaveLength(1);
+    expect(test.relay.notifications).toHaveLength(0);
+
+    const stored = await Effect.runPromise(test.store.findSubscriptionByProviderId("sub_1"));
+    expect(Option.getOrNull(stored)).toMatchObject({
+      status: "enabled",
+      providerSubscriptionId: "sub_1",
+      lastError: null,
+    });
+  });
+
+  it("marks the connection as needing re-auth on an authorization revocation", async () => {
+    const test = await makeTestApp();
+    const { account, webhookSecret } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+    await test.seedSubscription(account, machine.machineId, { providerSubscriptionId: "sub-1" });
+
+    const revocation = await postRevocation(test, account, webhookSecret, {
+      messageId: "revoke-auth",
+      status: "authorization_revoked",
+    });
+    expect(revocation.status).toBe(204);
+    expect(test.twitch.createdSubscriptions).toHaveLength(0);
+    expect(test.relay.notifications).toEqual([
+      expect.objectContaining({
+        machineId: machine.machineId,
+        message: expect.objectContaining({
+          _tag: "subscription_revoked",
+          providerSubscriptionId: "sub-1",
+        }),
+      }),
+    ]);
+
+    const storedAccount = await Effect.runPromise(test.store.findAccount(account.id));
+    expect(Option.getOrNull(storedAccount)?.needsReauth).toBe(true);
+    const connections = await test.request({
+      method: "GET",
+      path: "/api/connections",
+      headers: { authorization: `Bearer ${machine.token}` },
+    });
+    expect(json(connections.body)).toMatchObject({
+      connections: [expect.objectContaining({ id: account.id, needsReauth: true })],
+    });
+  });
+
+  it("refreshes once when two requests race for an expired token", async () => {
+    const test = await makeTestApp({ twitch: { refreshDelayMs: 50 } });
+    const { account } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+    const stored = await Effect.runPromise(test.store.findAccount(account.id));
+    if (Option.isNone(stored)) throw new Error("account missing");
+    await Effect.runPromise(
+      test.store.updateAccountSecrets(
+        account.id,
+        { ...stored.value.secrets, accessTokenExpiresAt: 0 },
+        Date.now(),
+      ),
+    );
+
+    const requestToken = () =>
+      test.request({
+        method: "POST",
+        path: "/api/tokens/twitch",
+        headers: { authorization: `Bearer ${machine.token}` },
+        body: { connectionId: account.id },
+      });
+    const [first, second] = await Promise.all([requestToken(), requestToken()]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(test.twitch.refreshCalls).toEqual(["refresh-token-1"]);
+  });
+
+  it("reports a retryable error while another request holds the refresh lease", async () => {
+    const test = await makeTestApp();
+    const { account } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+    const now = Date.now();
+    await Effect.runPromise(
+      test.store.updateAccountSecrets(
+        account.id,
+        { ...account.secrets, accessTokenExpiresAt: 0 },
+        now,
+      ),
+    );
+    await Effect.runPromise(
+      test.store.tryAcquireRefreshLock(account.id, "held-by-test", now, now + 100),
+    );
+    const response = await test.request({
+      method: "POST",
+      path: "/api/tokens/twitch",
+      headers: { authorization: `Bearer ${machine.token}` },
+      body: { connectionId: account.id },
+    });
+    expect(response.status).toBe(502);
+    expect(json(response.body)).toMatchObject({
+      error: { tag: "upstream_error", details: { retryable: true } },
+    });
+
+    await Effect.runPromise(test.store.releaseRefreshLock(account.id, "held-by-test"));
+    const retry = await test.request({
+      method: "POST",
+      path: "/api/tokens/twitch",
+      headers: { authorization: `Bearer ${machine.token}` },
+      body: { connectionId: account.id },
+    });
+    expect(retry.status).toBe(200);
+    expect(test.twitch.refreshCalls).toEqual(["refresh-token-1"]);
+  });
+
+  it("rejects a known subscription when the connection lacks its scopes", async () => {
+    const test = await makeTestApp();
+    const { account } = await test.seedAccount({ scopes: ["user:read:email"] });
+    const machine = await test.seedMachine(account.userId);
+    const response = await test.request({
+      method: "POST",
+      path: "/api/twitch/subscriptions/reconcile",
+      headers: { authorization: `Bearer ${machine.token}` },
+      body: {
+        connectionId: account.id,
+        subscriptions: [
+          {
+            type: "channel.channel_points_custom_reward_redemption.add",
+            version: 1,
+            condition: { broadcaster_user_id: account.twitchUserId },
+            onStale: "drop",
+            maxAgeMs: 60_000,
+          },
+        ],
+      },
+    });
+    expect(response.status).toBe(403);
+    expect(json(response.body)).toMatchObject({
+      error: { tag: "missing_scopes", details: { missing: ["channel:read:redemptions"] } },
+    });
   });
 });
 

@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { Schema } from "effect";
 import type { ConnectionRef } from "./connection.ts";
-import type { OnStale, TopicManifest } from "./manifest.ts";
+import type { OnStale, TopicCondition, TopicManifest } from "./manifest.ts";
 import { currentPhase } from "./phase.ts";
 import { EventBus, ManifestRecorder } from "./services.ts";
 import type { EventBusService, ManifestRecorderService } from "./services.ts";
@@ -23,22 +23,35 @@ export interface TopicMetadata<A, Integration extends string = string> {
   readonly maxAgeMs: number;
   /** Payload schema, when the integration has one. */
   readonly schema?: Schema.Schema<A>;
+  /**
+   * Resolved transport subscription parameters, when the topic has any. Set by
+   * `subscribe` from the integration's `condition` builder, so the recorder
+   * can put it in the manifest without knowing the topic's options.
+   */
+  readonly condition?: TopicCondition;
   /** Bus key: `integration/slot/topic`. */
   readonly key: (connection: ConnectionRef<Integration>) => string;
 }
 
-export interface Topic<A, Integration extends string = string> extends TopicMetadata<A, Integration> {
+export interface Topic<
+  A,
+  Integration extends string = string,
+  Options = void,
+> extends TopicMetadata<A, Integration> {
   /**
    * Subscribe to this topic on a connection from the same integration. The
-   * handler payload is inferred from the topic's schema.
+   * handler payload is inferred from the topic's schema. Integrations that
+   * need provider-side filters (for example a Twitch reward id) accept them as
+   * the third argument and turn them into manifest `condition` entries.
    */
   readonly subscribe: (
     connection: ConnectionRef<Integration>,
     handler: (event: A) => Effect.Effect<void, never, never>,
+    options?: Options,
   ) => Effect.Effect<void, never, EventHost>;
 }
 
-export interface TopicSpec<A, Integration extends string = string> {
+export interface TopicSpec<A, Integration extends string = string, Options = void> {
   readonly integration: Integration;
   /** The topic name, e.g. `fake/tick`. */
   readonly topic: string;
@@ -46,14 +59,23 @@ export interface TopicSpec<A, Integration extends string = string> {
   readonly onStale?: OnStale;
   readonly maxAgeMs?: number;
   readonly schema?: Schema.Schema<A>;
+  /**
+   * Build the transport subscription parameters from the connection and the
+   * per-subscription options. Identity references use `{ slot }` so planning
+   * stays offline.
+   */
+  readonly condition?: (
+    connection: ConnectionRef<Integration>,
+    options: Options | undefined,
+  ) => TopicCondition | undefined;
 }
 
 export const DEFAULT_MAX_AGE_MS = 60_000;
 
 /** Build a typed topic definition. Pure: no recorder or connection needed. */
-export const Topic = <A, Integration extends string>(
-  spec: TopicSpec<A, Integration>,
-): Topic<A, Integration> => {
+export const Topic = <A, Integration extends string, Options = void>(
+  spec: TopicSpec<A, Integration, Options>,
+): Topic<A, Integration, Options> => {
   const metadata: TopicMetadata<A, Integration> = {
     integration: spec.integration,
     topic: spec.topic,
@@ -66,8 +88,12 @@ export const Topic = <A, Integration extends string>(
 
   return {
     ...metadata,
-    subscribe: (connection, handler) =>
-      Effect.flatMap(EventHost, (host) => host.subscribe(metadata, connection, handler)),
+    subscribe: (connection, handler, options) => {
+      const condition = spec.condition?.(connection, options);
+      const bound: TopicMetadata<A, Integration> =
+        condition === undefined ? metadata : { ...metadata, condition };
+      return Effect.flatMap(EventHost, (host) => host.subscribe(bound, connection, handler));
+    },
   };
 };
 
@@ -81,6 +107,7 @@ export const toTopicManifest = <A, Integration extends string>(
   scopes: [...topic.scopes],
   onStale: topic.onStale,
   maxAgeMs: topic.maxAgeMs,
+  ...(topic.condition === undefined ? {} : { condition: topic.condition }),
 });
 
 export interface EventHostService {

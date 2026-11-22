@@ -35,6 +35,26 @@ export type ConnectionManifest = Schema.Schema.Type<typeof ConnectionManifestSch
 export const OnStaleSchema = Schema.Literals(["drop", "deliver"]);
 export type OnStale = Schema.Schema.Type<typeof OnStaleSchema>;
 
+/**
+ * A transport-specific subscription condition value.
+ *
+ * A literal string is sent to the provider as-is (for example an EventSub
+ * `reward_id`). `{ slot }` refers to the identity of another connection slot
+ * from the same integration; the agent resolves it (for Twitch, to the
+ * account's user id) when it creates the subscription.
+ */
+export const TopicConditionValueSchema = Schema.Union([
+  Schema.String,
+  Schema.Struct({ slot: Schema.String }),
+]);
+export type TopicConditionValue = Schema.Schema.Type<typeof TopicConditionValueSchema>;
+
+export const TopicConditionSchema = Schema.Record(
+  Schema.String,
+  TopicConditionValueSchema,
+);
+export type TopicCondition = Schema.Schema.Type<typeof TopicConditionSchema>;
+
 export const TopicManifestSchema = Schema.Struct({
   integration: Schema.String,
   slot: Schema.String,
@@ -42,6 +62,12 @@ export const TopicManifestSchema = Schema.Struct({
   scopes: Schema.Array(Schema.String),
   onStale: OnStaleSchema,
   maxAgeMs: Schema.Number,
+  /**
+   * Extra parameters the transport needs to create the subscription, such as
+   * Twitch EventSub conditions. Values that depend on the account identity use
+   * `{ slot }` instead of a user id, so planning never needs a live account.
+   */
+  condition: Schema.optional(TopicConditionSchema),
 });
 export type TopicManifest = Schema.Schema.Type<typeof TopicManifestSchema>;
 
@@ -90,8 +116,16 @@ export const emptyManifest = (scriptId: string): Manifest => ({
 export const connectionKey = (connection: ConnectionManifest): string =>
   `${connection.integration}/${connection.slot}`;
 
+const topicConditionKey = (condition: TopicCondition): string =>
+  JSON.stringify(
+    Object.keys(condition)
+      .sort()
+      .map((key) => [key, condition[key]]),
+  );
+
 export const topicManifestKey = (topic: TopicManifest): string =>
-  `${topic.integration}/${topic.slot}/${topic.topic}`;
+  `${topic.integration}/${topic.slot}/${topic.topic}` +
+  (topic.condition === undefined ? "" : `#${topicConditionKey(topic.condition)}`);
 
 export const requestManifestKey = (request: RequestManifest): string =>
   `${request.integration}/${request.slot}/${request.request}`;

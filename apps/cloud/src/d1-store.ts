@@ -44,6 +44,9 @@ const AccountDb = Schema.Struct({
   scopesJson: Schema.String,
   secretsJson: Schema.String,
   machineId: Schema.NullOr(Schema.String),
+  needsReauth: Schema.Number,
+  refreshLock: Schema.NullOr(Schema.String),
+  refreshLockUntil: Schema.Number,
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
 });
@@ -80,6 +83,9 @@ const accountToValues = (row: TwitchAccountRow) => [
   encodeJson(row.scopes),
   encodeJson(row.secrets),
   row.machineId,
+  row.needsReauth ? 1 : 0,
+  row.refreshLock,
+  row.refreshLockUntil,
   row.createdAt,
   row.updatedAt,
 ];
@@ -95,6 +101,9 @@ const accountFromDb = (row: unknown): TwitchAccountRow => {
     scopes: decodeJson(Schema.Array(Schema.String), decoded.scopesJson),
     secrets: decodeJson(AccountSecrets, decoded.secretsJson),
     machineId: decoded.machineId,
+    needsReauth: decoded.needsReauth === 1,
+    refreshLock: decoded.refreshLock,
+    refreshLockUntil: decoded.refreshLockUntil,
     createdAt: decoded.createdAt,
     updatedAt: decoded.updatedAt,
   };
@@ -213,16 +222,16 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
 
     upsertTwitchAccount: (row) =>
       run(
-        "INSERT INTO twitch_accounts (id, user_id, twitch_user_id, login, display_name, scopes_json, secrets_json, machine_id, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, twitch_user_id = excluded.twitch_user_id, login = excluded.login, display_name = excluded.display_name, scopes_json = excluded.scopes_json, secrets_json = excluded.secrets_json, machine_id = excluded.machine_id, updated_at = excluded.updated_at",
+        "INSERT INTO twitch_accounts (id, user_id, twitch_user_id, login, display_name, scopes_json, secrets_json, machine_id, needs_reauth, refresh_lock, refresh_lock_until, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, twitch_user_id = excluded.twitch_user_id, login = excluded.login, display_name = excluded.display_name, scopes_json = excluded.scopes_json, secrets_json = excluded.secrets_json, machine_id = excluded.machine_id, needs_reauth = excluded.needs_reauth, refresh_lock = excluded.refresh_lock, refresh_lock_until = excluded.refresh_lock_until, updated_at = excluded.updated_at",
         ...accountToValues(row),
       ).pipe(Effect.asVoid),
 
     findAccount: (id) =>
       findOne(
         first(
-          "SELECT id, user_id AS userId, twitch_user_id AS twitchUserId, login, display_name AS displayName, scopes_json AS scopesJson, secrets_json AS secretsJson, machine_id AS machineId, created_at AS createdAt, updated_at AS updatedAt FROM twitch_accounts WHERE id = ?",
+          "SELECT id, user_id AS userId, twitch_user_id AS twitchUserId, login, display_name AS displayName, scopes_json AS scopesJson, secrets_json AS secretsJson, machine_id AS machineId, needs_reauth AS needsReauth, refresh_lock AS refreshLock, refresh_lock_until AS refreshLockUntil, created_at AS createdAt, updated_at AS updatedAt FROM twitch_accounts WHERE id = ?",
           id,
         ),
         accountFromDb,
@@ -231,7 +240,7 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
     findAccountByTwitchUser: (userId, twitchUserId) =>
       findOne(
         first(
-          "SELECT id, user_id AS userId, twitch_user_id AS twitchUserId, login, display_name AS displayName, scopes_json AS scopesJson, secrets_json AS secretsJson, machine_id AS machineId, created_at AS createdAt, updated_at AS updatedAt FROM twitch_accounts WHERE user_id = ? AND twitch_user_id = ?",
+          "SELECT id, user_id AS userId, twitch_user_id AS twitchUserId, login, display_name AS displayName, scopes_json AS scopesJson, secrets_json AS secretsJson, machine_id AS machineId, needs_reauth AS needsReauth, refresh_lock AS refreshLock, refresh_lock_until AS refreshLockUntil, created_at AS createdAt, updated_at AS updatedAt FROM twitch_accounts WHERE user_id = ? AND twitch_user_id = ?",
           userId,
           twitchUserId,
         ),
@@ -240,17 +249,19 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
 
     listAccountsByUser: (userId) =>
       all(
-        "SELECT id, user_id AS userId, twitch_user_id AS twitchUserId, login, display_name AS displayName, scopes_json AS scopesJson, secrets_json AS secretsJson, machine_id AS machineId, created_at AS createdAt, updated_at AS updatedAt FROM twitch_accounts WHERE user_id = ? ORDER BY created_at",
+        "SELECT id, user_id AS userId, twitch_user_id AS twitchUserId, login, display_name AS displayName, scopes_json AS scopesJson, secrets_json AS secretsJson, machine_id AS machineId, needs_reauth AS needsReauth, refresh_lock AS refreshLock, refresh_lock_until AS refreshLockUntil, created_at AS createdAt, updated_at AS updatedAt FROM twitch_accounts WHERE user_id = ? ORDER BY created_at",
         userId,
       ).pipe(Effect.map((result) => result.results.map(accountFromDb))),
 
-    updateAccountSecrets: (id, secrets, updatedAt) =>
+    updateAccountSecrets: (id, secrets, updatedAt, lockToken) =>
       run(
-        "UPDATE twitch_accounts SET secrets_json = ?, updated_at = ? WHERE id = ?",
-        encodeJson(secrets),
-        updatedAt,
-        id,
-      ).pipe(Effect.asVoid),
+        lockToken === undefined
+          ? "UPDATE twitch_accounts SET secrets_json = ?, updated_at = ? WHERE id = ?"
+          : "UPDATE twitch_accounts SET secrets_json = ?, updated_at = ?, refresh_lock = NULL, refresh_lock_until = 0 WHERE id = ? AND refresh_lock = ?",
+        ...(lockToken === undefined
+          ? [encodeJson(secrets), updatedAt, id]
+          : [encodeJson(secrets), updatedAt, id, lockToken]),
+      ).pipe(Effect.map((result) => (result.meta.changes ?? 0) > 0)),
 
     updateAccountMachine: (id, machineId, updatedAt) =>
       run(
@@ -259,6 +270,50 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
         updatedAt,
         id,
       ).pipe(Effect.asVoid),
+
+    setAccountNeedsReauth: (id, needsReauth, updatedAt) =>
+      run(
+        "UPDATE twitch_accounts SET needs_reauth = ?, updated_at = ? WHERE id = ?",
+        needsReauth ? 1 : 0,
+        updatedAt,
+        id,
+      ).pipe(Effect.asVoid),
+
+    tryAcquireRefreshLock: (id, lockToken, now, lockUntil) =>
+      run(
+        "UPDATE twitch_accounts SET refresh_lock = ?, refresh_lock_until = ? WHERE id = ? AND (refresh_lock IS NULL OR refresh_lock_until <= ?)",
+        lockToken,
+        lockUntil,
+        id,
+        now,
+      ).pipe(Effect.map((result) => (result.meta.changes ?? 0) > 0)),
+
+    releaseRefreshLock: (id, lockToken) =>
+      run(
+        "UPDATE twitch_accounts SET refresh_lock = NULL, refresh_lock_until = 0 WHERE id = ? AND refresh_lock = ?",
+        id,
+        lockToken,
+      ).pipe(Effect.asVoid),
+
+    incrementRateLimit: ({ key, windowStart, expiresAt }) =>
+      first<{ count: number }>(
+        "INSERT INTO rate_limits (key, count, window_start, expires_at) VALUES (?, 1, ?, ?) " +
+          "ON CONFLICT(key) DO UPDATE SET " +
+          "count = CASE WHEN rate_limits.window_start = excluded.window_start THEN rate_limits.count + 1 ELSE 1 END, " +
+          "window_start = excluded.window_start, expires_at = excluded.expires_at " +
+          "RETURNING count",
+        key,
+        windowStart,
+        expiresAt,
+      ).pipe(
+        Effect.map((row) => {
+          if (row === null) throw new Error("rate_limits upsert returned no row");
+          return row.count;
+        }),
+      ),
+
+    pruneRateLimits: (before) =>
+      run("DELETE FROM rate_limits WHERE expires_at < ?", before).pipe(Effect.asVoid),
 
     insertPairingCode: (row) =>
       run(
@@ -347,11 +402,12 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
     deleteSubscription: (id) =>
       run("DELETE FROM event_subscriptions WHERE id = ?", id).pipe(Effect.asVoid),
 
-    markSubscriptionRevoked: (providerId, now) =>
+    markSubscriptionRevoked: (providerId, now, reason) =>
       run(
-        "UPDATE event_subscriptions SET status = 'revoked', updated_at = ? WHERE provider_subscription_id = ?",
-        now,
-        providerId,
+        reason === undefined
+          ? "UPDATE event_subscriptions SET status = 'revoked', updated_at = ? WHERE provider_subscription_id = ?"
+          : "UPDATE event_subscriptions SET status = 'revoked', last_error = ?, updated_at = ? WHERE provider_subscription_id = ?",
+        ...(reason === undefined ? [now, providerId] : [reason, now, providerId]),
       ).pipe(Effect.asVoid),
 
     hasWebhookDelivery: (messageId) =>
