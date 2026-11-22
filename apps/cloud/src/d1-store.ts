@@ -1,9 +1,12 @@
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import { Effect, Layer, Option, Schema } from "effect";
 
+import { WebhookStaticResponse as WebhookStaticResponseSchema } from "@ballast/cloud-protocol";
+
 import {
   AccountSecrets,
   CloudStore,
+  HookVerificationConfig,
   MachineRow,
   type CloudStoreService,
   type OAuthStateRow,
@@ -11,6 +14,7 @@ import {
   type SubscriptionOwnerRow,
   type SubscriptionRow,
   type TwitchAccountRow,
+  type WebhookHookRow,
 } from "./store.ts";
 
 type QueryDatabase = Cloudflare.D1.QueryDatabaseClient;
@@ -77,6 +81,47 @@ const SubscriptionOwnerDb = Schema.Struct({
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
 });
+
+const WebhookHookDb = Schema.Struct({
+  id: Schema.String,
+  machineId: Schema.String,
+  hookId: Schema.String,
+  label: Schema.NullOr(Schema.String),
+  verificationJson: Schema.NullOr(Schema.String),
+  secretCiphertext: Schema.NullOr(Schema.String),
+  secretIv: Schema.NullOr(Schema.String),
+  responseJson: Schema.NullOr(Schema.String),
+  maxAgeMs: Schema.Number,
+  onStale: Schema.Literals(["drop", "deliver"]),
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+});
+
+const hookFromDb = (row: unknown): WebhookHookRow => {
+  const decoded = decode(WebhookHookDb, row);
+  return {
+    id: decoded.id,
+    machineId: decoded.machineId,
+    hookId: decoded.hookId,
+    label: decoded.label,
+    verification:
+      decoded.verificationJson === null
+        ? null
+        : decodeJson(HookVerificationConfig, decoded.verificationJson),
+    secret:
+      decoded.secretCiphertext === null || decoded.secretIv === null
+        ? null
+        : { ciphertext: decoded.secretCiphertext, iv: decoded.secretIv },
+    response:
+      decoded.responseJson === null
+        ? null
+        : decodeJson(WebhookStaticResponseSchema, decoded.responseJson),
+    maxAgeMs: decoded.maxAgeMs,
+    onStale: decoded.onStale,
+    createdAt: decoded.createdAt,
+    updatedAt: decoded.updatedAt,
+  };
+};
 
 const decode = <A, I>(schema: Schema.Codec<A, I>, value: unknown): A =>
   Schema.decodeUnknownSync(schema)(value);
@@ -327,6 +372,57 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
 
     pruneRateLimits: (before) =>
       run("DELETE FROM rate_limits WHERE expires_at < ?", before).pipe(Effect.asVoid),
+
+    listHooks: (machineId) =>
+      all(
+        "SELECT id, machine_id AS machineId, hook_id AS hookId, label, verification_json AS verificationJson, secret_ciphertext AS secretCiphertext, secret_iv AS secretIv, response_json AS responseJson, max_age_ms AS maxAgeMs, on_stale AS onStale, created_at AS createdAt, updated_at AS updatedAt FROM webhook_hooks WHERE machine_id = ? ORDER BY created_at",
+        machineId,
+      ).pipe(Effect.map((result) => result.results.map(hookFromDb))),
+
+    findHook: (machineId, hookId) =>
+      findOne(
+        first(
+          "SELECT id, machine_id AS machineId, hook_id AS hookId, label, verification_json AS verificationJson, secret_ciphertext AS secretCiphertext, secret_iv AS secretIv, response_json AS responseJson, max_age_ms AS maxAgeMs, on_stale AS onStale, created_at AS createdAt, updated_at AS updatedAt FROM webhook_hooks WHERE machine_id = ? AND hook_id = ?",
+          machineId,
+          hookId,
+        ),
+        hookFromDb,
+      ),
+
+    replaceHooks: (machineId, rows) =>
+      Effect.gen(function* () {
+        yield* run("DELETE FROM webhook_hooks WHERE machine_id = ?", machineId);
+        for (const row of rows) {
+          yield* run(
+            "INSERT INTO webhook_hooks (id, machine_id, hook_id, label, verification_json, secret_ciphertext, secret_iv, response_json, max_age_ms, on_stale, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row.id,
+            machineId,
+            row.hookId,
+            row.label,
+            row.verification === null ? null : encodeJson(row.verification),
+            row.secret?.ciphertext ?? null,
+            row.secret?.iv ?? null,
+            row.response === null ? null : encodeJson(row.response),
+            row.maxAgeMs,
+            row.onStale,
+            row.createdAt,
+            row.updatedAt,
+          );
+        }
+      }),
+
+    deleteHooks: (machineId, hookIds) =>
+      Effect.gen(function* () {
+        for (const hookId of hookIds)
+          yield* run(
+            "DELETE FROM webhook_hooks WHERE machine_id = ? AND hook_id = ?",
+            machineId,
+            hookId,
+          );
+      }),
+
+    pruneHooks: (before) =>
+      run("DELETE FROM webhook_hooks WHERE updated_at < ?", before).pipe(Effect.asVoid),
 
     insertPairingCode: (row) =>
       run(

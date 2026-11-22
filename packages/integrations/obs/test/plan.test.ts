@@ -16,7 +16,7 @@ describe("plan OBS script", () => {
       const manifest = yield* plan(example);
 
       expect(manifest).toEqual({
-        script: { id: "obs-scene-cycle" },
+        script: { id: "obs-scene" },
         params: [
           {
             key: "scene",

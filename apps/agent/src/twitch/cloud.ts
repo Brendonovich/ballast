@@ -79,6 +79,7 @@ export interface CloudApi {
   readonly reconcile: (
     connectionId: string,
     specs: ReadonlyArray<TwitchSubscriptionSpec>,
+    owner?: string,
   ) => Effect.Effect<void, TwitchTransportError>;
   readonly helix: (
     request: CloudHelixRequest,
@@ -186,10 +187,11 @@ export const makeCloudApi = (options: CloudApiOptions): CloudApi => {
       call("POST", "/api/tokens/twitch", { connectionId }).pipe(
         Effect.map((value) => decode(TwitchTokenResponse, value)),
       ),
-    reconcile: (connectionId, specs) =>
+    reconcile: (connectionId, specs, owner) =>
       call("POST", "/api/twitch/subscriptions/reconcile", {
         connectionId,
         subscriptions: specs,
+        ...(owner === undefined ? {} : { owner }),
       }).pipe(
         Effect.map((value) => {
           decode(ReconcileSubscriptionsResponse, value);
@@ -301,7 +303,9 @@ export const startCloudRelay = (
           return;
         }
         for (const listener of [...listeners]) yield* listener(message);
-        if (message._tag === "event") yield* send({ _tag: "ack", seqs: [message.seq] });
+        if (message._tag === "event" || message._tag === "webhook_delivery") {
+          yield* send({ _tag: "ack", seqs: [message.seq] });
+        }
       });
 
     const handle = (line: string): Effect.Effect<void> =>
@@ -344,8 +348,12 @@ export const startCloudRelay = (
               message.connectionId +
               ")",
           );
-        } else {
+        } else if (message._tag === "event") {
           console.log("[twitch:cloud] event " + message.envelope.topic);
+        } else if (message._tag === "webhook_delivery") {
+          console.log(
+            "[twitch:cloud] webhook delivery " + message.delivery.hookId,
+          );
         }
         yield* deliver(message);
       });
@@ -419,6 +427,8 @@ export interface CloudTwitchTransportOptions {
   readonly api: CloudApi;
   readonly relay: CloudRelay;
   readonly publish: (topicKey: string, payload: unknown) => void;
+  /** Owner id for owner-keyed subscription reconcile. */
+  readonly owner?: string;
 }
 
 const identityOf = (token: Schema.Schema.Type<typeof TwitchTokenResponse>): TwitchIdentity => ({
@@ -463,7 +473,7 @@ export const startCloudTwitchTransport = (
     });
 
     const reconcile = (specs: ReadonlyArray<TwitchSubscriptionSpec>) =>
-      options.api.reconcile(options.connectionId, specs);
+      options.api.reconcile(options.connectionId, specs, options.owner);
 
     const subscribe = (
       specs: ReadonlyArray<TwitchSubscriptionSpec>,

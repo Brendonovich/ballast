@@ -5,7 +5,11 @@ packages:
   - "examples"
 
 allowBuilds:
+  electron-winstaller: false
+  electron: true
   esbuild: true
+  "@julusian/midi": true
+  uiohook-napi: true
   workerd: true
 
 catalog:
@@ -22,6 +26,20 @@ catalog:
   rolldown: 1.2.19
   ws: 8.23.0
   vitest: ^4.1.0
+  solid-js: 1.9.17
+  "@solidjs/router": 1.0.0
+  vite: 8.3.8
+  vite-plugin-solid: 2.11.17
+  tailwindcss: 4.3.5
+  "@tailwindcss/vite": 4.3.5
+  "@playwright/test": 1.65.1
+  electron: 44.9.1
+  electron-builder: 26.15.7
+  electron-updater: 6.8.9
+  esbuild: 0.28.1
+  highlight.js: 11.12.0
+  uiohook-napi: 1.5.5
+  "@julusian/midi": 3.8.1
 
 overrides:
   # platform-node 4.0.6 accepts ^4.0.6, but 4.1.x peers on effect 4.1.x.

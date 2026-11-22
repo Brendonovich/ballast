@@ -1,6 +1,7 @@
 import { watchFile, unwatchFile } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -55,6 +56,8 @@ export class RuntimeParamStore implements RuntimeSettings {
     return this.values.get(key);
   }
 }
+
+const resolveDir = dirname(fileURLToPath(import.meta.url));
 
 const readEntry = (entry: string): Effect.Effect<string, Error> =>
   Effect.tryPromise({
@@ -455,7 +458,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
             return scenes;
           });
 
-      const initialManifest = yield* plan(entry).pipe(
+      const initialManifest = yield* plan(entry, { resolveDir }).pipe(
         Effect.mapError((error) => new Error(error.message)),
       );
 
@@ -522,7 +525,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           if (content === undefined || content === lastPlannedContent) return;
           lastPlannedContent = content;
 
-          const nextManifest = yield* plan(entry).pipe(
+          const nextManifest = yield* plan(entry, { resolveDir }).pipe(
             Effect.mapError((error) => new Error(error.message)),
             Effect.catch((error) => {
               console.error(`[run] plan failed: ${error.message}`);

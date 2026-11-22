@@ -1,0 +1,26 @@
+{
+  "name": "@ballast/module-vtube-studio",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./driver": "./src/driver/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ballast/core": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@ballast/planner": "workspace:*",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "vitest": "catalog:",
+    "ws": "catalog:"
+  }
+}

@@ -1,10 +1,7 @@
-import * as Ballast from "@ballast/core";
 import * as Twitch from "@ballast/module-twitch";
 import { Effect } from "effect";
 
-export default Ballast.Script(
-  "topic-options",
-  Effect.gen(function* () {
+export default Effect.gen(function* () {
     const broadcaster = yield* Twitch.Account("broadcaster");
     const bot = yield* Twitch.Account("bot");
 
@@ -22,5 +19,4 @@ export default Ballast.Script(
     yield* Twitch.Raid.subscribe(broadcaster, () => Effect.void, {
       direction: "outgoing",
     });
-  }),
-);
+});

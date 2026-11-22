@@ -46,12 +46,20 @@ export type {
   RequestClientsService,
   ScriptRunnerService,
 } from "./services.ts";
-export { Topic, EventHost, EventHostLive, toTopicManifest, DEFAULT_MAX_AGE_MS } from "./topic.ts";
+export {
+  Topic,
+  EventHost,
+  EventHostPlan,
+  EventHostRuntime,
+  toTopicManifest,
+  DEFAULT_MAX_AGE_MS,
+} from "./topic.ts";
 export type { TopicMetadata, TopicSpec, EventHostService } from "./topic.ts";
 export {
   Request,
   RequestHost,
-  RequestHostLive,
+  RequestHostPlan,
+  RequestHostRuntime,
   RequestCalledDuringPlanError,
   toRequestManifest,
 } from "./request.ts";
@@ -59,12 +67,11 @@ export type { RequestRef, RequestSpec, RequestClient, RequestHostService } from 
 export { Connection, toConnectionManifest } from "./connection.ts";
 export type { ConnectionRef, ConnectionSpec } from "./connection.ts";
 export * as Param from "./param.ts";
-export { Script, run } from "./script.ts";
+export { evaluateScript, run, phase, recordScriptId } from "./script.ts";
 export { providePlan } from "./plan-host.ts";
 export type {
-  ScriptProps,
-  ScriptAttributes,
-  ScriptResource,
+  Script,
+  ScriptRuntime,
   ScriptRuntimeContext,
   ScriptHostServices,
 } from "./script.ts";

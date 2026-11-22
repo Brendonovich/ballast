@@ -9,16 +9,20 @@ import {
   encodeRelayServerMessage,
   type EventEnvelope,
   type RelayServerMessage,
+  type WebhookRelayDelivery,
 } from "@ballast/cloud-protocol";
 import { EventSub } from "@ballast/module-twitch";
 
 import type { RelayGatewayService } from "../src/relay/gateway.ts";
 import {
-  ackEvents,
+  ackMessages,
   emptyRelaySnapshot,
   enqueueEvent,
+  enqueueWebhook,
+  eventMessage,
   pendingCount,
-  pendingEvents,
+  pendingMessages,
+  webhookMessage,
   type RelaySnapshot,
 } from "../src/relay/state.ts";
 import { makeTestApp } from "./support/test-app.ts";
@@ -36,6 +40,10 @@ class MemoryRelay {
       Effect.sync(() => {
         const socket = this.sockets.get(machineId);
         if (socket !== undefined) socket.send(encodeRelayServerMessage(message));
+      }),
+    enqueueWebhook: (machineId, delivery, policy) =>
+      Effect.sync(() => {
+        this.enqueueWebhook(machineId, delivery, policy);
       }),
   };
 
@@ -60,28 +68,47 @@ class MemoryRelay {
     }
   }
 
+  enqueueWebhook(
+    machineId: string,
+    delivery: WebhookRelayDelivery,
+    policy: { readonly maxAgeMs: number; readonly onStale: "drop" | "deliver" },
+  ): void {
+    const next = enqueueWebhook(this.snapshot(machineId), delivery, policy, Date.now());
+    this.snapshots.set(machineId, next.snapshot);
+    const socket = this.sockets.get(machineId);
+    if (socket !== undefined && next.result.seq !== null) {
+      socket.send(
+        encodeRelayServerMessage({
+          _tag: "webhook_delivery",
+          seq: next.result.seq,
+          stale: false,
+          delivery,
+        }),
+      );
+    }
+  }
+
   connect(machineId: string, socket: WebSocket): void {
     const previous = this.sockets.get(machineId);
     if (previous !== undefined) previous.close(1012, "Replaced");
     this.sockets.set(machineId, socket);
-    const pending = pendingEvents(this.snapshot(machineId), Date.now());
+    const pending = pendingMessages(this.snapshot(machineId), Date.now());
     this.snapshots.set(machineId, pending.snapshot);
     socket.send(
       encodeRelayServerMessage({
         _tag: "hello",
         machineId,
         serverTime: Date.now(),
-        pending: pending.events.length,
+        pending: pending.messages.length,
       }),
     );
-    for (const event of pending.events) {
+    for (const message of pending.messages) {
       socket.send(
-        encodeRelayServerMessage({
-          _tag: "event",
-          seq: event.seq,
-          envelope: event.envelope,
-          stale: event.stale,
-        }),
+        encodeRelayServerMessage(
+          message._tag === "event"
+            ? eventMessage(message.event)
+            : webhookMessage(message.webhook),
+        ),
       );
     }
   }
@@ -91,7 +118,7 @@ class MemoryRelay {
     if (decoded._tag === "ack") {
       this.snapshots.set(
         machineId,
-        ackEvents(this.snapshot(machineId), decoded.seqs, Date.now()),
+        ackMessages(this.snapshot(machineId), decoded.seqs, Date.now()),
       );
     }
   }

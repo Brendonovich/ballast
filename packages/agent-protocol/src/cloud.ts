@@ -51,7 +51,8 @@ export type BeginCloudPairingRequest = typeof BeginCloudPairingRequest.Type;
  */
 export const CloudPairingSession = Schema.Struct({
   url: Schema.String,
-  code: Schema.String,
+  /** Present when the cloud can show a ready-made code; otherwise the sign-in page does. */
+  code: Schema.optionalKey(Schema.String),
   expiresAt: Schema.Number,
   instructions: Schema.String,
 });

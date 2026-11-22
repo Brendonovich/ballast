@@ -1,6 +1,6 @@
 # Ballast
 
-Ballast is a pnpm monorepo: a desktop agent that runs Alchemy + Effect scripts against streaming integrations, plus a Cloudflare cloud for OAuth, webhooks and relaying events. Read `docs/PLAN.md` for the design and `docs/HANDOFF.md` for current status before starting work.
+Ballast is a pnpm monorepo: a desktop agent that runs Effect scripts against streaming integrations, plus a Cloudflare cloud for OAuth, webhooks and relaying events. Read `docs/PLAN.md` for the design and `docs/HANDOFF.md` for current status before starting work.
 
 ## Source of truth
 
@@ -12,7 +12,7 @@ Ballast is a pnpm monorepo: a desktop agent that runs Alchemy + Effect scripts a
 
 - Never use `as any`. Use branded constructors or restructure the types.
 - Define services as `Context.Service` classes. Inline private implementations in `Layer.effect`; extract a `make` function only when it is exported.
-- Script authors import `@ballast/*` and `effect` only. Keep `alchemy` behind `@ballast/core`.
+- Script authors import `@ballast/*` and `effect` only. `@ballast/core` must not depend on `alchemy`; Alchemy is only used by `apps/cloud`, which uses Alchemy's Effect Worker form for both deployment and the Worker runtime (decision 0004).
 - A script's init only declares what it needs. Any I/O belongs in handlers or `Ballast.run`.
 - Backwards compatibility is not required yet. Prefer clean designs over compatibility layers.
 

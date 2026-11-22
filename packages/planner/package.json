@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@ballast/core": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "rolldown": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

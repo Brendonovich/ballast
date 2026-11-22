@@ -4,7 +4,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { Schema } from "effect";
 import type { RequestManifest } from "./manifest.ts";
-import { currentPhase } from "./phase.ts";
 import { ManifestRecorder, RequestClients } from "./services.ts";
 import type { ManifestRecorderService, RequestClientsService } from "./services.ts";
 
@@ -50,9 +49,9 @@ export interface RequestHostService {
 }
 
 /**
- * The host service request capabilities acquire clients from. Plan mode records
- * the request and hands back a client that dies if it is ever called; runtime
- * mode asks the agent for the real client.
+ * The host service request capabilities acquire clients from. The plan layer
+ * records the request and hands back a client that dies if it is ever called;
+ * the runtime layer asks the agent for the real client.
  */
 export class RequestHost extends Context.Service<RequestHost, RequestHostService>()("Ballast/RequestHost") {}
 
@@ -83,37 +82,42 @@ const runtimeClient = <A, B>(
     onSome: (service) => service.client(request),
   });
 
-export const RequestHostLive: Layer.Layer<RequestHost, never, never> = Layer.effect(
+/**
+ * Plan-phase host service: `client` records the request and returns a client
+ * that dies; `granted` records nothing (the connection already declared its
+ * request namespace) and also returns a dying client.
+ */
+export const RequestHostPlan: Layer.Layer<RequestHost> = Layer.effect(
   RequestHost,
   Effect.gen(function* () {
-    const phase = yield* currentPhase;
     const recorder = yield* Effect.serviceOption(ManifestRecorder);
-    const clients = yield* Effect.serviceOption(RequestClients);
 
-    const service: RequestHostService = {
-      client: (request) => {
-        if (phase === "runtime") return runtimeClient(clients, request);
-
-        return Option.match(recorder, {
+    return RequestHost.of({
+      client: (request) =>
+        Option.match(recorder, {
           onNone: () =>
             Effect.die(
               new Error("RequestHost.client was called in plan phase without a ManifestRecorder"),
             ),
-          onSome: (recorderService: ManifestRecorderService) =>
-            recorderService
-              .request(toRequestManifest(request))
-              .pipe(Effect.as(planClient(request))),
-        });
-      },
-      granted: (request) => {
-        if (phase === "plan") return planClient(request);
+          onSome: (service: ManifestRecorderService) =>
+            service.request(toRequestManifest(request)).pipe(Effect.as(planClient(request))),
+        }),
+      granted: (request) => planClient(request),
+    });
+  }),
+);
 
-        return (input) =>
-          Effect.flatMap(runtimeClient(clients, request), (client) => client(input));
-      },
-    };
+/** Runtime host service: request calls go over the runtime RPC client. */
+export const RequestHostRuntime: Layer.Layer<RequestHost> = Layer.effect(
+  RequestHost,
+  Effect.gen(function* () {
+    const clients = yield* Effect.serviceOption(RequestClients);
 
-    return RequestHost.of(service);
+    return RequestHost.of({
+      client: (request) => runtimeClient(clients, request),
+      granted: (request) => (input) =>
+        Effect.flatMap(runtimeClient(clients, request), (client) => client(input)),
+    });
   }),
 );
 

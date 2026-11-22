@@ -1,5 +1,7 @@
 import { Context, Effect, Option, Schema } from "effect";
 
+import { WebhookStaticResponse } from "@ballast/cloud-protocol";
+
 import { SealedSecret } from "./secrets.ts";
 
 export const UserRow = Schema.Struct({
@@ -99,6 +101,38 @@ export const SubscriptionOwnerRow = Schema.Struct({
 });
 export type SubscriptionOwnerRow = typeof SubscriptionOwnerRow.Type;
 
+/** Verification config stored in D1; the secret lives in a sealed column. */
+export const HookVerificationConfig = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("shared-secret"),
+    header: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("hmac-sha256"),
+    header: Schema.String,
+    encoding: Schema.Literals(["hex", "base64"]),
+    prefix: Schema.optionalKey(Schema.String),
+    timestampHeader: Schema.optionalKey(Schema.String),
+    toleranceSeconds: Schema.optionalKey(Schema.Number),
+  }),
+]);
+export type HookVerificationConfig = typeof HookVerificationConfig.Type;
+
+export const WebhookHookRow = Schema.Struct({
+  id: Schema.String,
+  machineId: Schema.String,
+  hookId: Schema.String,
+  label: Schema.NullOr(Schema.String),
+  verification: Schema.NullOr(HookVerificationConfig),
+  secret: Schema.NullOr(SealedSecret),
+  response: Schema.NullOr(WebhookStaticResponse),
+  maxAgeMs: Schema.Number,
+  onStale: Schema.Literals(["drop", "deliver"]),
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+});
+export type WebhookHookRow = typeof WebhookHookRow.Type;
+
 /**
  * Durable storage for everything except relay buffers. Relay buffers live in
  * the per-machine Durable Object so hot event traffic never touches D1.
@@ -159,6 +193,20 @@ export interface CloudStoreService {
     id: string,
     lockToken: string,
   ) => Effect.Effect<void>;
+
+  // Generic webhooks
+  readonly listHooks: (machineId: string) => Effect.Effect<ReadonlyArray<WebhookHookRow>>;
+  readonly findHook: (
+    machineId: string,
+    hookId: string,
+  ) => Effect.Effect<Option.Option<WebhookHookRow>>;
+  /** Replace the complete hook set for one machine. */
+  readonly replaceHooks: (
+    machineId: string,
+    rows: ReadonlyArray<WebhookHookRow>,
+  ) => Effect.Effect<void>;
+  readonly deleteHooks: (machineId: string, hookIds: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly pruneHooks: (before: number) => Effect.Effect<void>;
 
   // Pairing and machines
   readonly insertPairingCode: (row: PairingCodeRow) => Effect.Effect<void>;

@@ -1,0 +1,25 @@
+{
+  "name": "@ballast/module-midi",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./driver": "./src/driver/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ballast/core": "workspace:*",
+    "@julusian/midi": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@ballast/planner": "workspace:*",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  }
+}

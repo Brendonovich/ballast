@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { WebhookRelayDelivery } from "./webhooks.ts";
+
 /**
  * The common event envelope for everything the cloud relays to an agent.
  *
@@ -78,6 +80,11 @@ export const RelayServerMessage = Schema.Union([
     subscriptionType: Schema.String,
     providerSubscriptionId: Schema.String,
     revokedAt: Schema.Number,
+  }),
+  Schema.TaggedStruct("webhook_delivery", {
+    seq: Schema.Number,
+    stale: Schema.Boolean,
+    delivery: WebhookRelayDelivery,
   }),
   Schema.TaggedStruct("ping", {
     at: Schema.Number,

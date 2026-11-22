@@ -1,0 +1,126 @@
+import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
+import type { ServiceStatus, UpdateState } from "../bridge.ts";
+
+export interface TrayActions {
+  readonly show: () => void;
+  readonly showLogs: () => void;
+  readonly installService: () => void;
+  readonly restartService: () => void;
+  readonly stopService: () => void;
+  readonly checkForUpdates: () => void;
+  readonly installUpdate: () => void;
+  readonly quit: () => void;
+}
+
+export interface TrayController {
+  update(status: ServiceStatus, update: UpdateState): void;
+  destroy(): void;
+}
+
+/** A tiny template image: solid ring (alpha only matters for macOS templates). */
+function trayIcon(): NativeImage {
+  const size = 18;
+  const buffer = Buffer.alloc(size * size * 4);
+  const center = (size - 1) / 2;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = x - center;
+      const dy = y - center;
+      const radius = Math.sqrt(dx * dx + dy * dy);
+      const alpha = radius <= 8 && radius >= 4.5 ? 255 : 0;
+      const offset = (y * size + x) * 4;
+      buffer[offset] = 0;
+      buffer[offset + 1] = 0;
+      buffer[offset + 2] = 0;
+      buffer[offset + 3] = alpha;
+    }
+  }
+  const image = nativeImage.createFromBitmap(buffer, { width: size, height: size });
+  if (process.platform === "darwin") image.setTemplateImage(true);
+  return image;
+}
+
+const statusLine = (status: ServiceStatus): string => {
+  if (status.phase === "running") {
+    const version = status.runningVersion ?? "";
+    const pid = status.pid === null ? "" : " · pid " + status.pid;
+    return "Running " + version + pid;
+  }
+  if (
+    status.phase === "installing" ||
+    status.phase === "updating" ||
+    status.phase === "starting" ||
+    status.phase === "restarting" ||
+    status.phase === "stopping" ||
+    status.phase === "uninstalling"
+  ) {
+    return status.phase.charAt(0).toUpperCase() + status.phase.slice(1) + "…";
+  }
+  if (status.installed) return "Installed, not running";
+  return "Not installed";
+};
+
+export function createTray(actions: TrayActions): TrayController {
+  const tray = new Tray(trayIcon());
+  tray.setToolTip("Ballast");
+  const installItem = (status: ServiceStatus): MenuItemConstructorOptions | null =>
+    status.installed
+      ? null
+      : {
+          label: "Install background service…",
+          click: () => actions.installService(),
+        };
+
+  const updateItem = (update: UpdateState): MenuItemConstructorOptions | null => {
+    if (update.phase === "ready") {
+      return { label: "Install update" + (update.version ? " " + update.version : "") + "…", click: actions.installUpdate };
+    }
+    if (update.phase === "available" || update.phase === "downloading" || update.phase === "checking") {
+      return { label: update.message ?? "Checking for updates…", enabled: false };
+    }
+    return { label: "Check for updates…", click: actions.checkForUpdates };
+  };
+
+  const render = (status: ServiceStatus, update: UpdateState): void => {
+    const installation = installItem(status);
+    const updateEntry = updateItem(update);
+    const template: MenuItemConstructorOptions[] = [
+      { label: "Open Ballast", click: actions.show },
+      { label: statusLine(status), enabled: false },
+      ...(status.pendingConsents !== null && status.pendingConsents > 0
+        ? [{ label: "Pending consent: " + status.pendingConsents, click: actions.show }]
+        : []),
+      { type: "separator" },
+      {
+        label: "Restart Ballast",
+        enabled: status.running,
+        click: () => actions.restartService(),
+      },
+      {
+        label: "Stop Ballast",
+        enabled: status.running,
+        click: () => actions.stopService(),
+      },
+      ...(installation ? [installation] : []),
+      ...(updateEntry ? [updateEntry] : []),
+      { label: "Show logs", click: actions.showLogs },
+      { type: "separator" },
+      { label: "Quit Ballast UI", click: actions.quit },
+    ];
+    tray.setContextMenu(Menu.buildFromTemplate(template));
+    tray.setToolTip(
+      "Ballast — " + statusLine(status) + (status.updateAvailable ? " (restart to update)" : ""),
+    );
+  };
+
+  tray.on("double-click", actions.show);
+
+  return {
+    update: (status, update) => {
+      render(status, update);
+    },
+    destroy: () => {
+      tray.destroy();
+    },
+  };
+}

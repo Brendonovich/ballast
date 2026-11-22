@@ -14,9 +14,12 @@
   },
   "scripts": {
     "typecheck": "tsgo -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "serve": "node --experimental-strip-types --no-warnings=ExperimentalWarning src/bin.ts serve",
+    "build:service": "node scripts/build-service.mjs"
   },
   "dependencies": {
+    "@ballast/agent-protocol": "workspace:*",
     "@ballast/cloud-protocol": "workspace:*",
     "@ballast/core": "workspace:*",
     "@ballast/fake": "workspace:*",
@@ -26,7 +29,12 @@
     "@effect/platform-node": "catalog:",
     "effect": "catalog:",
     "rolldown": "catalog:",
-    "ws": "catalog:"
+    "ws": "catalog:",
+    "@ballast/module-vtube-studio": "workspace:*",
+    "@ballast/module-keyboard": "workspace:*",
+    "@ballast/module-midi": "workspace:*",
+    "@ballast/module-websocket": "workspace:*",
+    "@ballast/module-http": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

@@ -207,6 +207,24 @@ export const ScriptDetail = Schema.Struct({
 });
 export type ScriptDetail = typeof ScriptDetail.Type;
 
+/**
+ * The read-only view of a script's entry file. Source is project-relative and
+ * is never edited through the API; the file on disk remains the source of
+ * truth. `sha256` changes when the file changes, which lets an open viewer
+ * refresh without re-reading a large body by hand.
+ */
+export const ScriptSource = Schema.Struct({
+  /** Path relative to the project root, for example `scripts/redeem-to-scene.ts`. */
+  path: Schema.String,
+  content: Schema.String,
+  /** Lowercase hex SHA-256 of the file contents. */
+  sha256: Schema.String,
+  /** File modification time, in milliseconds since the Unix epoch. */
+  updatedAt: Schema.Number,
+  language: Schema.Literal("typescript"),
+});
+export type ScriptSource = typeof ScriptSource.Type;
+
 export const emptyManifest = (): ScriptManifest => ({
   params: [],
   connections: [],

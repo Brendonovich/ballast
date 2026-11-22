@@ -11,7 +11,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "alchemy": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {

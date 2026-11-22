@@ -1,6 +1,6 @@
 # Ballast: handoff
 
-*Last updated 2026-11-22. Status: **Phase 0 spike complete** — plan, run and hot reload work end to end. The next task is **Phase 1: the local agent plus OBS and VTube Studio**.*
+*Last updated 2026-11-23. Status: **Phase 0 spike complete** — plan, run and hot reload work end to end, and decision 0004 removed Alchemy from the script runtime. The next task is **Phase 1: the local agent plus OBS and VTube Studio**.*
 
 Read `docs/PLAN.md` first. This file covers what has been decided, what is still open, where to look, and exactly what to build next.
 
@@ -23,7 +23,7 @@ Ballast started from a conversation about MacroGraph (Brendan's visual automatio
 |---|---|---|
 | D1 | Separate product and repo; nothing is imported from MacroGraph | Different focus; MacroGraph is built around graphs |
 | D2 | **Scripts only** for now (no graphs) | Agents write code well; avoids editor/graph work |
-| D3 | **Scripts are written with Alchemy and Effect** | Running a script's init in plan mode reveals its subscription topics, credentials/scopes, local connections and params *before it runs* |
+| D3 | **Scripts are written with Effect and `@ballast/core`**; Alchemy is only a cloud deployment tool | Running a script's init against the plan layer reveals its subscription topics, credentials/scopes, local connections and params *before it runs*. Decision 0004 dropped Alchemy from the script runtime |
 | D4 | Logic runs on the **desktop agent**; the **cloud** handles OAuth, the token vault, webhook/EventSub ingress and a per-machine relay | Local tools need local execution; webhooks need a public host that's always on |
 | D5 | Each project has one live copy, on the desktop. Editing is **live and collaborative**, with **no offline edit reconciliation** | Keeps editing simple: the agent orders all edits; no CRDT or merging |
 | D6 | Project **state lives only on the desktop**; the cloud sees it only through the live connection | Simpler; nothing to sync |
@@ -33,7 +33,7 @@ Ballast started from a conversation about MacroGraph (Brendan's visual automatio
 
 ## 3. Open questions (not decided)
 
-1. **How much of Alchemy to use:** use the Platform/Binding/Plan engine directly, or only the script shape with Ballast's own recorder? Phase 0 answers this.
+1. ~~**How much of Alchemy to use:** use the Platform/Binding/Plan engine directly, or only the script shape with Ballast's own recorder?~~ **Answered by 0004:** none in the script runtime; Alchemy stays in `apps/cloud` for deployment.
 2. **Twitch delivery:** per-user EventSub webhooks or a conduit? Check subscription cost limits before Phase 2.
 3. **Stale events:** default `maxAge` (draft: 60 s) and how long the relay keeps events (draft: 24 h).
 4. **Script isolation** beyond `worker_threads`, needed before scripts written by other people are distributed.
@@ -41,8 +41,11 @@ Ballast started from a conversation about MacroGraph (Brendan's visual automatio
 
 ## 4. Where to look
 
-### Alchemy (most important for Phase 0)
-- **Installed version (beta.84, the one MacroGraph uses):** `~/github.com/brendonovich/cf-effect-experiment/apps/cloud/node_modules/alchemy/src`. After Phase 0 installs it, read `node_modules/alchemy/src` in this repo instead.
+### Alchemy (cloud deployment only since 0004)
+The script runtime no longer uses Alchemy. These references are still useful for
+`apps/cloud`'s deployment (`alchemy.run.ts`, Cloudflare providers) and for the
+history in decision 0001.
+- **Installed version (beta.84, the one MacroGraph uses):** `~/github.com/brendonovich/cf-effect-experiment/apps/cloud/node_modules/alchemy/src`. In this repo it is installed under `apps/cloud`.
 - **Repo clone:** `~/github.com/alchemy-run/alchemy-effect`. It's older (Jun 2026), so run `git pull` before using it. Docs: https://v2.alchemy.run (index at `/llms.txt`).
 - Files to read, in order:
 
@@ -56,7 +59,7 @@ Ballast started from a conversation about MacroGraph (Brendan's visual automatio
 | `WebhookHost.ts` | A service the host provides that event sources use, routing deliveries by path. The model for Ballast's `EventHost` |
 | `Plan.ts`, `Stack.ts`, `Apply.ts`, `State/` | How a plan is built and applied, and the state store interface |
 | `Bundle/Bundle.ts` (`ALCHEMY_DEFINE`, ~line 163) | The defines the runtime bundle needs |
-| `@alchemy.run/github/src/RepositoryEventSource.ts` + `RepositoryEventSourceLive.ts` | **Template for a Ballast topic subscription:** it provisions a webhook at plan time (behind `!__ALCHEMY_RUNTIME__`), binds its secret through `Output.named`, and routes deliveries at runtime |
+| `@alchemy.run/github/src/RepositoryEventSource.ts` + `RepositoryEventSourceLive.ts` | **Background for 0001 (no longer used):** it provisions a webhook at plan time (behind `!__ALCHEMY_RUNTIME__`) and routes deliveries at runtime. Ballast now implements the split with `EventHostPlan`/`EventHostRuntime` |
 
 - How MacroGraph uses Alchemy: `cf-effect-experiment/apps/cloud/alchemy.run.ts`, `apps/cloud/src/worker/*`. MacroGraph patches `@alchemy.run/cloudflare@2.0.0-beta.84` (`cf-effect-experiment/patches/`), so check that patch before Phase 2 cloud work.
 
@@ -83,18 +86,18 @@ ballast/
 Phase 0 now fills in these packages:
 
 ```
-packages/core                 @ballast/core: Script platform, Param, EventHost, Manifest, RPC schemas
+packages/core                 @ballast/core: Script host, Param, EventHost, Manifest, RPC schemas
 packages/planner              @ballast/planner: plan worker, manifest recorder, diff
 packages/integrations/fake    @ballast/fake: fake/tick, fake/chat, fake/echo
 apps/agent                    @ballast/agent: ballast CLI, runtime host, worker sessions, hot reload
 examples                      tick-echo.ts and future sample scripts
 ```
 
-Versions match MacroGraph so known-good versions of Effect and Alchemy are used together. `rolldown` was added for runtime bundling.
+Versions match MacroGraph so known-good versions of Effect and Alchemy are used together in the cloud. `@ballast/core` and `@ballast/planner` use Effect only; `rolldown` does runtime bundling.
 
-## 6. Phase 0 Alchemy spike (complete)
+## 6. Phase 0 plan/runtime spike (complete)
 
-**Goal:** show that a Ballast script can be an Alchemy program that is (a) planned on its own into a manifest and (b) run in a Node worker with events delivered to it, with hot reload. If Alchemy can't do this cleanly, switch to the fallback (step 7).
+**Goal:** show that a Ballast script's init can be planned on its own into a manifest and then run in a Node worker with events delivered to it, with hot reload. Phase 0 started on Alchemy's host model and finished on the step 7 fallback; decision 0004 records why.
 
 ### Step 1: Workspace
 Create:
@@ -104,7 +107,7 @@ Create:
 - `apps/agent` (`@ballast/agent`, with the `ballast` CLI bin)
 - `examples`
 
-Each gets a `tsconfig.json` extending `../../tsconfig.base.json` and is added to root `references`. Dependencies come from the catalog: `effect`, `alchemy`, `@effect/platform-node`, and `@effect/vitest` + `vitest` for tests.
+Each gets a `tsconfig.json` extending `../../tsconfig.base.json` and is added to root `references`. Dependencies come from the catalog: `effect`, `@effect/platform-node`, and `@effect/vitest` + `vitest` for tests. `alchemy` is only in `apps/cloud`.
 
 ### Step 2: Read Alchemy and write down the answers
 Answer these in `docs/decisions/0001-alchemy-as-script-framework.md`:
@@ -115,8 +118,8 @@ Answer these in `docs/decisions/0001-alchemy-as-script-framework.md`:
 5. How do `Output`s that can't be resolved at plan time (params that affect topics) appear in a plan?
 
 ### Step 3: `@ballast/core`
-- `Script(id, init)`: a custom Alchemy platform. Its runtime host is a worker.
-- `EventHost` service (modeled on `WebhookHost`): `subscribe(topicKey, handler)`. At plan time it records the subscription; at runtime it registers the handler with the host bus.
+- A script is an Effect default export. `evaluateScript(effect, phase)` provides the plan or runtime host layer and collects `Ballast.run` loops; the runtime host is a worker. `Ballast.Script` is a type only. (0004 replaced the original Alchemy platform.)
+- `EventHost` service: `subscribe(topicKey, handler)`. At plan time it records the subscription; at runtime it registers the handler with the host bus.
 - `Param.string/number/boolean/enum(key, opts)`: at plan time it records into the manifest; at runtime it returns an `Effect` that reads the current value (settings may change while the script runs).
 - `Ballast.run(effect)` for long-running loops (like `ServerHost.run`).
 - `Manifest` as an Effect Schema:
@@ -145,13 +148,13 @@ A test integration that needs no external service:
 - CLI: `ballast plan examples/tick-echo.ts` prints the manifest as JSON; `--diff <prev.json>` prints the diff.
 
 ### Step 6: Runtime + `ballast run`
-- Bundle the script with the runtime defines and run it in `worker_threads`. The host provides `EventHost`, request clients and params over Effect RPC on the worker's `MessagePort`.
+- Bundle the script with the Ballast runtime define and run it in `worker_threads`. The host provides `EventHost`, request clients and params over Effect RPC on the worker's `MessagePort`.
 - The agent's event bus sends `fake/tick` from the driver to subscribed handlers.
 - Watch the file: on change, plan again → diff → (apply automatically if no consent is needed) → start the new worker → stop the old one's scope.
 - CLI: `ballast run examples/tick-echo.ts --param prefix=hi`.
 
-### Step 7: Fallback (only if Step 2 rules out Alchemy)
-Keep the exact script-facing API from Step 3. Write the plan phase yourself: a plan layer whose `EventHost`, params and capability bindings record into a `Ref<Manifest>`, and whose request clients **die** if called. Run init once against that layer. Write down why in the decision record.
+### Step 7: Fallback (adopted by decision 0004)
+Keep the exact script-facing API from Step 3. Write the plan phase yourself: a plan layer whose `EventHost`, params and capability bindings record into a `Ref<Manifest>`, and whose request clients **die** if called. Run init once against that layer. This is now the implementation; see `docs/decisions/0004-drop-alchemy-from-script-runtime.md`.
 
 ### Example script for the spike (`examples/tick-echo.ts`)
 ```ts
@@ -159,9 +162,7 @@ import * as Ballast from "@ballast/core";
 import * as Fake from "@ballast/fake";
 import { Effect } from "effect";
 
-export default Ballast.Script(
-  "tick-echo",
-  Effect.gen(function* () {
+export default Effect.gen(function* () {
     const prefix = yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
     const fake = yield* Fake.Connection("main");
     const echo = yield* Fake.Echo(fake);
@@ -169,8 +170,7 @@ export default Ballast.Script(
       Effect.gen(function* () {
         const { text } = yield* echo({ text: `${yield* prefix} tick ${tick.n}` });
         yield* Effect.log(text);
-      }),
-    );
+});
   }),
 );
 ```
@@ -181,20 +181,20 @@ export default Ballast.Script(
 - [x] `ballast run` logs `> tick 1`, `> tick 2`, … (and `hi tick N` with `--param prefix=hi`).
 - [x] Changing the prefix in the file hot-reloads with no duplicate handlers; the old worker is terminated and its session scope closes.
 - [x] Adding `Fake.onChat` causes `requiresConsent: true` and the run pauses at `Apply? [y/N]`. Yes starts a new worker; no keeps the old one running.
-- [x] Decision record 0001 written, choosing the hybrid (Alchemy host model, Ballast recorder).
+- [x] Decision records 0001 (hybrid, superseded) and 0004 (Ballast plan/runtime layers, no Alchemy in the script runtime).
 - [x] `pnpm typecheck` and `pnpm test` pass.
 
 ### Phase 0 result and deviations
 
-The spike uses Alchemy's `Platform`/`RuntimeContext`/`hostServices`/phase handling, but not `Stack`/`Plan`/`Apply`/`Provider`/`State`; the manifest is Ballast's own recorder. Implementation notes that differ from the sketch:
+The spike first used Alchemy's `Platform`/`RuntimeContext`/`hostServices`/phase handling, but not `Stack`/`Plan`/`Apply`/`Provider`/`State`. Decision 0004 then replaced that host model with Ballast's own plan/runtime layers; `@ballast/core` no longer imports `alchemy`. The manifest was always Ballast's own recorder. Implementation notes:
 
 - **Runtime RPC was built as a custom Effect RPC `Protocol` over a dedicated `MessageChannel`.** The built-in worker transports are one-directional for this use case: `RpcClient.layerProtocolWorker` is a host-side client pool that spawns its own workers, and `RpcServer.layerProtocolWorkerRunner` makes the worker the server. The script worker needs to be the RPC *client* of host services, so the agent serves `RuntimeRpcs` on one port and the worker runs `RpcClient.make` on the other. Event delivery uses ordinary `parentPort` messages after the worker registers a topic; only subscriptions, params and requests use RPC.
 - **`Ballast.run` uses a `ScriptRunner` host service, not Alchemy's `ServerHost`.** `alchemy/Runtime/Process` is exported as raw TypeScript from the package, which Node's type stripping cannot load from `node_modules`; the `run`/`exports.program` shape is copied.
-- **`providePlan` lives in `@ballast/core`, not `@ballast/planner`,** so `alchemy` imports stay inside core. Scripts never import `alchemy`.
-- **`Script(id, init)` props are `{ id }`; there is no `entry` prop.** The planner knows the entry path; the entry path is only used for bundling and watching.
+- **`providePlan` lives in `@ballast/core`, not `@ballast/planner`.** Scripts never import `alchemy`; since 0004 neither core nor planner does.
+- **Script identity comes from the path, not a wrapper prop.** The manifest `script.id` is project-relative for the service, or cwd-relative/file-basename for `ballast plan`/`run`; an optional `export const title` overrides the humanised display name.
 - **Static enum values are not in the manifest.** The fixed HANDOFF shape has no field for them; `Param.enum(key, values, opts)` validates the value at runtime, but UI/MCP consumers cannot see the allowed values yet.
 - **Consent is driven by new scopes or new connection slots.** A new topic whose scopes are already granted does not prompt. Changes that only alter defaults or handler code still restart the worker when the file content changes.
-- Runtime bundling uses **rolldown** with `globalThis.__ALCHEMY_RUNTIME__ = true` and `codeSplitting: false`. A custom resolver lets a script copied to a temp folder bundle without its own `node_modules`. Alchemy's Bun-only dynamic imports are left external and are never executed in the Node worker.
+- Runtime bundling uses **rolldown** with `globalThis.__BALLAST_PHASE__ = "runtime"` and `codeSplitting: false`. A custom resolver lets a script copied to a temp folder bundle without its own `node_modules`. Alchemy's Bun-only dynamic imports are no longer in the bundle (0004).
 
 ## 7. Next task: Phase 1
 Follow `docs/PLAN.md` §9:

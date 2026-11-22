@@ -29,6 +29,11 @@ export type ServiceInfo = typeof ServiceInfo.Type;
 
 export const HealthStatus = Schema.Struct({
   ok: Schema.Boolean,
+  /** The service build, matching `ServiceInfo.version` and `/health`. */
+  version: Schema.optionalKey(Schema.String),
+  /** The API version, matching `/health` and `ServiceInfo.apiVersion`. */
+  apiVersion: Schema.optionalKey(Schema.Literal(AGENT_API_VERSION)),
+  pid: Schema.optionalKey(Schema.Number),
   uptimeMs: Schema.Number,
   projects: Schema.Struct({
     total: Schema.Number,

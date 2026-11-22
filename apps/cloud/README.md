@@ -16,6 +16,10 @@ See `docs/decisions/0002-twitch-auth-and-cloud-gateway.md` for the design.
 | `POST /api/tokens/twitch` | Short-lived Twitch access token |
 | `POST /api/twitch/helix` | Scope-checked Helix proxy |
 | `POST /api/twitch/subscriptions/reconcile` | Apply EventSub subscriptions |
+| `POST /api/hooks/register` | Replace a machine's generic cloud hooks |
+| `POST /api/hooks/unregister` | Remove generic cloud hooks |
+| `GET /api/hooks` | List a machine's hooks without secrets |
+| `/hooks/:machineId/:hookId` | Public generic webhook ingress, any method |
 | `GET /relay/:machineId` | Authenticated agent WebSocket |
 
 All `/api/*` routes except pairing use `Authorization: Bearer blst_m_…`.
@@ -91,6 +95,14 @@ Twitch condition fields are validated against the module registry. `self` fields
 Twitch user; `target` fields (`broadcaster_user_id` for chat/follows) may be another linked
 account or any channel where Twitch allows the token to read/moderate.
 
+Generic webhooks (`/hooks/:machineId/:hookId`) are bearer-capability URLs owned by one
+machine. Registration replaces the complete set; the secret is sealed in D1 and never returned.
+Edge verification supports a shared secret or HMAC-SHA256 (hex/base64, optional prefix,
+optional timestamp header and tolerance). Accepted requests are written to the Relay DO's
+shared seq/ack buffer as `webhook_delivery` frames and get the hook's stored static response
+immediately. Limits: 64 KiB body, 32 hooks/machine, 32 response headers, 4 KiB response body,
+60/min per hook, 600/min per machine, 120/min per IP, 30 registrations/min per machine.
+
 EventSub revocations with `status: "notification_failures_exceeded"` are recoverable: the
 gateway deletes the dead provider subscription and creates it again with the stored condition
 and webhook secret. `authorization_revoked` / `user_removed` set `twitch_accounts.needs_reauth`
@@ -108,8 +120,12 @@ yet in the module), D1 storage, rate limits and relay routing.
 
 ## Layout
 
-- `alchemy.run.ts` — stack, D1 database, Relay DO binding, Worker env; local state in dev.
-- `src/worker.ts` — async Worker entry and request/WebSocket routing.
+- `alchemy.run.ts` — stack and resources; local state in dev. No Worker `main` path: the
+  Worker is an Effect program built by `src/worker.ts`.
+- `src/cloud-worker.ts` — the Worker class (declares the Relay Durable Object).
+- `src/worker.ts` — Effect Worker init (yields D1, Relay and Config bindings) and fetch handler.
+- `src/resources.ts` — the shared D1 database resource.
+- `src/relay/relay-do.ts` — Effect Durable Object class and `RelayLive` implementation.
 - `src/app.ts` — Effect HTTP app (OAuth, pairing, tokens, Helix, EventSub, reconcile).
 - `src/d1-store.ts` — D1 implementation of `CloudStore`.
 - `src/secrets.ts` — AES-GCM token vault, machine-token hashing, random codes.

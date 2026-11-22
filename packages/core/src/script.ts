@@ -1,52 +1,29 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Output from "alchemy/Output";
-import * as OutputModule from "alchemy/Output";
-import { Platform } from "alchemy/Platform";
-import { Resource } from "alchemy/Resource";
-import type { BaseRuntimeContext } from "alchemy/RuntimeContext";
-import { packEnvValue, unpackEnvValue } from "alchemy/RuntimeContext";
 import { currentPhase, ScriptPhase } from "./phase.ts";
 import type { Phase } from "./phase.ts";
-import { EventHostLive } from "./topic.ts";
-import { RequestHostLive } from "./request.ts";
-import {
-  EventBus,
-  ManifestRecorder,
-  RequestClients,
-  ScriptRunner,
-  Settings,
-} from "./services.ts";
-import type { ManifestRecorderService } from "./services.ts";
+import { RequestHostPlan, RequestHostRuntime } from "./request.ts";
+import type { RequestHost } from "./request.ts";
+import { EventHostPlan, EventHostRuntime } from "./topic.ts";
+import type { EventHost } from "./topic.ts";
+import { ManifestRecorder, ScriptRunner } from "./services.ts";
+import type { EventBus, RequestClients, ScriptRunnerService, Settings } from "./services.ts";
 
-export interface ScriptProps {
-  readonly id: string;
-  /** Alchemy platform marker; scripts are always Effect-native. */
-  readonly isExternal?: boolean;
-  readonly env?: Record<string, unknown>;
-  readonly exports?: string[] | Record<string, unknown>;
-}
-
-export interface ScriptAttributes {
-  readonly startedAt?: string;
-}
-
-export interface ScriptResource extends Resource<"Ballast.Script", ScriptProps, ScriptAttributes, never, never> {}
-
-export interface ScriptRuntimeContext extends BaseRuntimeContext {
+export interface ScriptRuntimeContext {
   readonly phase: Phase;
   readonly run: (effect: Effect.Effect<void, never, never>) => Effect.Effect<void>;
+  /** Long-running loops registered with `Ballast.run`, plus host exports. */
+  readonly exports: Effect.Effect<Record<string, unknown>>;
 }
 
 /**
- * The services a script's init may use without the caller providing a layer.
- * Plan mode provides `ManifestRecorder`; runtime mode provides `EventBus`,
- * `Settings` and `RequestClients`.
+ * The services a script's init may use. The host provides them around the
+ * default export; scripts never construct the phase layers themselves.
  */
 export type ScriptHostServices =
-  | import("./topic.ts").EventHost
-  | import("./request.ts").RequestHost
+  | EventHost
+  | RequestHost
   | ScriptRunner
   | ScriptPhase
   | ManifestRecorder
@@ -54,90 +31,110 @@ export type ScriptHostServices =
   | EventBus
   | RequestClients;
 
-const detectPhase = (): Phase =>
-  globalThis.__ALCHEMY_RUNTIME__ || process.env["ALCHEMY_PHASE"] === "runtime" ? "runtime" : "plan";
+/** Everything the host provides around the default export. */
+type ScriptProvidedServices = EventHost | RequestHost | ScriptRunner | ScriptPhase;
 
-const makeScriptRuntimeContext = (id: string): ScriptRuntimeContext => {
-  const runners: Effect.Effect<void, never, never>[] = [];
-  const env: Record<string, unknown> = {};
-  const phase = detectPhase();
+/**
+ * The optional type a script can use for checking:
+ *
+ * ```ts
+ * export default Effect.gen(function* () { ... }) satisfies Ballast.Script;
+ * ```
+ */
+export type Script<E = never> = Effect.Effect<void, E, ScriptHostServices>;
+
+interface ScriptRunnerState {
+  readonly service: ScriptRunnerService;
+  readonly exports: Effect.Effect<Record<string, unknown>>;
+}
+
+/**
+ * Collect the loops a script registers with `Ballast.run`. Plan never evaluates
+ * `exports`; the runtime worker does, once init has declared everything.
+ */
+const makeScriptRunner = (): ScriptRunnerState => {
+  const loops: Effect.Effect<void, never, never>[] = [];
 
   return {
-    Type: "Ballast.Script",
-    id,
-    phase,
-    env,
-    get: <T>(key: string) => Effect.sync(() => unpackEnvValue<T>(process.env[key])),
-    set: (key: string, output: Output.Output) =>
-      Effect.sync(() => {
-        const canonical = key.replaceAll(/[^a-zA-Z0-9]/g, "_");
-        env[canonical] = output.pipe(OutputModule.map(packEnvValue));
-        return canonical;
-      }),
-    run: (effect) =>
-      Effect.sync(() => {
-        runners.push(effect);
-      }),
+    service: {
+      run: (effect) =>
+        Effect.sync(() => {
+          loops.push(effect);
+        }),
+    },
     exports: Effect.sync(() => ({
-      program: Effect.all(runners, { concurrency: "unbounded" }),
+      program: Effect.all(loops, { concurrency: "unbounded" }),
     })),
-    hostServices: Layer.mergeAll(
-      Layer.succeed(ScriptRunner, {
-        run: (effect) =>
-          Effect.sync(() => {
-            runners.push(effect);
-          }),
-      }),
-      EventHostLive,
-      RequestHostLive,
-    ),
   };
 };
 
-const recorderFor = (
-  method: (recorder: ManifestRecorderService) => Effect.Effect<void>,
+const planHostServices = (
+  runner: ScriptRunnerService,
   phase: Phase,
-): Effect.Effect<void> => {
-  if (phase !== "plan") return Effect.void;
-  return Effect.serviceOption(ManifestRecorder).pipe(
-    Effect.flatMap(
-      Option.match({
-        onNone: () =>
-          Effect.die(new Error("Script was evaluated in plan phase without a ManifestRecorder")),
-        onSome: method,
-      }),
-    ),
+): Layer.Layer<ScriptProvidedServices> =>
+  Layer.mergeAll(
+    Layer.succeed(ScriptRunner, runner),
+    Layer.succeed(ScriptPhase, phase),
+    EventHostPlan,
+    RequestHostPlan,
   );
-};
 
-type ScriptPlatform = Platform<
-  ScriptResource,
-  ScriptHostServices,
-  void,
-  ScriptRuntimeContext,
-  void
->;
+const runtimeHostServices = (
+  runner: ScriptRunnerService,
+  phase: Phase,
+): Layer.Layer<ScriptProvidedServices> =>
+  Layer.mergeAll(
+    Layer.succeed(ScriptRunner, runner),
+    Layer.succeed(ScriptPhase, phase),
+    EventHostRuntime,
+    RequestHostRuntime,
+  );
 
-const scriptPlatform: ScriptPlatform = Platform("Ballast.Script", {
-  createRuntimeContext: makeScriptRuntimeContext,
-  onCreate: (resource) =>
-    Effect.gen(function* () {
-      const phase = yield* currentPhase;
-      yield* recorderFor((recorder) => recorder.script(resource.LogicalId), phase);
-    }),
-});
+export interface ScriptRuntime {
+  readonly run: ScriptRunnerService["run"];
+  /** Long-running loops registered with `Ballast.run`. */
+  readonly exports: Effect.Effect<Record<string, unknown>>;
+}
 
 /**
- * Define a Ballast script. `init` only declares: params, connections, request
- * capabilities and topic subscriptions. Anything with effects belongs in a
- * handler or `Ballast.run`.
+ * Evaluate a script's default export in one phase. The planner calls this with
+ * `"plan"`, the runtime worker with `"runtime"`; both provide the host
+ * services and never leak a per-event scope into init. The caller provides the
+ * manifest recorder (plan) or settings/event bus/request clients (runtime).
  */
-export const Script = <R extends ScriptHostServices>(
-  id: string,
-  init: Effect.Effect<void, never, R>,
-) => scriptPlatform(id, { id }, init);
+export const evaluateScript = <E, R extends ScriptHostServices>(
+  script: Effect.Effect<void, E, R>,
+  phase: Phase,
+): Effect.Effect<ScriptRuntime, E, Exclude<R, ScriptProvidedServices>> =>
+  Effect.gen(function* () {
+    const runner = makeScriptRunner();
+    yield* script.pipe(
+      Effect.provide(
+        phase === "plan"
+          ? planHostServices(runner.service, phase)
+          : runtimeHostServices(runner.service, phase),
+      ),
+    );
+    return {
+      run: runner.service.run,
+      exports: runner.exports,
+    };
+  });
 
 /** Register a long-running loop. Runs when the host evaluates `exports.program`. */
 export const run = (effect: Effect.Effect<void, never, never>): Effect.Effect<void, never, ScriptRunner> =>
   Effect.flatMap(ScriptRunner, (runner) => runner.run(effect));
 
+/** The phase the current script is evaluated in. */
+export const phase: Effect.Effect<Phase> = currentPhase;
+
+/** Record the script id when a caller has one (the planner fills it from the path). */
+export const recordScriptId = (id: string): Effect.Effect<void> =>
+  Effect.serviceOption(ManifestRecorder).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.void,
+        onSome: (recorder) => recorder.script(id),
+      }),
+    ),
+  );

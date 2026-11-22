@@ -5,7 +5,6 @@ import * as Option from "effect/Option";
 import type { Schema } from "effect";
 import type { ConnectionRef } from "./connection.ts";
 import type { OnStale, TopicCondition, TopicManifest } from "./manifest.ts";
-import { currentPhase } from "./phase.ts";
 import { EventBus, ManifestRecorder } from "./services.ts";
 import type { EventBusService, ManifestRecorderService } from "./services.ts";
 
@@ -119,8 +118,8 @@ export interface EventHostService {
 }
 
 /**
- * The host service event sources register with. Plan mode records the topic;
- * runtime mode registers the handler with the agent's event bus.
+ * The host service event sources register with. The plan layer records the
+ * topic; the runtime layer registers the handler with the agent's event bus.
  */
 export class EventHost extends Context.Service<EventHost, EventHostService>()("Ballast/EventHost") {}
 
@@ -146,20 +145,33 @@ const subscribeAtRuntime = <A, Integration extends string>(
     onSome: (service) => service.subscribe(topic.key(connection), handler),
   });
 
-export const EventHostLive: Layer.Layer<EventHost, never, never> = Layer.effect(
+/**
+ * Plan-phase host service: declarations go into the manifest recorder and
+ * handlers are never registered or evaluated.
+ */
+export const EventHostPlan: Layer.Layer<EventHost> = Layer.effect(
   EventHost,
   Effect.gen(function* () {
-    const phase = yield* currentPhase;
     const recorder = yield* Effect.serviceOption(ManifestRecorder);
+
+    return EventHost.of({
+      subscribe: (topic, connection) => subscribeInPlan(recorder, topic, connection),
+    });
+  }),
+);
+
+/**
+ * Runtime host service: subscriptions go to the agent's event bus, which owns
+ * delivery and gives each handler invocation its own scope.
+ */
+export const EventHostRuntime: Layer.Layer<EventHost> = Layer.effect(
+  EventHost,
+  Effect.gen(function* () {
     const bus = yield* Effect.serviceOption(EventBus);
 
-    const service: EventHostService = {
+    return EventHost.of({
       subscribe: (topic, connection, handler) =>
-        phase === "plan"
-          ? subscribeInPlan(recorder, topic, connection)
-          : subscribeAtRuntime(bus, topic, connection, handler),
-    };
-
-    return EventHost.of(service);
+        subscribeAtRuntime(bus, topic, connection, handler),
+    });
   }),
 );

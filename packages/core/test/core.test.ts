@@ -31,9 +31,7 @@ describe("@ballast/core plan phase", () => {
       const ref = yield* Ref.make(Ballast.emptyManifest("records"));
       const recorder = makeRecorder(ref);
 
-      const script = Ballast.Script(
-        "records",
-        Effect.gen(function* () {
+      const script = Effect.gen(function* () {
           yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
           const connection = yield* Ballast.Connection<"fake">({
             integration: "fake",
@@ -56,10 +54,9 @@ describe("@ballast/core plan phase", () => {
           expect(tick.topic).toBe("fake/tick");
           expect(tick.scopes).toEqual(["fake:read"]);
           expect(typeof echo).toBe("function");
-        }),
-      );
+        });
 
-      yield* Ballast.providePlan(script, recorder);
+      yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder);
 
       const manifest = yield* Ref.get(ref);
       expect(manifest.script.id).toBe("records");
@@ -93,19 +90,16 @@ describe("@ballast/core plan phase", () => {
       const ref = yield* Ref.make(Ballast.emptyManifest("namespace"));
       const recorder = makeRecorder(ref);
 
-      const script = Ballast.Script(
-        "namespace",
-        Effect.gen(function* () {
+      const script = Effect.gen(function* () {
           yield* Ballast.Connection({
             integration: "obs",
             slot: "main",
             location: "local",
             requests: ["*"],
           });
-        }),
-      );
+        });
 
-      yield* Ballast.providePlan(script, recorder);
+      yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder);
 
       const manifest = yield* Ref.get(ref);
       expect(manifest.requests).toEqual([
@@ -119,9 +113,7 @@ describe("@ballast/core plan phase", () => {
       const ref = yield* Ref.make(Ballast.emptyManifest("granted"));
       const recorder = makeRecorder(ref);
 
-      const script = Ballast.Script(
-        "granted",
-        Effect.gen(function* () {
+      const script = Effect.gen(function* () {
           const host = yield* Ballast.RequestHost;
           const call = host.granted<{ text: string }, { text: string }>({
             integration: "obs",
@@ -131,10 +123,9 @@ describe("@ballast/core plan phase", () => {
             key: "obs/main/SetCurrentProgramScene",
           });
           yield* call({ text: "no" });
-        }),
-      );
+        });
 
-      const exit = yield* Ballast.providePlan(script, recorder).pipe(Effect.exit);
+      const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
@@ -148,9 +139,7 @@ describe("@ballast/core plan phase", () => {
       const ref = yield* Ref.make(Ballast.emptyManifest("call-request"));
       const recorder = makeRecorder(ref);
 
-      const script = Ballast.Script(
-        "call-request",
-        Effect.gen(function* () {
+      const script = Effect.gen(function* () {
           const echo = yield* Ballast.Request<{ text: string }, { text: string }>({
             integration: "fake",
             slot: "main",
@@ -158,10 +147,9 @@ describe("@ballast/core plan phase", () => {
             scopes: ["fake:write"],
           });
           yield* echo({ text: "no" });
-        }),
-      );
+        });
 
-      const exit = yield* Ballast.providePlan(script, recorder).pipe(Effect.exit);
+      const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
@@ -191,15 +179,12 @@ describe("@ballast/core plan phase", () => {
       const ref = yield* Ref.make(Ballast.emptyManifest("read-param"));
       const recorder = makeRecorder(ref);
 
-      const script = Ballast.Script(
-        "read-param",
-        Effect.gen(function* () {
+      const script = Effect.gen(function* () {
           const prefix = yield* Ballast.Param.string("prefix", { default: ">" });
           yield* prefix;
-        }),
-      );
+        });
 
-      const exit = yield* Ballast.providePlan(script, recorder).pipe(Effect.exit);
+      const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {

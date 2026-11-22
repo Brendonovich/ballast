@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { plan, PlanError } from "../src/index.ts";
+import { plan, planDetails, PlanError } from "../src/index.ts";
 
 const example = fileURLToPath(new URL("../../../examples/tick-echo.ts", import.meta.url));
 const callRequest = fileURLToPath(
@@ -37,6 +37,14 @@ describe("plan", () => {
         ],
         unresolved: [],
       });
+    }),
+  );
+
+  it.effect("reads the optional title export", () =>
+    Effect.gen(function* () {
+      const result = yield* planDetails(example);
+      expect(result.title).toBe("Tick Echo");
+      expect(result.manifest.script.id).toBe("tick-echo");
     }),
   );
 

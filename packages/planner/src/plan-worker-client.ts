@@ -2,10 +2,12 @@ import { Worker } from "node:worker_threads";
 import * as Effect from "effect/Effect";
 import type { Manifest } from "@ballast/core";
 import { PlanError } from "./plan.ts";
+import type { PlanOptions, PlannedScript } from "./plan.ts";
 
 interface WorkerSuccess {
   readonly ok: true;
   readonly manifest: Manifest;
+  readonly title: string;
 }
 
 interface WorkerFailure {
@@ -18,24 +20,34 @@ type WorkerMessage = WorkerSuccess | WorkerFailure;
 const isWorkerMessage = (value: unknown): value is WorkerMessage => {
   if (typeof value !== "object" || value === null || !("ok" in value)) return false;
   const ok = value.ok;
-  if (ok === true) return "manifest" in value;
+  if (ok === true) {
+    return (
+      "manifest" in value &&
+      "title" in value &&
+      typeof value.title === "string"
+    );
+  }
   if (ok === false) return "error" in value && typeof value.error === "string";
   return false;
 };
 
 /**
- * Evaluate a script's init in a throwaway worker in plan phase. A fresh worker
- * means a fresh module graph: no imports, state or sockets leak between plans.
+ * Evaluate a script in a throwaway worker in plan phase. The worker bundles the
+ * script with rolldown first, so imports resolve from the project when present
+ * and from the agent stage otherwise.
  */
-export const plan = (entry: string): Effect.Effect<Manifest, PlanError> =>
+export const planDetails = (
+  entry: string,
+  options: PlanOptions = {},
+): Effect.Effect<PlannedScript, PlanError> =>
   Effect.callback((resume) => {
     const worker = new Worker(new URL("./plan-worker.ts", import.meta.url), {
-      workerData: { entry },
+      workerData: { entry, ...options },
     });
 
     let settled = false;
 
-    const finish = (result: Effect.Effect<Manifest, PlanError>) => {
+    const finish = (result: Effect.Effect<PlannedScript, PlanError>) => {
       if (settled) return;
       settled = true;
       void worker.terminate();
@@ -49,7 +61,7 @@ export const plan = (entry: string): Effect.Effect<Manifest, PlanError> =>
       }
       finish(
         message.ok
-          ? Effect.succeed(message.manifest)
+          ? Effect.succeed({ manifest: message.manifest, title: message.title })
           : Effect.fail(new PlanError({ message: message.error })),
       );
     });
@@ -74,3 +86,9 @@ export const plan = (entry: string): Effect.Effect<Manifest, PlanError> =>
       void worker.terminate();
     });
   });
+
+export const plan = (
+  entry: string,
+  options: PlanOptions = {},
+): Effect.Effect<Manifest, PlanError> =>
+  planDetails(entry, options).pipe(Effect.map((result) => result.manifest));

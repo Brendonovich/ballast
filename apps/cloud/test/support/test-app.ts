@@ -24,6 +24,11 @@ const tokenKey = (() => {
 export interface RelaySink {
   readonly events: Array<{ machineId: string; envelope: import("@ballast/cloud-protocol").EventEnvelope }>;
   readonly notifications: Array<{ machineId: string; message: import("@ballast/cloud-protocol").RelayServerMessage }>;
+  readonly webhooks: Array<{
+    machineId: string;
+    delivery: import("@ballast/cloud-protocol").WebhookRelayDelivery;
+    policy: { readonly maxAgeMs: number; readonly onStale: "drop" | "deliver" };
+  }>;
 }
 
 export interface TestApp {
@@ -82,7 +87,7 @@ export const makeTestApp = async (options: {
   const store = makeMemoryStore();
   const vault = await Effect.runPromise(makeTokenVault(config));
   const twitch = makeFakeTwitch(options.twitch);
-  const relay: RelaySink = { events: [], notifications: [] };
+  const relay: RelaySink = { events: [], notifications: [], webhooks: [] };
   const relayGateway: RelayGatewayService = options.relay ?? {
     enqueueEvent: (machineId, envelope) =>
       Effect.sync(() => {
@@ -91,6 +96,10 @@ export const makeTestApp = async (options: {
     notify: (machineId, message) =>
       Effect.sync(() => {
         relay.notifications.push({ machineId, message });
+      }),
+    enqueueWebhook: (machineId, delivery, policy) =>
+      Effect.sync(() => {
+        relay.webhooks.push({ machineId, delivery, policy });
       }),
   };
   const app = await Effect.runPromise(

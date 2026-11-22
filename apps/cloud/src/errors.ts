@@ -6,6 +6,7 @@ export class HttpError extends Data.TaggedError("HttpError")<{
   readonly tag: ErrorTag;
   readonly message: string;
   readonly details?: unknown;
+  readonly headers?: Readonly<Record<string, string>>;
 }> {}
 
 export const badRequest = (message: string, details?: unknown) =>
@@ -35,5 +36,20 @@ export const upstreamError = (message: string, details?: unknown) =>
 export const internalError = (message = "Internal server error") =>
   new HttpError({ status: 500, tag: "internal", message });
 
-export const rateLimited = (message: string, details?: unknown) =>
-  new HttpError({ status: 429, tag: "rate_limited", message, details });
+export const rateLimited = (
+  message: string,
+  details?: unknown,
+  retryAfterSeconds?: number,
+) =>
+  new HttpError({
+    status: 429,
+    tag: "rate_limited",
+    message,
+    details,
+    ...(retryAfterSeconds === undefined
+      ? {}
+      : { headers: { "retry-after": String(retryAfterSeconds) } }),
+  });
+
+export const unavailable = (message: string, details?: unknown) =>
+  new HttpError({ status: 503, tag: "upstream_error", message, details });

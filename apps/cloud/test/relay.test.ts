@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RuntimeContext } from "alchemy/RuntimeContext";
 import { Effect, Layer } from "effect";
 
-import type { EventEnvelope } from "@ballast/cloud-protocol";
+import type { EventEnvelope, WebhookRelayDelivery } from "@ballast/cloud-protocol";
 
 import {
   RelayBuffer,
@@ -14,8 +14,10 @@ import {
   ackEvents,
   emptyRelaySnapshot,
   enqueueEvent,
+  enqueueWebhook,
   pendingCount,
   pendingEvents,
+  pendingMessages,
   pruneRelay,
 } from "../src/relay/state.ts";
 
@@ -30,6 +32,17 @@ const envelope = (id: string, overrides: Partial<EventEnvelope> = {}): EventEnve
   onStale: "drop",
   maxAgeMs: 60_000,
   ...overrides,
+});
+
+const webhook = (hookId: string): WebhookRelayDelivery => ({
+  hookId,
+  deliveryId: "delivery-" + hookId,
+  method: "POST",
+  path: "/hooks/machine/" + hookId,
+  query: { a: "1" },
+  headers: { "content-type": "text/plain" },
+  bodyBase64: "aGVsbG8=",
+  receivedAt: 1_000,
 });
 
 describe("relay state", () => {
@@ -85,6 +98,43 @@ describe("relay state", () => {
     const pruned = pruneRelay(second.snapshot, 1_001 + 86_400_001, { retentionMs: 86_400_000 });
     expect(pruned.events).toHaveLength(0);
     expect(pruned.seen).toHaveLength(0);
+  });
+
+  it("shares sequence numbers between events and webhooks", () => {
+    const event = enqueueEvent(emptyRelaySnapshot, envelope("e1"), 1_000);
+    const delivery = enqueueWebhook(event.snapshot, webhook("hook-1"), {
+      maxAgeMs: 60_000,
+      onStale: "drop",
+    }, 1_001);
+    expect(delivery.result.seq).toBe(2);
+    expect(delivery.snapshot.webhooks[0]?.seq).toBe(2);
+    const pending = pendingMessages(delivery.snapshot, 1_002);
+    expect(pending.messages.map((message) =>
+      message._tag === "event" ? message.event.seq : message.webhook.seq,
+    )).toEqual([1, 2]);
+  });
+
+  it("drops or delivers stale webhooks by their own policy", () => {
+    const fresh = enqueueWebhook(emptyRelaySnapshot, webhook("hook-1"), {
+      maxAgeMs: 5_000,
+      onStale: "drop",
+    }, 1_000);
+    const dropped = pendingMessages(fresh.snapshot, 10_000);
+    expect(dropped.messages).toHaveLength(0);
+    expect(dropped.snapshot.webhooks[0]?.droppedAt).toBe(10_000);
+
+    const deliver = enqueueWebhook(emptyRelaySnapshot, webhook("hook-2"), {
+      maxAgeMs: 5_000,
+      onStale: "deliver",
+    }, 1_000);
+    const stale = pendingMessages(deliver.snapshot, 10_000);
+    expect(stale.messages).toEqual([
+      expect.objectContaining({
+        _tag: "webhook",
+        webhook: expect.objectContaining({ seq: 1, stale: true }),
+      }),
+    ]);
+    expect(pendingCount(stale.snapshot)).toBe(1);
   });
 
   it("evicts the oldest events when the buffer is full", () => {

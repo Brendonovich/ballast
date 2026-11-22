@@ -25,6 +25,7 @@ import type {
   ScriptManifest,
   ScriptSummary,
 } from "./scripts.ts";
+import { mockScriptSources } from "./mock-sources.ts";
 import { scriptView } from "./scripts.ts";
 import type { HealthStatus, ServiceInfo } from "./service.ts";
 import { AGENT_API_VERSION } from "./service.ts";
@@ -42,6 +43,17 @@ import { AgentRpcs } from "./rpc.ts";
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
+
+const sourceSha256 = (content: string): Effect.Effect<string> =>
+  Effect.promise(async () => {
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(content),
+    );
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  });
 
 interface MockState {
   readonly info: ServiceInfo;
@@ -1160,6 +1172,35 @@ const handlers = Effect.gen(function* () {
       Effect.flatMap(Ref.get(store.state), (state) =>
         requireScript(state, projectId, scriptId),
       ),
+
+    GetScriptSource: ({
+      projectId,
+      scriptId,
+    }: {
+      readonly projectId: string;
+      readonly scriptId: string;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const detail = yield* requireScript(state, projectId, scriptId);
+        const source = mockScriptSources.get(scriptId);
+        if (source === undefined) {
+          return yield* fail(
+            agentError(
+              "not-found",
+              `No source is available for "${scriptId}" in project "${projectId}"`,
+            ),
+          );
+        }
+        const sha256 = yield* sourceSha256(source);
+        return {
+          path: detail.summary.entry,
+          content: source,
+          sha256,
+          updatedAt: detail.summary.updatedAt,
+          language: "typescript" as const,
+        };
+      }),
 
     PlanScript: ({
       projectId,

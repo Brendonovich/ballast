@@ -4,13 +4,20 @@ import * as Option from "effect/Option";
 
 declare global {
   /**
-   * Folded to `true` by the runtime bundler. When running source directly it is
-   * `undefined`, which means plan phase.
+   * Folded to `"runtime"` by the runtime bundler. Source runs (the planner and
+   * tests) leave it undefined, which means plan phase. The host normally
+   * provides `ScriptPhase` explicitly; this is the default for code that is
+   * evaluated without a host, and it lets a bundler drop plan-only branches.
    */
-  var __ALCHEMY_RUNTIME__: boolean | undefined;
+  var __BALLAST_PHASE__: Phase | undefined;
 }
 
 export type Phase = "plan" | "runtime";
+
+const defaultPhase = (): Phase =>
+  globalThis.__BALLAST_PHASE__ === "runtime" || process.env["BALLAST_PHASE"] === "runtime"
+    ? "runtime"
+    : "plan";
 
 /**
  * The phase the current script is evaluated in. The planner provides
@@ -20,12 +27,5 @@ export type Phase = "plan" | "runtime";
 export class ScriptPhase extends Context.Service<ScriptPhase, Phase>()("Ballast/ScriptPhase") {}
 
 export const currentPhase: Effect.Effect<Phase> = Effect.serviceOption(ScriptPhase).pipe(
-  Effect.map(
-    Option.getOrElse(
-      (): Phase =>
-        globalThis.__ALCHEMY_RUNTIME__ || process.env["ALCHEMY_PHASE"] === "runtime"
-          ? "runtime"
-          : "plan",
-    ),
-  ),
+  Effect.map(Option.getOrElse(defaultPhase)),
 );

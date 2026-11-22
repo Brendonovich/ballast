@@ -5,6 +5,7 @@ import {
   ErrorTag,
   EventEnvelope,
   ReconcileSubscriptionsRequest,
+  RegisterHooksRequest,
   RelayClientMessage,
   RelayServerMessage,
   TwitchConnection,
@@ -130,6 +131,50 @@ describe("cloud protocol", () => {
         updatedAt: 2,
       }).owners,
     ).toEqual(["project-a", "project-b"]);
+  });
+
+  it("round-trips webhook registration and relay delivery frames", () => {
+    const registration = {
+      hooks: [
+        {
+          hookId: "N3xAbcdefghijklmnopqrstuv",
+          label: "Ko-fi",
+          maxAgeMs: 60_000,
+          onStale: "drop" as const,
+          verification: {
+            type: "hmac-sha256" as const,
+            header: "x-kofi-signature",
+            secret: "secret",
+            encoding: "hex" as const,
+            prefix: "sha256=",
+            timestampHeader: "x-kofi-timestamp",
+            toleranceSeconds: 300,
+          },
+          response: { status: 200, body: "ok" },
+        },
+      ],
+    };
+    expect(Schema.decodeUnknownSync(RegisterHooksRequest)(registration)).toEqual(registration);
+
+    const delivery = {
+      _tag: "webhook_delivery" as const,
+      seq: 7,
+      stale: false,
+      delivery: {
+        hookId: "N3xAbcdefghijklmnopqrstuv",
+        deliveryId: "delivery-1",
+        method: "POST",
+        path: "/hooks/m_1/N3xAbcdefghijklmnopqrstuv",
+        query: { a: "1" },
+        headers: { "x-kofi-signature": "abc" },
+        bodyBase64: "aGVsbG8=",
+        receivedAt: 123,
+      },
+    };
+    const encoded = encodeRelayServerMessage(delivery);
+    expect(
+      Schema.decodeUnknownSync(Schema.fromJsonString(RelayServerMessage))(encoded),
+    ).toEqual(delivery);
   });
 
   it("decodes a Twitch EventSub delivery", () => {

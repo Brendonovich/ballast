@@ -21,9 +21,13 @@ export interface HttpResponse {
 export const header = (request: HttpRequest, name: string): string | undefined =>
   request.headers[name.toLowerCase()];
 
-export const json = (status: number, value: unknown): HttpResponse => ({
+export const json = (
+  status: number,
+  value: unknown,
+  headers: Readonly<Record<string, string>> = {},
+): HttpResponse => ({
   status,
-  headers: { "content-type": "application/json; charset=utf-8" },
+  headers: { "content-type": "application/json; charset=utf-8", ...headers },
   body: JSON.stringify(value),
 });
 

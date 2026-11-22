@@ -172,6 +172,30 @@ describe("@ballast/agent-protocol RPC group", () => {
     }),
   );
 
+  it.effect("returns a read-only script source with a content hash", () =>
+    Effect.gen(function* () {
+      const agent = yield* client;
+
+      const source = yield* agent.GetScriptSource(mainScript);
+      expect(source.path).toBe(redeem);
+      expect(source.language).toBe("typescript");
+      expect(source.content).toContain("Effect.gen");
+      expect(source.content).toContain("ChannelPointsRedemption.subscribe");
+      expect(source.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(source.updatedAt).toBe((yield* agent.GetScript(mainScript)).summary.updatedAt);
+
+      const altSource = yield* agent.GetScriptSource(altTick);
+      expect(altSource.path).toBe(tick);
+      expect(altSource.content).toContain("Fake.Tick.subscribe");
+      expect(altSource.sha256).not.toBe(source.sha256);
+
+      const missing = yield* agent
+        .GetScriptSource({ projectId: main, scriptId: "scripts/nope.ts" })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(missing)).toBe(true);
+    }),
+  );
+
   it.effect("sets params, validates them and bumps the generation", () =>
     Effect.gen(function* () {
       const agent = yield* client;
@@ -319,11 +343,11 @@ describe("@ballast/agent-protocol RPC group", () => {
       expect(unlinked.state).toBe("unlinked");
 
       const session = yield* agent.BeginCloudPairing({ machineName: "Test PC" });
-      expect(session.code).toMatch(/^[A-Z0-9-]+$/);
+      expect(session.code ?? "").toMatch(/^[A-Z0-9-]+$/);
       expect((yield* agent.GetCloudStatus()).state).toBe("linking");
 
       const paired = yield* agent.PairCloud({
-        code: session.code,
+        code: session.code ?? "",
         machineName: "Test PC",
       });
       expect(paired.state).toBe("linked");

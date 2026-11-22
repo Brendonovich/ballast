@@ -32,7 +32,7 @@ import {
   SetScriptEnabledRequest,
   SetScriptParamRequest,
 } from "./requests.ts";
-import { ConsentRequest, ScriptDetail, ScriptSummary } from "./scripts.ts";
+import { ConsentRequest, ScriptDetail, ScriptSource, ScriptSummary } from "./scripts.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
 
 export const AGENT_RPC_PATH = "/rpc" as const;
@@ -125,6 +125,16 @@ export const ListScripts = Rpc.make("ListScripts", {
 export const GetScript = Rpc.make("GetScript", {
   payload: ScriptIdRequest,
   success: ScriptDetail,
+  error: AgentError,
+});
+
+/**
+ * Read the script's entry file for the read-only source viewer. Editing is out
+ * of scope in v1; this never writes.
+ */
+export const GetScriptSource = Rpc.make("GetScriptSource", {
+  payload: ScriptIdRequest,
+  success: ScriptSource,
   error: AgentError,
 });
 
@@ -307,6 +317,7 @@ export const AgentRpcs = RpcGroup.make(
   RemoveProject,
   ListScripts,
   GetScript,
+  GetScriptSource,
   PlanScript,
   StartScript,
   StopScript,
@@ -332,5 +343,10 @@ export const AgentRpcs = RpcGroup.make(
 );
 export type AgentRpcs = typeof AgentRpcs;
 
-/** The generated client shape shared by the CLI, shell and UI transport. */
-export type AgentClient = RpcClient.FromGroup<typeof AgentRpcs>;
+/**
+ * The generated client shape shared by the CLI, shell and UI transport. The
+ * error parameter defaults to `never` for test/mock clients; a real WebSocket
+ * client should use `AgentClient<RpcClientError>` so transport failures are
+ * visible in the effect's error channel.
+ */
+export type AgentClient<E = never> = RpcClient.FromGroup<typeof AgentRpcs, E>;

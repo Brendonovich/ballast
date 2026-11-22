@@ -6,7 +6,7 @@
 
 A desktop agent that runs **Effect scripts** on a streamer's machine, plus a **cloud** that handles everything a desktop can't: OAuth, webhooks, EventSub and relaying events. Integrations give scripts one typed way to work with every service: **events in, requests out**.
 
-Scripts are written with **Alchemy and Effect**. A script's *init* only declares what it needs, so the agent can **evaluate the script in plan mode** without running it. That produces a manifest of:
+Scripts are written with **Effect** and the **`@ballast/core`** script host. A script's *init* only declares what it needs, so the agent can **evaluate the script in plan mode** without running it. (Decision 0004 removed Alchemy from the script runtime; Alchemy is only used to deploy the cloud.) That produces a manifest of:
 
 - the event topics it subscribes to
 - the requests it may make
@@ -32,7 +32,7 @@ The agent uses that manifest to set up cloud subscriptions, ask for missing scop
 | Concept | Meaning |
 |---|---|
 | **Project** | A folder of scripts plus settings on one machine. That machine has the only live copy. |
-| **Script** | A TS file exporting `Ballast.Script(...)`. Init declares; handlers act. |
+| **Script** | A TS file whose default export is an Effect (optionally typed as `Ballast.Script`). Init declares; handlers act. |
 | **Integration** | A package (`@ballast/twitch`, `@ballast/obs`) defining topics, requests, credential type, location, plan-time providers and runtime clients. |
 | **Connection** | A configured instance of an integration, such as a linked Twitch account or an OBS at `localhost:4455`. Scripts refer to **connection slots** by name (`"broadcaster"`, `"bot"`, `"main"`), and the user binds each slot to a connection. |
 | **Topic** | A typed event stream (`twitch/channel.cheer`, `obs/CurrentProgramSceneChanged`). |
@@ -52,9 +52,7 @@ import * as Twitch from "@ballast/twitch";
 import * as OBS from "@ballast/obs";
 import { Effect } from "effect";
 
-export default Ballast.Script(
-  "redeem-to-scene",
-  Effect.gen(function* () {
+export default Effect.gen(function* () {
     // Params: captured into the manifest at plan time, read from settings at runtime
     const rewardTitle = yield* Ballast.Param.string("rewardTitle", { title: "Reward title" });
     const scene = yield* Ballast.Param.string("scene", { title: "Scene", options: OBS.scenes("main") });
@@ -71,16 +69,15 @@ export default Ballast.Script(
       Effect.gen(function* () {
         if (event.reward.title !== (yield* rewardTitle)) return;
         yield* setScene({ sceneName: yield* scene });
-      }),
-    );
+});
   }),
 );
 ```
 
 Rules:
 
-- **Init declares, handlers act.** Init has no `Scope` and no I/O; Alchemy already types it that way. Anything with side effects belongs in a handler or `Ballast.run(...)` (a long-running loop, like Alchemy's `ServerHost.run`).
-- Param values are **lazy** (`Effect`s or Alchemy `Output`s), so plan mode never needs real values. A topic can depend on a param (for example "subscribe to the channel named in this param"); planning records it as unresolved and apply resolves it.
+- **Init declares, handlers act.** Init has no `Scope` and no I/O; the core's `ScriptHostServices` types it that way. Anything with side effects belongs in a handler or `Ballast.run(...)` (a long-running loop).
+- Param values are **lazy** `Effect`s, so plan mode never needs real values. A topic can depend on a param (for example "subscribe to the channel named in this param"); planning records it as unresolved and apply resolves it.
 - Imports are limited to `effect`, `@ballast/*` and relative files at first. npm dependencies come later through bundling.
 
 ### 4.2 Plan, apply, run
@@ -101,24 +98,29 @@ Rules:
                  run (worker, phase=runtime) ─► hot-swap: old script scope closes, new one starts
 ```
 
-- **Plan** runs the script's init with Alchemy's plan phase in a throwaway worker. Integration bindings write requirements into the plan context instead of acting (the same approach as `GitHub.RepositoryEventSourceLive`, which provisions a webhook at plan time and only routes requests at runtime).
-- **Apply** turns the manifest diff into actions. Applied state is stored per project in local SQLite, which is Alchemy's state store implemented for the agent.
-- **Run** bundles the script with `__ALCHEMY_RUNTIME__ = true` so plan-only code is removed, then starts it in a worker. The host provides the runtime services: event delivery, request clients, params, state and logs.
+- **Plan** runs the script's init against Ballast's plan layer in a throwaway worker. Integration bindings write requirements into the manifest recorder instead of acting; request clients die if called.
+- **Apply** turns the manifest diff into actions. Applied state is stored per project in local SQLite.
+- **Run** bundles the script with `__BALLAST_PHASE__ = "runtime"` so plan-only code can be removed, then starts it in a worker. The host provides the runtime services: event delivery, request clients, params, state and logs.
 
-### 4.3 How Ballast maps onto Alchemy
+### 4.3 How the script model relates to Alchemy
 
-| Alchemy | Ballast |
+Decision 0004 removed Alchemy from the script runtime. The ideas remain, but
+`@ballast/core` implements the split itself:
+
+| Alchemy idea (0001) | Ballast now |
 |---|---|
 | `Stack` | Project |
-| `Platform` (e.g. `Cloudflare.Worker`) | `Ballast.Script`: a custom platform whose host is a worker in the agent |
-| `WebhookHost` (host-provided service) | `EventHost`: routes topic deliveries from the agent bus to handlers |
-| Binding `Service` (`R2.ReadWrite(bucket)`) | Request capabilities (`OBS.SetCurrentProgramScene(obs)`) |
+| `Platform` | `Ballast.Script` plus the plan/runtime host layers, hosted in a worker in the agent |
+| `WebhookHost` (host-provided service) | `EventHost`: `EventHostPlan` records, `EventHostRuntime` routes deliveries from the agent bus |
+| Binding `Service` (`R2.ReadWrite(bucket)`) | Request capabilities (`OBS.SetCurrentProgramScene(obs)`): `RequestHostPlan` records and dies, `RequestHostRuntime` calls over RPC |
 | Event source (`consumeRepositoryEvents`) | Topic subscriptions (`Twitch.onChannelPointsRedemption`) |
-| Provider/Resource (e.g. GitHub `Webhook`) | `TopicSubscription` resource, created through the Ballast cloud API |
-| `Config` captured into env (`RuntimeContext.set`) | `Ballast.Param`, captured into the manifest |
+| Provider/Resource (e.g. GitHub `Webhook`) | Manifest entry + the planner's set diff; the cloud API creates the subscription |
+| `Config` captured into env (`RuntimeContext.set`) | `Ballast.Param` captured into the manifest and read from `Settings` at runtime |
 | State store | Agent SQLite |
 
-**Deciding how deep to go:** use Alchemy's `Platform`, `Binding`, `Output` and the plan/apply engine directly; don't reimplement them. Wrap them behind `@ballast/core` so script authors never import `alchemy` directly. That limits the impact of churn while Alchemy is in alpha (MacroGraph pins `2.0.0-beta.84`). Phase 0 checks this works; see §9.
+Alchemy is only used in `apps/cloud` to deploy Cloudflare resources (D9).
+Script authors import `@ballast/*` and `effect` only. See
+`docs/decisions/0004-drop-alchemy-from-script-runtime.md`.
 
 ## 5. Integrations
 
@@ -128,7 +130,7 @@ Rules:
 @ballast/twitch
 ├── catalog.ts     topics + requests as Effect Schemas (exported as JSON Schema for UI, MCP and agents)
 ├── credential.ts  OAuth provider, scopes per topic/request, account slot types
-├── plan.ts        bindings: record requirements, define TopicSubscription resources (Alchemy providers)
+├── plan.ts        bindings: record requirements into the manifest recorder
 ├── runtime.ts     clients: request implementations, event decoding
 ├── cloud.ts       ingress: webhook/EventSub/polling handlers that run in the Ballast cloud
 └── local.ts       (local integrations) connection driver run by the agent
@@ -163,7 +165,7 @@ First set, in order: **OBS → Twitch → VTube Studio → Ko-fi → Streamlabs 
 ```
 ┌──────────────────────────── Desktop agent (Node, Effect) ─────────────────────────────┐
 │ Project store   files on disk + SQLite (settings, state, applied manifests, logs)     │
-│ Planner         Alchemy plan in an isolated worker → manifest → diff → apply          │
+│ Planner         plan layer in an isolated worker → manifest → diff → apply            │
 │ Script host     one worker per script; Effect runtime; scoped hot reload             │
 │ Event bus       topics from local drivers + cloud relay → script handlers             │
 │ Connections     local drivers (OBS ws, VTS ws, MIDI…), health, reconnect             │
@@ -222,7 +224,7 @@ ballast/
 │   └── desktop/        Rune + CEF shell (later)
 ├── packages/
 │   ├── core/           @ballast/core: Script platform, Param, State, EventHost, envelope
-│   ├── planner/        plan/apply over Alchemy; manifest + diff
+│   ├── planner/        plan worker, manifest recorder and diff
 │   ├── protocol/       agent ↔ cloud RPC schemas, MCP schemas
 │   ├── integration/    integration SDK (catalog helpers, TopicSubscription, drivers)
 │   └── integrations/   twitch, obs, vtube-studio, kofi, streamlabs, discord, openai, …
@@ -231,13 +233,13 @@ ballast/
 
 ## 9. Phases
 
-### Phase 0: Alchemy spike (1–2 weeks)
-Prove scripts work as Alchemy programs outside a cloud deploy.
-- `Ballast.Script` as a custom Alchemy `Platform` hosted in a Node worker.
-- Plan one script in isolation (no Stack-wide deploy) with an in-memory state store; extract the manifest.
-- A fake integration with one topic and one request; runtime bundle with `__ALCHEMY_RUNTIME__`.
+### Phase 0: plan/runtime spike (complete)
+Prove a script's init can be planned into a manifest and run in a worker outside a cloud deploy.
+- `Ballast.Script` evaluates init against either the plan layer or the runtime layer in a Node worker.
+- Plan one script in isolation; extract the manifest. Requests die if called and connections are never opened.
+- A fake integration with one topic and one request; runtime bundle with `__BALLAST_PHASE__ = "runtime"`.
 - **Exit:** `ballast plan examples/fake.ts` prints a manifest; `ballast run` delivers fake events to the handler, and hot reload replaces it cleanly.
-- **Fallback if Alchemy doesn't fit:** keep the same script shape and write a small declaration recorder in `@ballast/core` (a plan-mode layer that records bindings). Scripts barely change.
+- **Outcome:** decision 0001's fallback B was adopted by decision 0004. Alchemy is not in the script runtime; it only deploys the cloud.
 
 ### Phase 1: Local agent and OBS (2–3 weeks)
 - Agent service, project store, script host, logs, params from a settings file.
@@ -263,7 +265,7 @@ Publish/pull distribution → remote collaborative editing through the relay →
 
 ## 10. Risks and open questions
 
-1. **Alchemy coupling.** Alpha, frequent changes, and built for deploying cloud infrastructure, not for running scripts on a desktop. Mitigation: hide it behind `@ballast/core`, pin the version, and keep the fallback from Phase 0.
+1. **Alchemy in the cloud deploy.** Alpha and frequent changes, but now confined to `apps/cloud` (decision 0004). Mitigation: pin the version; the script runtime does not depend on it.
 2. **Keeping init pure.** Scripts that do I/O in init break planning. Types help (init has no `Scope`); also add a lint rule and fail planning on any real I/O (plan-mode layers die if a request client is called).
 3. **Params that affect topics.** These need `Output` resolution at apply. Keep this rare and documented.
 4. **Twitch EventSub limits.** Check subscription cost limits for user-authorized webhooks versus conduits before choosing the cloud design.

@@ -29,7 +29,28 @@
       "path": "apps/cloud"
     },
     {
+      "path": "apps/desktop"
+    },
+    {
+      "path": "apps/web"
+    },
+    {
       "path": "examples"
+    },
+    {
+      "path": "packages/integrations/keyboard"
+    },
+    {
+      "path": "packages/integrations/midi"
+    },
+    {
+      "path": "packages/integrations/vtube-studio"
+    },
+    {
+      "path": "packages/integrations/websocket"
+    },
+    {
+      "path": "packages/integrations/http"
     }
   ]
 }

@@ -2,6 +2,11 @@
 
 *Status: accepted for Phase 0 · 2026-11-22 · alchemy `2.0.0-beta.84`, effect `4.0.6`*
 
+> **Superseded by [0004](0004-drop-alchemy-from-script-runtime.md).** The script
+> runtime no longer depends on Alchemy; the host model described here was replaced
+> by Ballast's own plan/runtime layers. The investigation and measurements below
+> are kept as the record behind that decision.
+
 ## Context
 
 Decision D3 in `docs/HANDOFF.md` says scripts are written with Alchemy and Effect, because running a

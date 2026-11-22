@@ -82,7 +82,7 @@ export const bundleScript = (
         plugins: [nodeResolvePlugin],
         transform: {
           define: {
-            "globalThis.__ALCHEMY_RUNTIME__": "true",
+            "globalThis.__BALLAST_PHASE__": JSON.stringify("runtime"),
           },
         },
         onwarn(warning) {

@@ -67,38 +67,42 @@ export const makeCloudConfig = (values: {
 
 /**
  * Reads the Worker's bound environment. Alchemy captures each `Config` at
- * plan time and reads it back from the Worker's env at runtime.
+ * plan time and reads it back from the Worker's env at runtime. A Worker's
+ * Effect init can yield this directly so the bindings are registered without
+ * a separate `env` prop.
  */
+export const loadCloudConfig = Effect.gen(function* () {
+  const values = yield* Config.all({
+    publicOrigin: Config.String("BALLAST_PUBLIC_ORIGIN").pipe(
+      Config.withDefault(DEV_PUBLIC_ORIGIN),
+    ),
+    twitchClientId: Config.String("TWITCH_CLIENT_ID"),
+    twitchClientSecret: Config.Redacted("TWITCH_CLIENT_SECRET"),
+    tokenKey: Config.Redacted("BALLAST_TOKEN_KEY"),
+    tokenPepper: Config.String("BALLAST_TOKEN_PEPPER"),
+    maxSubscriptionCost: Config.Number("BALLAST_TWITCH_MAX_SUBSCRIPTION_COST").pipe(
+      Config.withDefault(DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST),
+    ),
+    twitchIdBaseUrl: Config.String("TWITCH_ID_BASE_URL").pipe(
+      Config.withDefault("https://id.twitch.tv"),
+    ),
+    twitchApiBaseUrl: Config.String("TWITCH_API_BASE_URL").pipe(
+      Config.withDefault("https://api.twitch.tv"),
+    ),
+  });
+  return makeCloudConfig({
+    publicOrigin: values.publicOrigin,
+    twitchClientId: values.twitchClientId,
+    twitchClientSecret: Redacted.value(values.twitchClientSecret),
+    tokenKey: Redacted.value(values.tokenKey),
+    tokenPepper: values.tokenPepper,
+    maxSubscriptionCost: values.maxSubscriptionCost,
+    twitchIdBaseUrl: values.twitchIdBaseUrl,
+    twitchApiBaseUrl: values.twitchApiBaseUrl,
+  });
+});
+
 export const CloudConfigLive = Layer.effect(
   CloudConfig,
-  Effect.gen(function* () {
-    const values = yield* Config.all({
-      publicOrigin: Config.String("BALLAST_PUBLIC_ORIGIN").pipe(
-        Config.withDefault(DEV_PUBLIC_ORIGIN),
-      ),
-      twitchClientId: Config.String("TWITCH_CLIENT_ID"),
-      twitchClientSecret: Config.Redacted("TWITCH_CLIENT_SECRET"),
-      tokenKey: Config.Redacted("BALLAST_TOKEN_KEY"),
-      tokenPepper: Config.String("BALLAST_TOKEN_PEPPER"),
-      maxSubscriptionCost: Config.Number("BALLAST_TWITCH_MAX_SUBSCRIPTION_COST").pipe(
-        Config.withDefault(DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST),
-      ),
-      twitchIdBaseUrl: Config.String("TWITCH_ID_BASE_URL").pipe(
-        Config.withDefault("https://id.twitch.tv"),
-      ),
-      twitchApiBaseUrl: Config.String("TWITCH_API_BASE_URL").pipe(
-        Config.withDefault("https://api.twitch.tv"),
-      ),
-    });
-    return makeCloudConfig({
-      publicOrigin: values.publicOrigin,
-      twitchClientId: values.twitchClientId,
-      twitchClientSecret: Redacted.value(values.twitchClientSecret),
-      tokenKey: Redacted.value(values.tokenKey),
-      tokenPepper: values.tokenPepper,
-      maxSubscriptionCost: values.maxSubscriptionCost,
-      twitchIdBaseUrl: values.twitchIdBaseUrl,
-      twitchApiBaseUrl: values.twitchApiBaseUrl,
-    });
-  }),
+  Effect.map(loadCloudConfig, (config) => CloudConfig.of(config)),
 );

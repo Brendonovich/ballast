@@ -9,6 +9,7 @@ import type {
   SubscriptionRow,
   TwitchAccountRow,
   UserRow,
+  WebhookHookRow,
 } from "../../src/store.ts";
 
 /**
@@ -28,6 +29,7 @@ export const makeMemoryStore = (): CloudStoreService => {
     string,
     { count: number; windowStart: number; expiresAt: number }
   >();
+  const hooks = new Map<string, WebhookHookRow>();
 
   const copyAccount = (row: TwitchAccountRow): TwitchAccountRow => structuredClone(row);
   const copySubscription = (row: SubscriptionRow): SubscriptionRow => structuredClone(row);
@@ -117,6 +119,35 @@ export const makeMemoryStore = (): CloudStoreService => {
       Effect.sync(() => {
         for (const [key, limit] of rateLimits) {
           if (limit.expiresAt < before) rateLimits.delete(key);
+        }
+      }),
+
+    listHooks: (machineId) =>
+      Effect.sync(() =>
+        [...hooks.values()]
+          .filter((hook) => hook.machineId === machineId)
+          .map((hook) => structuredClone(hook)),
+      ),
+    findHook: (machineId, hookId) =>
+      Effect.sync(() => {
+        const hook = hooks.get(machineId + "\u0000" + hookId);
+        return Option.fromNullishOr(hook === undefined ? undefined : structuredClone(hook));
+      }),
+    replaceHooks: (machineId, rows) =>
+      Effect.sync(() => {
+        for (const [key, hook] of hooks) {
+          if (hook.machineId === machineId) hooks.delete(key);
+        }
+        for (const row of rows) hooks.set(machineId + "\u0000" + row.hookId, structuredClone(row));
+      }),
+    deleteHooks: (machineId, hookIds) =>
+      Effect.sync(() => {
+        for (const hookId of hookIds) hooks.delete(machineId + "\u0000" + hookId);
+      }),
+    pruneHooks: (before) =>
+      Effect.sync(() => {
+        for (const [key, hook] of hooks) {
+          if (hook.updatedAt < before) hooks.delete(key);
         }
       }),
 

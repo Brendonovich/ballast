@@ -3,6 +3,8 @@ import {
   HelixRequest,
   PairingClaimRequest,
   ReconcileSubscriptionsRequest,
+  RegisterHooksRequest,
+  UnregisterHooksRequest,
   conditionKey,
   subscriptionKey,
   twitchSubscriptionCost,
@@ -10,6 +12,7 @@ import {
   type PairingClaimResponse,
   type TwitchConnection,
   type TwitchSubscription,
+  type WebhookRelayDelivery,
 } from "@ballast/cloud-protocol";
 import { Cause, Clock, Context, Duration, Effect, Layer, Option, Schema } from "effect";
 
@@ -25,10 +28,32 @@ import {
   missingScopes,
   notFound,
   rateLimited,
+  unavailable,
   unauthorized,
   upstreamError,
   HttpError,
 } from "./errors.ts";
+import {
+  HOOK_DEFAULT_MAX_AGE_MS,
+  HOOK_ID_PATTERN,
+  HOOK_MAX_BODY_BYTES,
+  HOOK_MAX_MAX_AGE_MS,
+  HOOK_MAX_PER_MACHINE,
+  HOOK_RATE_WINDOW_MS,
+  HOOK_REQUESTS_PER_HOOK,
+  HOOK_REQUESTS_PER_IP,
+  HOOK_REQUESTS_PER_MACHINE,
+  HOOK_REGISTRATIONS_PER_MACHINE,
+  HOOK_RETENTION_MS,
+  encodeBase64,
+  hookResponse,
+  hookUrl,
+  relayHeaders,
+  responseValidationError,
+  verificationConfig,
+  verificationValidationError,
+  verifyHook,
+} from "./hooks.ts";
 import { RelayGateway, type RelayGatewayService } from "./relay/gateway.ts";
 import {
   hashMachineToken,
@@ -44,6 +69,7 @@ import {
   type SubscriptionOwnerRow,
   type SubscriptionRow,
   type TwitchAccountRow,
+  type WebhookHookRow,
 } from "./store.ts";
 import { TwitchApi, type TwitchApiService, type TwitchUser } from "./twitch-api.ts";
 
@@ -209,7 +235,8 @@ const errorBody = (error: HttpError): unknown => ({
   },
 });
 
-const errorResponse = (error: HttpError): HttpResponse => json(error.status, errorBody(error));
+const errorResponse = (error: HttpError): HttpResponse =>
+  json(error.status, errorBody(error), error.headers);
 
 /**
  * EventSub revocations we can recover from without the user reconnecting.
@@ -269,21 +296,23 @@ export const makeCloudApp = (
     const enforceRateLimit = (
       bucket: string,
       limit: number,
+      windowMs: number,
       now: number,
     ): Effect.Effect<void, HttpError> =>
       Effect.gen(function* () {
-        const windowStart = Math.floor(now / PAIRING_RATE_WINDOW_MS) * PAIRING_RATE_WINDOW_MS;
+        const windowStart = Math.floor(now / windowMs) * windowMs;
         const count = yield* store.incrementRateLimit({
           key: bucket,
           windowStart,
-          expiresAt: windowStart + PAIRING_RATE_WINDOW_MS,
+          expiresAt: windowStart + windowMs,
         });
         yield* store.pruneRateLimits(now);
         if (count > limit)
-          return yield* rateLimited("Too many attempts; try again later", {
-            limit,
-            windowMs: PAIRING_RATE_WINDOW_MS,
-          });
+          return yield* rateLimited(
+            "Too many attempts; try again later",
+            { limit, windowMs },
+            Math.ceil(windowMs / 1_000),
+          );
       });
 
     const needsFreshToken = (account: TwitchAccountRow, force: boolean): boolean =>
@@ -799,7 +828,12 @@ export const makeCloudApp = (
           updatedAt: now,
         });
 
-        yield* enforceRateLimit(`pairing-create:${userId}`, PAIRING_CODE_CREATE_LIMIT, now);
+        yield* enforceRateLimit(
+          `pairing-create:${userId}`,
+          PAIRING_CODE_CREATE_LIMIT,
+          PAIRING_RATE_WINDOW_MS,
+          now,
+        );
 
         const existing = yield* store.findAccountByTwitchUser(userId, twitchUser.id);
         const accountId = Option.isSome(existing) ? existing.value.id : crypto.randomUUID();
@@ -862,6 +896,7 @@ export const makeCloudApp = (
         yield* enforceRateLimit(
           `pairing-claim:${clientIp(request)}`,
           PAIRING_CLAIM_LIMIT,
+          PAIRING_RATE_WINDOW_MS,
           now,
         );
         const body = yield* decodeJson(PairingClaimRequest, request.body);
@@ -902,6 +937,198 @@ export const makeCloudApp = (
       Effect.gen(function* () {
         const accounts = yield* store.listAccountsByUser(machine.userId);
         return json(200, { connections: accounts.map(toConnection) });
+      });
+
+    const handleRegisterHooks = (
+      machine: MachineRow,
+      request: HttpRequest,
+    ): Effect.Effect<HttpResponse, HttpError> =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        yield* enforceRateLimit(
+          `hooks-register:${machine.id}`,
+          HOOK_REGISTRATIONS_PER_MACHINE,
+          HOOK_RATE_WINDOW_MS,
+          now,
+        );
+        const body = yield* decodeJson(RegisterHooksRequest, request.body);
+        if (body.hooks.length > HOOK_MAX_PER_MACHINE)
+          return yield* badRequest(
+            `A machine may register at most ${HOOK_MAX_PER_MACHINE} hooks`,
+          );
+        const existing = yield* store.listHooks(machine.id);
+        const existingByHookId = new Map(existing.map((hook) => [hook.hookId, hook]));
+        const seen = new Set<string>();
+        const rows: Array<WebhookHookRow> = [];
+        for (const registration of body.hooks) {
+          if (!HOOK_ID_PATTERN.test(registration.hookId))
+            return yield* badRequest(
+              "hookId must be 22-64 base64url characters",
+              { hookId: registration.hookId },
+            );
+          if (seen.has(registration.hookId))
+            return yield* badRequest("Duplicate hookId", { hookId: registration.hookId });
+          seen.add(registration.hookId);
+
+          const maxAgeMs = registration.maxAgeMs ?? HOOK_DEFAULT_MAX_AGE_MS;
+          if (
+            !Number.isInteger(maxAgeMs) ||
+            maxAgeMs < 0 ||
+            maxAgeMs > HOOK_MAX_MAX_AGE_MS
+          )
+            return yield* badRequest("maxAgeMs must be an integer from 0 to 86400000");
+          const onStale = registration.onStale ?? "drop";
+          const verificationError = verificationValidationError(registration.verification);
+          if (verificationError !== undefined)
+            return yield* badRequest(verificationError, {
+              hookId: registration.hookId,
+            });
+          const responseError = responseValidationError(registration.response);
+          if (responseError !== undefined)
+            return yield* badRequest(responseError, { hookId: registration.hookId });
+
+          const verification =
+            registration.verification === undefined
+              ? null
+              : verificationConfig(registration.verification);
+          const secret =
+            registration.verification === undefined
+              ? null
+              : yield* sealSecret(registration.verification.secret);
+          rows.push({
+            id: crypto.randomUUID(),
+            machineId: machine.id,
+            hookId: registration.hookId,
+            label: registration.label ?? null,
+            verification,
+            secret,
+            response: registration.response ?? null,
+            maxAgeMs,
+            onStale,
+            createdAt: existingByHookId.get(registration.hookId)?.createdAt ?? now,
+            updatedAt: now,
+          });
+        }
+        yield* store.replaceHooks(machine.id, rows);
+        yield* store.pruneHooks(now - HOOK_RETENTION_MS);
+        return json(200, {
+          hooks: rows.map((row) => ({
+            hookId: row.hookId,
+            url: hookUrl(config.publicOrigin, machine.id, row.hookId),
+          })),
+        });
+      });
+
+    const handleUnregisterHooks = (
+      machine: MachineRow,
+      request: HttpRequest,
+    ): Effect.Effect<HttpResponse, HttpError> =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        yield* enforceRateLimit(
+          `hooks-register:${machine.id}`,
+          HOOK_REGISTRATIONS_PER_MACHINE,
+          HOOK_RATE_WINDOW_MS,
+          now,
+        );
+        const body = yield* decodeJson(UnregisterHooksRequest, request.body);
+        yield* store.deleteHooks(machine.id, body.hookIds);
+        return { status: 204 };
+      });
+
+    const handleListHooks = (
+      machine: MachineRow,
+    ): Effect.Effect<HttpResponse, HttpError> =>
+      Effect.gen(function* () {
+        const hooks = yield* store.listHooks(machine.id);
+        return json(200, {
+          hooks: hooks.map((hook) => ({
+            hookId: hook.hookId,
+            url: hookUrl(config.publicOrigin, machine.id, hook.hookId),
+            label: hook.label,
+            maxAgeMs: hook.maxAgeMs,
+            onStale: hook.onStale,
+          })),
+        });
+      });
+
+    const handlePublicHook = (
+      request: HttpRequest,
+      machineId: string,
+      hookId: string,
+    ): Effect.Effect<HttpResponse, HttpError> =>
+      Effect.gen(function* () {
+        if (machineId.length === 0 || !HOOK_ID_PATTERN.test(hookId))
+          return yield* notFound("Not found");
+        const found = yield* store.findHook(machineId, hookId);
+        if (Option.isNone(found)) return yield* notFound("Not found");
+        const hook = found.value;
+        const now = yield* Clock.currentTimeMillis;
+        const ip = clientIp(request);
+        yield* enforceRateLimit(
+          `hook:${machineId}:${hookId}`,
+          HOOK_REQUESTS_PER_HOOK,
+          HOOK_RATE_WINDOW_MS,
+          now,
+        );
+        yield* enforceRateLimit(
+          `machine-hooks:${machineId}`,
+          HOOK_REQUESTS_PER_MACHINE,
+          HOOK_RATE_WINDOW_MS,
+          now,
+        );
+        yield* enforceRateLimit(
+          `hook-ip:${ip}`,
+          HOOK_REQUESTS_PER_IP,
+          HOOK_RATE_WINDOW_MS,
+          now,
+        );
+
+        const declaredLength = Number(header(request, "content-length"));
+        if (
+          request.body.byteLength > HOOK_MAX_BODY_BYTES ||
+          (Number.isFinite(declaredLength) && declaredLength > HOOK_MAX_BODY_BYTES)
+        )
+          return text(413, "Payload Too Large");
+
+        if (hook.verification !== null) {
+          if (hook.secret === null) return { status: 401 };
+          const secret = yield* openSecret(hook.secret);
+          const verified = yield* verifyHook({
+            verification: hook.verification,
+            secret,
+            headers: request.headers,
+            body: request.body,
+            now,
+          });
+          if (!verified) return { status: 401 };
+        }
+
+        const url = new URL(request.url);
+        const delivery: WebhookRelayDelivery = {
+          hookId: hook.hookId,
+          deliveryId: crypto.randomUUID(),
+          method: request.method,
+          path: url.pathname,
+          query: Object.fromEntries(url.searchParams.entries()),
+          headers: relayHeaders(request.headers),
+          bodyBase64: encodeBase64(request.body),
+          receivedAt: now,
+        };
+        yield* relay
+          .enqueueWebhook(machineId, delivery, {
+            maxAgeMs: hook.maxAgeMs,
+            onStale: hook.onStale,
+          })
+          .pipe(
+            Effect.mapError(() =>
+              unavailable("The webhook relay is unavailable; retry shortly"),
+            ),
+            Effect.catchCause(() =>
+              Effect.fail(unavailable("The webhook relay is unavailable; retry shortly")),
+            ),
+          );
+        return hookResponse(hook.response, request.method);
       });
 
     const handleGetToken = (
@@ -1169,6 +1396,18 @@ export const makeCloudApp = (
       Effect.gen(function* () {
         const url = new URL(request.url);
         const path = url.pathname;
+        const hookRoute = /^\/hooks\/([^/]+)\/([^/]+)$/.exec(path);
+        if (hookRoute !== null) {
+          const machineId = hookRoute[1];
+          const hookId = hookRoute[2];
+          if (machineId === undefined || hookId === undefined)
+            return yield* notFound("Not found");
+          return yield* handlePublicHook(
+            request,
+            decodeURIComponent(machineId),
+            decodeURIComponent(hookId),
+          );
+        }
         if (request.method === "GET" && path === "/health")
           return json(200, { ok: true, service: "ballast-cloud" });
         if (request.method === "GET" && path === "/")
@@ -1191,6 +1430,12 @@ export const makeCloudApp = (
         const machine = yield* authenticateMachine(request);
         if (request.method === "GET" && path === "/api/connections")
           return yield* handleListConnections(machine);
+        if (request.method === "POST" && path === "/api/hooks/register")
+          return yield* handleRegisterHooks(machine, request);
+        if (request.method === "POST" && path === "/api/hooks/unregister")
+          return yield* handleUnregisterHooks(machine, request);
+        if (request.method === "GET" && path === "/api/hooks")
+          return yield* handleListHooks(machine);
         if (request.method === "POST" && path === "/api/tokens/twitch")
           return yield* handleGetToken(machine, request);
         if (request.method === "POST" && path === "/api/twitch/helix")

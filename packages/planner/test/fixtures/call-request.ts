@@ -5,9 +5,7 @@ import { Effect } from "effect";
  * Deliberately violates "init declares, handlers act": it calls the request
  * client while planning. The plan must fail with a defect.
  */
-export default Ballast.Script(
-  "call-request",
-  Effect.gen(function* () {
+export default Effect.gen(function* () {
     const connection = yield* Ballast.Connection({
       integration: "fake",
       slot: "main",
@@ -20,5 +18,4 @@ export default Ballast.Script(
       scopes: ["fake:write"],
     });
     yield* echo({ text: "this must never run during plan" });
-  }),
-);
+});

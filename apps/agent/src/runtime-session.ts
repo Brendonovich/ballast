@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline";
 import { MessageChannel, Worker } from "node:worker_threads";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -10,6 +11,13 @@ export interface RuntimeSettings {
   readonly get: (key: string) => string | number | boolean | undefined;
 }
 
+export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
+
+export interface RuntimeLogLine {
+  readonly level: RuntimeLogLevel;
+  readonly message: string;
+}
+
 export interface RuntimeSessionOptions {
   readonly bundlePath: string;
   readonly generation: number;
@@ -20,6 +28,8 @@ export interface RuntimeSessionOptions {
     slot: string,
     input: unknown,
   ) => Effect.Effect<unknown, string>;
+  /** Structured worker output; defaults to the process console. */
+  readonly onLog?: (line: RuntimeLogLine) => void;
 }
 
 export interface RuntimeSession {
@@ -73,6 +83,20 @@ export const startRuntimeSession = (
         options.request(integration, request, slot, input),
     };
 
+    const onLog =
+      options.onLog ??
+      ((line: RuntimeLogLine) => {
+        if (line.level === "error") console.error(line.message);
+        else console.log(line.message);
+      });
+
+    const levelOf = (line: string): RuntimeLogLevel => {
+      if (/\b(error|fatal)\b/i.test(line)) return "error";
+      if (/\b(warn|warning)\b/i.test(line)) return "warn";
+      if (/\bdebug\b/i.test(line)) return "debug";
+      return "info";
+    };
+
     const session: RuntimeSession = {
       generation: options.generation,
       subscriptions,
@@ -88,9 +112,10 @@ export const startRuntimeSession = (
         return Scope.close(scope, Exit.void).pipe(
           Effect.andThen(
             Effect.sync(() => {
-              console.log(
-                `[run] closed worker generation ${options.generation} (scope closed)`,
-              );
+              onLog({
+                level: "info",
+                message: `worker generation ${options.generation} closed`,
+              });
             }),
           ),
         );
@@ -109,6 +134,8 @@ export const startRuntimeSession = (
                 generation: options.generation,
               },
               transferList: [channel.port2],
+              stdout: true,
+              stderr: true,
               env: { ...process.env, ALCHEMY_PHASE: "runtime" },
             }),
         ),
@@ -118,6 +145,21 @@ export const startRuntimeSession = (
 
       yield* Effect.acquireRelease(
         Effect.sync(() => {
+          const readers: Array<ReturnType<typeof createInterface>> = [];
+          if (worker?.stdout !== null && worker?.stdout !== undefined) {
+            const reader = createInterface({ input: worker.stdout });
+            reader.on("line", (line) => {
+              if (line.trim() !== "") onLog({ level: levelOf(line), message: line });
+            });
+            readers.push(reader);
+          }
+          if (worker?.stderr !== null && worker?.stderr !== undefined) {
+            const reader = createInterface({ input: worker.stderr });
+            reader.on("line", (line) => {
+              if (line.trim() !== "") onLog({ level: levelOf(line), message: line });
+            });
+            readers.push(reader);
+          }
           const onError = (cause: Error) => {
             Deferred.doneUnsafe(ready, Exit.fail(cause));
             if (!closed) {
@@ -139,6 +181,7 @@ export const startRuntimeSession = (
           return () => {
             worker?.off("error", onError);
             worker?.off("exit", onExit);
+            for (const reader of readers) reader.close();
           };
         }),
         (detach) => Effect.sync(detach),

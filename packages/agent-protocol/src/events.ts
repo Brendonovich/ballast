@@ -43,6 +43,16 @@ export const ServiceEvent = Schema.Union([
     projectId: Schema.String,
     scriptId: Schema.String,
   }),
+  /**
+   * The entry file changed on disk. Open source viewers refetch
+   * `GetScriptSource`; clients that do not show source can ignore it.
+   */
+  Schema.TaggedStruct("script-source-changed", {
+    projectId: Schema.String,
+    scriptId: Schema.String,
+    sha256: Schema.String,
+    updatedAt: Schema.Number,
+  }),
   Schema.TaggedStruct("connection", {
     connection: ConnectionSummary,
   }),

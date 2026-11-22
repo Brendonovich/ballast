@@ -1,0 +1,350 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens vendored from OpenCode
+ * (openai/anomalyco/opencode @ 766379ee81a9ee5496e1f96ab573c250a5907d9f):
+ *   packages/ui/src/styles/tokens/{colors,theme}.css
+ *   packages/ui/src/theme/themes/oc-2.json
+ *   packages/ui/src/actions/button/button.css
+ *   packages/ui/src/forms/text-input/text-input.css
+ * Only the subset this app uses is copied. Values that OpenCode resolves at
+ * runtime in packages/ui/src/theme are written out here per color scheme; the
+ * token names are kept so the mapping back to OpenCode is obvious. The app
+ * sets data-color-scheme="light|dark" on <html>.
+ */
+
+:root {
+  color-scheme: light;
+
+  --font-family-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-family-mono:
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  --font-weight-normal: 440;
+  --font-weight-medium: 530;
+  --font-weight-semibold: 670;
+
+  /* oc-2 light */
+  --v2-background-bg-base: #ffffff;
+  --v2-background-bg-deep: #fafafa;
+  --v2-background-bg-layer-01: #fafafa;
+  --v2-background-bg-layer-02: #f2f2f2;
+  --v2-background-bg-layer-03: #eeeeee;
+  --v2-background-bg-contrast: #2e2e2e;
+  --v2-background-bg-button-neutral: #ffffff;
+
+  --v2-text-text-strong: #080808;
+  --v2-text-text-base: #161616;
+  --v2-text-text-muted: #5c5c5c;
+  --v2-text-text-faint: #808080;
+  --v2-text-text-contrast: #ffffff;
+  --v2-text-text-accent: #3b5cf6;
+
+  --v2-icon-icon-base: #3a3a3a;
+  --v2-icon-icon-muted: #808080;
+
+  --v2-border-border-muted: rgb(0 0 0 / 0.07);
+  --v2-border-border-base: rgb(0 0 0 / 0.16);
+  --v2-border-border-strong: rgb(0 0 0 / 0.24);
+  --v2-border-border-focus: #3b5cf6;
+
+  --v2-overlay-simple-overlay-hover: rgb(0 0 0 / 0.031);
+  --v2-overlay-simple-overlay-pressed: rgb(0 0 0 / 0.051);
+  --v2-overlay-simple-overlay-scrim: rgb(0 0 0 / 0.28);
+
+  --v2-state-fg-success: #198b43;
+  --v2-state-fg-warning: #cb9f34;
+  --v2-state-fg-danger: #b82d35;
+  --v2-state-fg-info: #3250df;
+  --v2-state-bg-success: #e7f9ea;
+  --v2-state-bg-warning: #fefaec;
+  --v2-state-bg-danger: #fceceb;
+  --v2-state-bg-info: #ecf1fe;
+  --v2-state-border-success: #b8e9c1;
+  --v2-state-border-warning: #f7e5b5;
+  --v2-state-border-danger: #f2bbb7;
+  --v2-state-border-info: #c3d4fd;
+
+  --v2-elevation-raised: 0 1px 2px rgb(0 0 0 / 0.04), 0 0 0 0.5px rgb(0 0 0 / 0.07);
+  --v2-elevation-floating: 0 4px 12px rgb(0 0 0 / 0.07), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  --v2-elevation-overlay: 0 16px 40px rgb(0 0 0 / 0.12), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  --v2-elevation-input: 0 1px 1.5px rgb(0 0 0 / 0.04), 0 0 0 0.5px rgb(0 0 0 / 0.14);
+  --v2-elevation-button-neutral: 0 1px 1.5px rgb(0 0 0 / 0.04), 0 0 0 0.5px rgb(0 0 0 / 0.14);
+  --v2-elevation-button-contrast: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.2);
+
+  /* OpenCode syntax palette (light) */
+  --syntax-comment: #5c5c5c;
+  --syntax-keyword: #5c5c5c;
+  --syntax-string: #006656;
+  --syntax-primitive: #fb4804;
+  --syntax-property: #c83d8b;
+  --syntax-type: #596600;
+  --syntax-constant: #007b80;
+  --syntax-punctuation: #5c5c5c;
+  --syntax-variable: #161616;
+}
+
+:root[data-color-scheme="dark"] {
+  color-scheme: dark;
+
+  /* oc-2 dark */
+  --v2-background-bg-base: #161616;
+  --v2-background-bg-deep: #080808;
+  --v2-background-bg-layer-01: #242424;
+  --v2-background-bg-layer-02: #2e2e2e;
+  --v2-background-bg-layer-03: #3a3a3a;
+  --v2-background-bg-contrast: #5c5c5c;
+  --v2-background-bg-button-neutral: rgb(255 255 255 / 0.039);
+
+  --v2-text-text-strong: #fafafa;
+  --v2-text-text-base: #ededed;
+  --v2-text-text-muted: #aeaeae;
+  --v2-text-text-faint: #808080;
+  --v2-text-text-contrast: #ffffff;
+  --v2-text-text-accent: #7698fd;
+
+  --v2-icon-icon-base: #dbdbdb;
+  --v2-icon-icon-muted: #808080;
+
+  --v2-border-border-muted: rgb(255 255 255 / 0.06);
+  --v2-border-border-base: rgb(255 255 255 / 0.12);
+  --v2-border-border-strong: rgb(255 255 255 / 0.2);
+  --v2-border-border-focus: #7698fd;
+
+  --v2-overlay-simple-overlay-hover: rgb(255 255 255 / 0.039);
+  --v2-overlay-simple-overlay-pressed: rgb(255 255 255 / 0.078);
+  --v2-overlay-simple-overlay-scrim: rgb(0 0 0 / 0.56);
+
+  --v2-state-fg-success: #6bd586;
+  --v2-state-fg-warning: #f2cf76;
+  --v2-state-fg-danger: #f17471;
+  --v2-state-fg-info: #7698fd;
+  --v2-state-bg-success: #14361d;
+  --v2-state-bg-warning: #4b4025;
+  --v2-state-bg-danger: #461516;
+  --v2-state-bg-info: #021945;
+  --v2-state-border-success: #1d783c;
+  --v2-state-border-warning: #ac8833;
+  --v2-state-border-danger: #97252b;
+  --v2-state-border-info: #2c47c8;
+
+  --v2-elevation-raised: 0 1px 2px rgb(0 0 0 / 0.4), 0 0 0 0.5px rgb(255 255 255 / 0.08);
+  --v2-elevation-floating: 0 4px 16px rgb(0 0 0 / 0.5), 0 0 0 0.5px rgb(255 255 255 / 0.08);
+  --v2-elevation-overlay: 0 16px 40px rgb(0 0 0 / 0.6), 0 0 0 0.5px rgb(255 255 255 / 0.08);
+  --v2-elevation-input: 0 0 0 0.5px rgb(255 255 255 / 0.12);
+  --v2-elevation-button-neutral: 0 1px 2px rgb(0 0 0 / 0.4), 0 0 0 0.5px rgb(255 255 255 / 0.12);
+  --v2-elevation-button-contrast: 0 1px 2px rgb(0 0 0 / 0.4), 0 0 0 0.5px rgb(255 255 255 / 0.3);
+
+  /* OpenCode syntax palette (dark) */
+  --syntax-comment: #aeaeae;
+  --syntax-keyword: #aeaeae;
+  --syntax-string: #00ceb9;
+  --syntax-primitive: #ffba92;
+  --syntax-property: #ff9ae2;
+  --syntax-type: #ecf58c;
+  --syntax-constant: #93e9f6;
+  --syntax-punctuation: #aeaeae;
+  --syntax-variable: #fafafa;
+}
+
+@theme inline {
+  --color-canvas: var(--v2-background-bg-base);
+  --color-rail: var(--v2-background-bg-deep);
+  --color-layer: var(--v2-background-bg-layer-01);
+  --color-layer-2: var(--v2-background-bg-layer-02);
+  --color-strong: var(--v2-text-text-strong);
+  --color-body: var(--v2-text-text-base);
+  --color-muted: var(--v2-text-text-muted);
+  --color-faint: var(--v2-text-text-faint);
+  --color-edge: var(--v2-border-border-muted);
+  --color-edge-strong: var(--v2-border-border-base);
+  --color-hover: var(--v2-overlay-simple-overlay-hover);
+  --color-pressed: var(--v2-overlay-simple-overlay-pressed);
+  --color-accent: var(--v2-text-text-accent);
+  --color-success: var(--v2-state-fg-success);
+  --color-warning: var(--v2-state-fg-warning);
+  --color-danger: var(--v2-state-fg-danger);
+  --color-info: var(--v2-state-fg-info);
+  --font-sans: var(--font-family-sans);
+  --font-mono: var(--font-family-mono);
+  --font-weight-normal: 440;
+  --font-weight-medium: 530;
+  --font-weight-semibold: 670;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    cursor: default;
+    background: var(--v2-background-bg-base);
+    color: var(--v2-text-text-base);
+    font-family: var(--font-family-sans);
+    font-size: 13px;
+    font-weight: 440;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /*
+   * Desktop-app convention (matching OpenCode): nothing uses a hand cursor
+   * except links that leave the app. Buttons, tabs, rows, switches, selects and
+   * internal navigation all keep the platform default arrow.
+   */
+  button,
+  [role="button"],
+  a,
+  label,
+  select,
+  summary,
+  [role="tab"],
+  [role="option"],
+  [role="switch"] {
+    cursor: default;
+  }
+
+  button:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
+  a[target="_blank"],
+  a[href^="http://"],
+  a[href^="https://"],
+  [data-external-link] {
+    cursor: pointer;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--v2-text-text-accent) 25%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--v2-border-border-focus);
+    outline-offset: 2.5px;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--v2-border-border-base) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: var(--v2-border-border-base);
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--v2-border-border-strong);
+    background-clip: padding-box;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-in {
+  animation: fade-in 120ms ease-out both;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  border: 1.5px solid color-mix(in oklab, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 999px;
+  animation: spin 700ms linear infinite;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* highlight.js token classes mapped to OpenCode's syntax variables. */
+.code-view .hljs-comment,
+.code-view .hljs-quote {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+.code-view .hljs-keyword,
+.code-view .hljs-selector-tag,
+.code-view .hljs-literal,
+.code-view .hljs-section,
+.code-view .hljs-link,
+.code-view .hljs-doctag {
+  color: var(--syntax-keyword);
+}
+
+.code-view .hljs-string,
+.code-view .hljs-regexp,
+.code-view .hljs-addition,
+.code-view .hljs-attribute {
+  color: var(--syntax-string);
+}
+
+.code-view .hljs-number,
+.code-view .hljs-built_in,
+.code-view .hljs-symbol,
+.code-view .hljs-bullet {
+  color: var(--syntax-primitive);
+}
+
+.code-view .hljs-title,
+.code-view .hljs-name,
+.code-view .hljs-selector-id,
+.code-view .hljs-selector-class {
+  color: var(--syntax-property);
+}
+
+.code-view .hljs-type,
+.code-view .hljs-class .hljs-title {
+  color: var(--syntax-type);
+}
+
+.code-view .hljs-attr,
+.code-view .hljs-variable,
+.code-view .hljs-template-variable,
+.code-view .hljs-params {
+  color: var(--syntax-constant);
+}
+
+.code-view .hljs-meta {
+  color: var(--syntax-comment);
+}
+
+.code-view .hljs-operator,
+.code-view .hljs-punctuation {
+  color: var(--syntax-punctuation);
+}
+
+.code-view .hljs-variable.language_,
+.code-view .hljs-title.function_ {
+  color: var(--syntax-variable);
+}

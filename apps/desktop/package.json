@@ -1,0 +1,32 @@
+{
+  "name": "@ballast/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ballast desktop shell: window, tray, service launcher and updater",
+  "author": "Ballast",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "exports": {
+    ".": "./src/main/index.ts",
+    "./bridge": "./src/bridge.ts"
+  },
+  "scripts": {
+    "dev": "node script/dev.mjs",
+    "build": "node script/build.mjs",
+    "prepare:service": "node script/prepare-service.mjs",
+    "typecheck": "tsgo -b",
+    "test": "vitest run",
+    "pack": "node script/build.mjs && node script/prepare-service.mjs && electron-builder --dir --config electron-builder.config.mjs",
+    "dist": "node script/build.mjs && node script/prepare-service.mjs && electron-builder --config electron-builder.config.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "electron": "catalog:",
+    "electron-builder": "catalog:",
+    "esbuild": "catalog:",
+    "vitest": "catalog:"
+  }
+}

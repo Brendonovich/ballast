@@ -4,7 +4,17 @@
     "rootDir": ".",
     "outDir": "dist/types"
   },
-  "include": ["src", "tick-echo.ts", "obs-scene.ts", "redeem-to-scene.ts"],
+  "include": [
+    "src",
+    "tick-echo.ts",
+    "obs-scene.ts",
+    "redeem-to-scene.ts",
+    "keyboard-hotkey.ts",
+    "midi-cc.ts",
+    "vts-hotkey.ts",
+    "webhook-to-obs.ts",
+    "ws-bridge.ts"
+  ],
   "references": [
     {
       "path": "../packages/core"
@@ -13,10 +23,25 @@
       "path": "../packages/integrations/fake"
     },
     {
+      "path": "../packages/integrations/keyboard"
+    },
+    {
+      "path": "../packages/integrations/midi"
+    },
+    {
       "path": "../packages/integrations/obs"
     },
     {
       "path": "../packages/integrations/twitch"
+    },
+    {
+      "path": "../packages/integrations/vtube-studio"
+    },
+    {
+      "path": "../packages/integrations/http"
+    },
+    {
+      "path": "../packages/integrations/websocket"
     }
   ]
 }

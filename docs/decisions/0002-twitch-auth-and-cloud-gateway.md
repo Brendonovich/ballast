@@ -104,20 +104,25 @@ connection between modes is an explicit user action, not a silent apply step.
 ### 3. Cloud architecture
 
 One Worker (`apps/cloud/src/worker.ts`) is both the OAuth/webhook front door and the agent
-API. It is deployed by Alchemy from `apps/cloud/alchemy.run.ts`:
+API. It is deployed by Alchemy from `apps/cloud/alchemy.run.ts` as an **Effect-native
+Worker** — there is no `main` path in the stack:
 
-```
-Cloudflare.Worker "BallastCloudWorker"
-  env: DB (D1), RELAY (DurableObject "Relay"), Twitch secrets, token key, public origin
-D1 "BallastDatabase" (migrations in apps/cloud/migrations)
-DurableObject "Relay" (one instance per machine id)
+```ts
+class BallastCloudWorker extends Cloudflare.Worker<BallastCloudWorker, {}, Relay>()(...)
+
+BallastCloudWorker.make(props, Effect.gen(function* () {
+  const config = yield* loadCloudConfig;                 // Config values become env bindings
+  const db = yield* Cloudflare.D1.QueryDatabase(BallastDatabase);
+  const relay = yield* Relay;                            // namespace for the per-machine DO
+  return { fetch: Effect.gen(function* () { ... }) };
+}).pipe(Effect.provide(RelayLive), Effect.provide(Cloudflare.D1.QueryDatabaseBinding)))
 ```
 
-The Worker is an **async Worker** with Effect running the request logic. The runtime entry is
-plain `fetch(request, env)`; `makeCloudApp` is an Effect service constructed once per isolate.
-This keeps the Cloudflare boundary small (D1, DO stubs, WebCrypto) and lets the whole vertical
-slice be exercised in Node tests without workerd. A future move to Alchemy's Effect-native
-Worker is mechanical if we need typed RPC between Workers.
+Init acquires D1, the Relay namespace and the Config secrets; handlers are Effects. The Relay
+DO is a `Cloudflare.DurableObject` class whose `RelayLive` implementation uses
+`DurableObjectState.storage`, `Cloudflare.upgrade` and hibernatable WebSocket handlers.
+`makeCloudApp` still takes its D1/DO clients as injected services, so the whole vertical
+slice is exercised in Node tests without workerd, while the same code runs in the Worker.
 
 #### Routes
 
@@ -489,9 +494,9 @@ The agent should also handle the cloud's typed errors: `unauthorized` (re-pair),
 
 ## Files
 
-- `apps/cloud/` — `alchemy.run.ts`, `src/{app,worker,config,secrets,store,d1-store,twitch-api,http,errors}.ts`,
-  `src/relay/{state,buffer,gateway,relay-do}.ts`, `migrations/{0001_init,0002_hardening}.sql`, tests,
-  `scripts/local-demo.mjs` for the local `alchemy dev` loop. Protocol knowledge lives in
+- `apps/cloud/` — `alchemy.run.ts`, `src/{cloud-worker,worker,resources,app,config,secrets,store,d1-store,twitch-api,http,errors}.ts`,
+  `src/relay/{state,buffer,gateway,relay-do}.ts`, `migrations/{0001_init,0002_hardening,0003_subscription_owners}.sql`,
+  tests, `scripts/local-demo.mjs` for the local `alchemy dev` loop. Protocol knowledge lives in
   `@ballast/module-twitch` (`packages/integrations/twitch`), not in `apps/cloud`.
 - `packages/cloud-protocol/` — `src/{events,http,rpc,index}.ts`, tests.
 - Root `pnpm-workspace.yaml` catalog: `@alchemy.run/cloudflare`, `@cloudflare/workers-types`.
