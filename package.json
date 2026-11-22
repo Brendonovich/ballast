@@ -1,0 +1,14 @@
+{
+  "name": "ballast",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.2.1",
+  "scripts": {
+    "typecheck": "tsgo -b",
+    "test": "CI=1 pnpm --recursive --if-present run test"
+  },
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260514.1",
+    "typescript": "^5.8"
+  }
+}
