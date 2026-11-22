@@ -145,6 +145,8 @@ export interface OAuthClientService {
     readonly redirectUri: string;
   }) => Effect.Effect<OAuthToken, OAuthError>;
   readonly refreshToken: (refreshToken: string) => Effect.Effect<OAuthToken, OAuthError>;
+  /** App access token for server-to-server Helix calls (EventSub management). */
+  readonly clientCredentials: Effect.Effect<OAuthToken, OAuthError>;
   readonly validateToken: (accessToken: string) => Effect.Effect<TokenValidation, OAuthError>;
   readonly startDeviceAuthorization: (
     scopes: ReadonlyArray<string>,
@@ -241,6 +243,11 @@ export const make = (
         grant_type: "refresh_token",
         refresh_token: refreshToken,
       });
+
+    const clientCredentials: OAuthClientService["clientCredentials"] = tokenRequest({
+      ...clientParams(),
+      grant_type: "client_credentials",
+    });
 
     const validateToken: OAuthClientService["validateToken"] = (accessToken) =>
       Effect.gen(function* () {
@@ -409,6 +416,7 @@ export const make = (
       },
       exchangeCode,
       refreshToken,
+      clientCredentials,
       validateToken,
       startDeviceAuthorization,
       pollDeviceToken,

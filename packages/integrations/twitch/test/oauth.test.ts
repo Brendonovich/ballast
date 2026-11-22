@@ -134,6 +134,36 @@ describe("Twitch OAuth", () => {
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 
+  it.effect("exchanges client credentials for an app access token", () =>
+    Effect.gen(function* () {
+      const server = yield* startServer((request, response) => {
+        if (request.url === "/token") {
+          json(response, 200, {
+            access_token: "app-access-1",
+            expires_in: 5_184_000,
+            token_type: "bearer",
+          });
+          return;
+        }
+        json(response, 404, {});
+      });
+
+      const client = yield* make({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        tokenUrl: server.url + "/token",
+      });
+      const token = yield* client.clientCredentials;
+      expect(token.accessToken).toBe("app-access-1");
+      expect(token.refreshToken).toBeUndefined();
+      expect(token.scopes).toEqual([]);
+      const body = new URLSearchParams(server.requests[0]?.body);
+      expect(body.get("grant_type")).toBe("client_credentials");
+      expect(body.get("client_id")).toBe("client-id");
+      expect(body.get("client_secret")).toBe("client-secret");
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+
   it.effect("validates an access token", () =>
     Effect.gen(function* () {
       const server = yield* startServer((request, response) => {

@@ -82,6 +82,7 @@ const userResponse = {
       profile_image_url: "https://example.com/profile.png",
       offline_image_url: "https://example.com/offline.png",
       view_count: 0,
+      email: "twitchdev@example.com",
       created_at: "2016-12-14T20:32:28Z",
     },
   ],
@@ -117,6 +118,7 @@ describe("Helix executor", () => {
         testLayer({ accessToken: "token-1", clientId: "client-id-1" }),
       );
       expect(result.data[0]?.login).toBe("twitchdev");
+      expect(result.data[0]?.email).toBe("twitchdev@example.com");
       expect(result.data[0]?.created_at).toBeInstanceOf(Date);
       expect(server.requests[0]?.method).toBe("GET");
       expect(server.requests[0]?.url).toBe("/helix/users?login=twitchdev");
@@ -293,6 +295,42 @@ describe("Helix executor", () => {
       expect(error.code).toBe("Unauthorized");
       expect(error.reason).toBe("Invalid OAuth token");
       expect(server.requests.length).toBe(1);
+    }),
+  );
+
+  it.effect("preserves status and body for arbitrary raw Helix calls", () =>
+    Effect.gen(function* () {
+      const server = yield* startServer((_request, response) => {
+        response.writeHead(404, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: "Not Found", status: 404, message: "No such path" }));
+      });
+
+      const program = Effect.gen(function* () {
+        const client = yield* make({ baseUrl: server.url });
+        return yield* client.requestRaw({
+          method: "POST",
+          path: "/helix/rpc",
+          query: { id: ["1", "2"] },
+          body: { hello: "world" },
+        });
+      });
+
+      const result = yield* Effect.provide(
+        program,
+        testLayer({ accessToken: "token-1", clientId: "client-id-1" }),
+      );
+      expect(result.status).toBe(404);
+      expect(result.body).toEqual({
+        error: "Not Found",
+        status: 404,
+        message: "No such path",
+      });
+      expect(server.requests[0]?.method).toBe("POST");
+      expect(server.requests[0]?.url).toBe("/helix/rpc?id=1&id=2");
+      expect(server.requests[0]?.headers["client-id"]).toBe("client-id-1");
+      expect(server.requests[0]?.headers["authorization"]).toBe("Bearer token-1");
+      expect(server.requests[0]?.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(server.requests[0]?.body ?? "{}")).toEqual({ hello: "world" });
     }),
   );
 

@@ -35,9 +35,5 @@ export const upstreamError = (message: string, details?: unknown) =>
 export const internalError = (message = "Internal server error") =>
   new HttpError({ status: 500, tag: "internal", message });
 
-/**
- * The shared protocol has no dedicated `rate_limited` tag yet, so 429s use
- * `forbidden` while keeping the real HTTP status.
- */
 export const rateLimited = (message: string, details?: unknown) =>
-  new HttpError({ status: 429, tag: "forbidden", message, details });
+  new HttpError({ status: 429, tag: "rate_limited", message, details });

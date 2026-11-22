@@ -192,8 +192,8 @@ For every POST:
 2. Reject a timestamp more than 10 minutes from now.
 3. Verify `HMAC-SHA256(secret, message_id + timestamp + raw_body)` using WebCrypto and the raw
    bytes exactly as received. (Do not re-serialise JSON.)
-4. Decode the delivery and require every condition value to equal the connection's Twitch
-   user id.
+4. Decode the delivery and validate the condition against the subscription registry's
+   `self`/`target` fields (see “Cross-account conditions” below).
 5. `webhook_callback_verification`: return the challenge as `text/plain` 200.
 6. `notification`: dedupe by message id, find the subscription row by provider id, build the
    envelope, and enqueue it on the machine's relay. Return 204.
@@ -220,18 +220,44 @@ the retention/pruning metadata.
 
 The cloud maintains EventSub subscriptions with an **app access token**
 (`client_credentials`) from Ballast's Twitch app. The agent posts the applied manifest's
-desired subscriptions; the cloud:
+desired subscriptions and an opaque **owner id** (project/script id; older clients omit it and
+reconcile as `"default"`). The cloud:
 
-1. Validates conditions and computes cost from Twitch's published table
-   (unknown types cost 1; `channel.update`, `channel.moderate`,
-   `channel.channel_points_automatic_reward_redemption.add` and the three hype-train topics
-   cost 2 in the current docs).
-2. Compares cost against a per-connection budget, default **10** (Twitch's user-authorization
-   EventSub cost limit), configurable with `BALLAST_TWITCH_MAX_SUBSCRIPTION_COST`.
-3. Lists the app's webhook subscriptions, deletes ones for this connection that are no longer
-   desired, creates missing ones with the connection callback and secret, and upserts local
-   rows.
-4. Returns the rows plus `totalCost`/`maxCost` so the settings UI can explain a refusal.
+1. Validates conditions against the module registry and computes cost from the same registry
+   metadata (unknown types fall back to Twitch's published table: cost 1 unless documented
+   otherwise, e.g. `channel.update`/moderation/hype-train cost 2).
+2. Compares the **union** of this owner's desired subscriptions and every other owner's
+   existing subscriptions against the per-connection budget, default **10** (Twitch's
+   user-authorization EventSub cost limit), configurable with
+   `BALLAST_TWITCH_MAX_SUBSCRIPTION_COST`.
+3. Lists the app's webhook subscriptions and deletes one only when no owner still wants its
+   `(type, version, condition)` key. Creates missing subscriptions with the connection callback
+   and secret, and shares one provider subscription between owners.
+4. Stores one `event_subscription_owners(subscription_id, owner, on_stale, max_age_ms)` row per
+   owner. When freshness policies differ, the shared row uses the conservative merge:
+   `onStale: "drop"` if any owner asks for drop, and the shortest `maxAgeMs`.
+5. Returns the union rows (with their `owners`) plus `totalCost`/`maxCost` so the settings UI
+   can explain a refusal.
+
+#### Cross-account conditions
+
+Twitch authorizes EventSub from the connection's own user token, but some subscription types
+read another channel. The module registry tags each condition field:
+
+- **self** — must equal the connection's Twitch user id, because that user's token is the one
+  Twitch authorizes (`channel.chat.message.user_id`, `channel.follow.moderator_user_id`, the
+  broadcaster fields for redemptions/cheers/subscriptions/stream status, both raid directions).
+- **target** — may be another channel or a linked Twitch account
+  (`channel.chat.message.broadcaster_user_id`, `channel.follow.broadcaster_user_id`). Twitch
+  itself enforces read/moderator permission; the cloud only requires the target to be linked to
+  the same Ballast user where the type is not documented as readable for any channel.
+- **any** — an opaque filter such as `reward_id`.
+
+This lets a bot connection read the streamer's chat
+(`{ broadcaster_user_id: streamer, user_id: bot }`) or a moderator connection watch another
+channel's follows, while keeping the token-bound `user_id`/`moderator_user_id` honest. Webhook
+ingress applies the same rule before relaying, using the linked accounts of the connection's
+Ballast user.
 
 **Decision: per-user webhooks, not conduits, for now.** A single streamer's scripts use a
 handful of topics; the 10-cost budget is enough for the common set (chat, redemptions,
@@ -303,12 +329,15 @@ One `Relay` DO per machine (`getByName(machineId)`). It is the only place events
 - **Ownership:** every account belongs to a user; every machine belongs to a user. API calls
   may only use connections owned by the machine's user.
 - **Account → machine:** `reconcile` sets `twitch_accounts.machine_id` to the calling machine.
+  Provider subscriptions are shared across owners; each owner link keeps its own freshness
+  policy and only disappears when that owner stops asking for the subscription.
   With one machine per user this is unambiguous; multiple machines per user is deliberately
   not solved here. The relay target is stored on each subscription, so events still route even
   if the account field is later reassigned.
 
-Stubbed for now: rate limiting pairing attempts, expiring machine tokens, token revocation,
-multiple machines per user, and a browser session/cookie for account management.
+Stubbed for now: expiring machine tokens, token revocation, multiple machines per user, and a
+browser session/cookie for account management. Pairing claims and code creation are
+rate-limited in D1 (see the pairing section).
 
 ### 5. Wire protocol
 
@@ -356,7 +385,7 @@ and needs only the following from the cloud:
 | List connections | `GET /api/connections` (machine bearer) |
 | Short-lived Helix token | `POST /api/tokens/twitch { connectionId }` → `{ accessToken, expiresAt, scopes, twitchUserId, login }`; cache until `expiresAt - 60s` |
 | Helix request | `POST /api/twitch/helix` with `{ connectionId, method, path, query?, body?, scopes }`; surface `missing_scopes` as a reconnect prompt |
-| Apply subscriptions | `POST /api/twitch/subscriptions/reconcile { connectionId, subscriptions }`; call on apply/manifest diff and after a `subscription_revoked` message |
+| Apply subscriptions | `POST /api/twitch/subscriptions/reconcile { connectionId, owner?, subscriptions }`; call on apply/manifest diff and after a `subscription_revoked` message. `owner` defaults to `"default"` for older clients. |
 | Events | `wss://<cloud>/relay/<machineId>` with `Authorization: Bearer <machineToken>`; read `hello`, `event`, `subscription_revoked`; ack `{ _tag: "ack", seqs }` |
 
 The transport wrapper is then thin:
@@ -414,7 +443,7 @@ The agent should also handle the cloud's typed errors: `unauthorized` (re-pair),
 | OAuth start/callback, state, token exchange | **Real**, via `@ballast/module-twitch`'s OAuth client, exercised with a fake Twitch token/Helix API in tests |
 | Token vault (AES-GCM in D1) | **Real**; unit tests use the in-memory store, and `alchemy dev` exercised the D1 SQL end to end |
 | Webhook HMAC, timestamp, challenge, dedupe, revocation | **Real**, using the module's webhook verifier/message schemas; unit + integration tested with real WebCrypto |
-| Subscription reconciliation + cost limit | **Real**, with the module's registry validating known conditions and scopes; tested against a fake Twitch API |
+| Subscription reconciliation + cost limit | **Real**, with the module's registry validating known conditions/scopes and supplying per-type cost; cross-account and multi-owner reconciliation tested against a fake Twitch API |
 | Helix proxy + scope checks + refresh-on-401 | **Real**, tested with a fake Helix; refresh is serialised by a D1 lease |
 | Machine pairing + token hashing | **Implemented**, with per-IP/per-user rate limits; pairing UX remains a documented stub |
 | Relay DO buffer/WS/ack | **Real DO class**, exercised locally through `alchemy dev`/workerd with a real WebSocket client and local D1 |
@@ -423,11 +452,14 @@ The agent should also handle the cloud's typed errors: `unauthorized` (re-pair),
 
 ### Verification
 
-- `pnpm --filter @ballast/cloud test`: 21 tests, including a Node HTTP server + real
+- `pnpm --filter @ballast/cloud test`: 27 tests, including a Node HTTP server + real
   `ws` client that receives a signed EventSub notification through the relay (webhook →
-  HMAC → dedupe → buffer → WebSocket), rate limits, both revocation paths, and the refresh
-  lease.
-- `pnpm --filter @ballast/cloud-protocol test`: 4 schema tests.
+  HMAC → dedupe → buffer → WebSocket), rate limits, both revocation paths, the refresh lease,
+  cross-account chat/follow conditions, and multi-owner reconcile.
+- `pnpm --filter @ballast/cloud-protocol test`: 5 schema tests.
+- `pnpm --filter @ballast/module-twitch test`: 39 tests, including client credentials, raw
+  Helix status/body preservation, the payload-agnostic webhook decoder, and registry
+  cost/condition metadata.
 - **`alchemy dev` end-to-end, fully local:** the stack selects `Alchemy.localState()` in dev, so
   it never boots `Cloudflare.state()` or authenticates to Cloudflare. D1 migrations and the
   Worker + Relay DO run under workerd. With a fake Twitch HTTP server on `:4010`, the demo ran

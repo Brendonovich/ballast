@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 /** Twitch Helix request definitions as data: method, path, schemas, scopes. */
-export type HelixMethod = "GET" | "POST" | "PATCH" | "DELETE";
+export type HelixMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface HelixRequest<Input, Output> {
   readonly name: string;
@@ -80,6 +80,8 @@ export const User = Schema.Struct({
   profile_image_url: Schema.String,
   offline_image_url: Schema.String,
   view_count: Schema.Int,
+  /** Present only when the token has `user:read:email`. */
+  email: Schema.optional(Schema.NullOr(Schema.String)),
   created_at: Schema.DateFromString,
 });
 export type User = Schema.Schema.Type<typeof User>;

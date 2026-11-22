@@ -5,6 +5,7 @@ import type {
   MachineRow,
   OAuthStateRow,
   PairingCodeRow,
+  SubscriptionOwnerRow,
   SubscriptionRow,
   TwitchAccountRow,
   UserRow,
@@ -21,6 +22,7 @@ export const makeMemoryStore = (): CloudStoreService => {
   const machines = new Map<string, MachineRow>();
   const pairingCodes = new Map<string, PairingCodeRow>();
   const subscriptions = new Map<string, SubscriptionRow>();
+  const owners = new Map<string, SubscriptionOwnerRow>();
   const deliveries = new Map<string, { accountId: string; receivedAt: number }>();
   const rateLimits = new Map<
     string,
@@ -161,7 +163,27 @@ export const makeMemoryStore = (): CloudStoreService => {
       ),
     upsertSubscription: (row) =>
       Effect.sync(() => void subscriptions.set(row.id, copySubscription(row))),
-    deleteSubscription: (id) => Effect.sync(() => void subscriptions.delete(id)),
+    deleteSubscription: (id) =>
+      Effect.sync(() => {
+        subscriptions.delete(id);
+        for (const [key, owner] of owners) {
+          if (owner.subscriptionId === id) owners.delete(key);
+        }
+      }),
+    listSubscriptionOwners: (accountId) =>
+      Effect.sync(() =>
+        [...owners.values()]
+          .filter((owner) => subscriptions.get(owner.subscriptionId)?.accountId === accountId)
+          .map((owner) => ({ ...owner })),
+      ),
+    upsertSubscriptionOwner: (row) =>
+      Effect.sync(() => {
+        owners.set(row.subscriptionId + "\u0000" + row.owner, { ...row });
+      }),
+    deleteSubscriptionOwner: (subscriptionId, owner) =>
+      Effect.sync(() => {
+        owners.delete(subscriptionId + "\u0000" + owner);
+      }),
     markSubscriptionRevoked: (providerId, now, reason) =>
       Effect.sync(() => {
         for (const [id, subscription] of subscriptions) {

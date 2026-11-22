@@ -11,6 +11,9 @@
       "path": "packages/cloud-protocol"
     },
     {
+      "path": "packages/agent-protocol"
+    },
+    {
       "path": "packages/integrations/fake"
     },
     {

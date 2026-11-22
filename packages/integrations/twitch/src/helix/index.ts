@@ -1,6 +1,11 @@
 export { HelixError, isTransientStatus } from "./errors.ts";
 export { DEFAULT_HELIX_BASE_URL, HelixClient, layer, make } from "./client.ts";
-export type { HelixClientOptions, HelixClientService } from "./client.ts";
+export type {
+  HelixClientOptions,
+  HelixClientService,
+  HelixRawRequest,
+  HelixRawResponse,
+} from "./client.ts";
 export { helixRequests } from "./executor.ts";
 export type { HelixRequestExecutor } from "./executor.ts";
 export {

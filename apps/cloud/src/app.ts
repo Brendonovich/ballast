@@ -41,6 +41,7 @@ import {
   CloudStore,
   type CloudStoreService,
   type MachineRow,
+  type SubscriptionOwnerRow,
   type SubscriptionRow,
   type TwitchAccountRow,
 } from "./store.ts";
@@ -103,9 +104,7 @@ const clientIp = (request: HttpRequest): string => {
 
 const asJson = (value: unknown): Schema.Json => Schema.decodeUnknownSync(Schema.Json)(value);
 
-const toConnection = (
-  account: TwitchAccountRow,
-): TwitchConnection & { readonly needsReauth: boolean } => ({
+const toConnection = (account: TwitchAccountRow): TwitchConnection => ({
   id: account.id,
   twitchUserId: account.twitchUserId,
   login: account.login,
@@ -116,7 +115,10 @@ const toConnection = (
   needsReauth: account.needsReauth,
 });
 
-const toSubscription = (row: SubscriptionRow): TwitchSubscription => ({
+const toSubscription = (
+  row: SubscriptionRow,
+  owners?: ReadonlyArray<string>,
+): TwitchSubscription => ({
   id: row.id,
   providerSubscriptionId: row.providerSubscriptionId,
   type: row.type,
@@ -124,6 +126,7 @@ const toSubscription = (row: SubscriptionRow): TwitchSubscription => ({
   condition: row.condition,
   status: row.status,
   cost: row.cost,
+  ...(owners === undefined ? {} : { owners: [...owners] }),
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
@@ -140,12 +143,63 @@ const sameKey = (
   row.version === spec.version &&
   conditionKey(row.condition) === conditionKey(spec.condition);
 
-const belongsToAccount = (
+/**
+ * Validate a condition against Twitch's authorization rules for a known
+ * subscription type. `self` fields must be the token's own user; `target`
+ * fields may be another linked account, or any channel where Twitch allows
+ * the token to read/moderate. Unknown types keep the old strict rule.
+ *
+ * Returns an error message, or undefined when the condition is valid.
+ */
+const conditionError = (
+  type: string,
   condition: Readonly<Record<string, string>>,
-  twitchUserId: string,
-): boolean =>
-  Object.keys(condition).length > 0 &&
-  Object.values(condition).every((value) => value === twitchUserId);
+  connectionTwitchUserId: string,
+  linkedTwitchUserIds: ReadonlySet<string>,
+): string | undefined => {
+  if (!EventSub.isSubscriptionType(type)) {
+    if (Object.keys(condition).length === 0)
+      return "Every EventSub condition value must be the connection's Twitch user id";
+    const mismatch = Object.values(condition).find(
+      (value) => value !== connectionTwitchUserId,
+    );
+    return mismatch === undefined
+      ? undefined
+      : "Every EventSub condition value must be the connection's Twitch user id";
+  }
+  const definition = EventSub.subscriptions[type];
+  for (const [field, value] of Object.entries(condition)) {
+    const role = definition.conditionRoles[field];
+    if (role === undefined)
+      return `Condition field ${field} is not used by ${type}`;
+    if (role === "self" && value !== connectionTwitchUserId)
+      return `${field} must be the connection's own Twitch user id`;
+    if (
+      role === "target" &&
+      !linkedTwitchUserIds.has(value) &&
+      definition.targetPolicy !== "linked-or-any"
+    )
+      return `${field} must be a linked Twitch account`;
+  }
+  return undefined;
+};
+
+const effectivePolicy = (
+  owners: ReadonlyArray<Pick<SubscriptionOwnerRow, "onStale" | "maxAgeMs">>,
+): { readonly onStale: "drop" | "deliver"; readonly maxAgeMs: number } => {
+  if (owners.length === 0) return { onStale: "drop", maxAgeMs: 60_000 };
+  return {
+    // Dropping is the conservative choice: one client asking for fresh-only
+    // events must not make stale events appear for everyone sharing the row.
+    onStale: owners.some((owner) => owner.onStale === "drop") ? "drop" : "deliver",
+    maxAgeMs: Math.min(...owners.map((owner) => owner.maxAgeMs)),
+  };
+};
+
+const subscriptionCost = (type: string): number =>
+  EventSub.isSubscriptionType(type)
+    ? EventSub.subscriptions[type].cost
+    : twitchSubscriptionCost(type);
 
 const errorBody = (error: HttpError): unknown => ({
   error: {
@@ -164,89 +218,6 @@ const errorResponse = (error: HttpError): HttpResponse => json(error.status, err
  */
 const recoverableRevocation = (reason: string): boolean =>
   reason === "notification_failures_exceeded";
-
-const WebhookSubscription = Schema.Struct({
-  id: Schema.String,
-  status: Schema.String,
-  type: Schema.String,
-  version: Schema.String,
-  condition: Schema.Record(Schema.String, Schema.String),
-});
-type WebhookSubscription = Schema.Schema.Type<typeof WebhookSubscription>;
-
-const WebhookBodyOnly = Schema.Union([
-  Schema.Struct({ subscription: WebhookSubscription, challenge: Schema.String }),
-  Schema.Struct({ subscription: WebhookSubscription, event: Schema.Unknown }),
-  Schema.Struct({ subscription: WebhookSubscription }),
-]);
-
-type WebhookDelivery =
-  | {
-      readonly _tag: "verification";
-      readonly challenge: string;
-      readonly subscription: WebhookSubscription;
-    }
-  | {
-      readonly _tag: "notification";
-      readonly subscription: WebhookSubscription;
-      readonly event: unknown;
-    }
-  | {
-      readonly _tag: "revocation";
-      readonly subscription: WebhookSubscription;
-    };
-
-/**
- * Twitch's webhook envelope, with the same lenient body-only acceptance that
- * Twitch CLI uses. The module's typed notification decoder is deliberately
- * not used here: the gateway relays payloads without knowing every topic's
- * schema, and the agent decodes them against its integration catalog.
- */
-const parseWebhook = (body: string): Effect.Effect<WebhookDelivery, HttpError> =>
-  Effect.gen(function* () {
-    const jsonValue = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
-      body,
-    ).pipe(Effect.mapError(() => badRequest("Invalid EventSub delivery")));
-
-    const envelope = Option.getOrUndefined(
-      Schema.decodeUnknownOption(EventSub.EventSubWebhookMessage)(jsonValue),
-    );
-    if (envelope !== undefined) {
-      if (EventSub.isWebhookMessageType(envelope, "webhook_callback_verification"))
-        return {
-          _tag: "verification" as const,
-          challenge: envelope.payload.challenge,
-          subscription: envelope.payload.subscription,
-        };
-      if (EventSub.isWebhookMessageType(envelope, "notification"))
-        return {
-          _tag: "notification" as const,
-          subscription: envelope.payload.subscription,
-          event: envelope.payload.event,
-        };
-      return {
-        _tag: "revocation" as const,
-        subscription: envelope.payload.subscription,
-      };
-    }
-
-    const bodyOnly = yield* Schema.decodeUnknownEffect(WebhookBodyOnly)(jsonValue).pipe(
-      Effect.mapError(() => badRequest("Invalid EventSub delivery")),
-    );
-    if ("challenge" in bodyOnly)
-      return {
-        _tag: "verification" as const,
-        challenge: bodyOnly.challenge,
-        subscription: bodyOnly.subscription,
-      };
-    if ("event" in bodyOnly)
-      return {
-        _tag: "notification" as const,
-        subscription: bodyOnly.subscription,
-        event: bodyOnly.event,
-      };
-    return { _tag: "revocation" as const, subscription: bodyOnly.subscription };
-  });
 
 export interface CloudAppDeps {
   readonly config: CloudConfigService;
@@ -486,15 +457,25 @@ export const makeCloudApp = (
       Effect.gen(function* () {
         const account = yield* accountFor(machine, request.connectionId);
         const now = yield* Clock.currentTimeMillis;
+        const owner = (request.owner ?? "default").trim().slice(0, 200) || "default";
+        const linkedAccounts = yield* store.listAccountsByUser(machine.userId);
+        const linkedIds = new Set(linkedAccounts.map((linked) => linked.twitchUserId));
         const desired = new Map<string, ReconcileSubscriptionsRequest["subscriptions"][number]>();
         for (const spec of request.subscriptions) {
-          if (!belongsToAccount(spec.condition, account.twitchUserId))
-            return yield* badRequest(
-              "Every EventSub condition value must be this Twitch account's user id",
-              { condition: spec.condition },
-            );
           if (spec.type.length === 0 || spec.version < 1 || spec.maxAgeMs < 0)
             return yield* badRequest("Invalid EventSub subscription spec", { spec });
+          const invalid = conditionError(
+            spec.type,
+            spec.condition,
+            account.twitchUserId,
+            linkedIds,
+          );
+          if (invalid !== undefined)
+            return yield* badRequest(invalid, {
+              type: spec.type,
+              condition: spec.condition,
+              connectionUserId: account.twitchUserId,
+            });
           if (EventSub.isSubscriptionType(spec.type)) {
             const definition = EventSub.subscriptions[spec.type];
             const condition = yield* Schema.decodeUnknownEffect(definition.condition)(
@@ -521,8 +502,36 @@ export const makeCloudApp = (
           desired.set(key, spec);
         }
 
-        const totalCost = [...desired.values()].reduce(
-          (total, spec) => total + twitchSubscriptionCost(spec.type),
+        const previousRows = yield* store.listSubscriptions(account.id);
+        const previousOwners = yield* store.listSubscriptionOwners(account.id);
+        const previousOwnersBySubscription = new Map<string, Array<SubscriptionOwnerRow>>();
+        for (const link of previousOwners) {
+          const list = previousOwnersBySubscription.get(link.subscriptionId) ?? [];
+          list.push(link);
+          previousOwnersBySubscription.set(link.subscriptionId, list);
+        }
+
+        // The union this reconcile will leave behind: every spec another owner
+        // still wants, plus this owner's desired specs.
+        const prospective = new Map<
+          string,
+          {
+            readonly type: string;
+            readonly version: number;
+            readonly condition: Readonly<Record<string, string>>;
+            readonly onStale: "drop" | "deliver";
+            readonly maxAgeMs: number;
+          }
+        >();
+        for (const row of previousRows) {
+          const owners = previousOwnersBySubscription.get(row.id) ?? [];
+          if (owners.some((link) => link.owner !== owner))
+            prospective.set(subscriptionKey(row), row);
+        }
+        for (const [key, spec] of desired) prospective.set(key, spec);
+
+        const totalCost = [...prospective.values()].reduce(
+          (total, spec) => total + subscriptionCost(spec.type),
           0,
         );
         if (totalCost > config.maxSubscriptionCost)
@@ -552,14 +561,14 @@ export const makeCloudApp = (
             subscription.transport.callback === callbackUrl,
         );
 
-        // Remove provider subscriptions this manifest no longer wants.
+        // Remove provider subscriptions no owner wants any more.
         for (const subscription of ours) {
           const key = subscriptionKey({
             type: subscription.type,
             version: Number(subscription.version),
             condition: subscription.condition,
           });
-          if (desired.has(key)) continue;
+          if (prospective.has(key)) continue;
           yield* twitch.deleteEventSubSubscription(appTokenValue, subscription.id).pipe(
             Effect.catchTag("TwitchError", (error) =>
               error.status === 404
@@ -575,10 +584,9 @@ export const makeCloudApp = (
         }
 
         const webhookSecret = yield* openSecret(account.secrets.webhookSecret);
-        const previousRows = yield* store.listSubscriptions(account.id);
-        const rows: Array<SubscriptionRow> = [];
+        const rowsByKey = new Map<string, SubscriptionRow>();
 
-        for (const [key, spec] of desired) {
+        for (const [key, spec] of prospective) {
           const previous = previousRows.find((row) => sameKey(row, spec));
           const provider = ours.find(
             (candidate) =>
@@ -588,19 +596,27 @@ export const makeCloudApp = (
                 condition: candidate.condition,
               }) === key,
           );
-          const id = previous?.id ?? crypto.randomUUID();
+          const otherPolicies = (
+            previous === undefined
+              ? []
+              : previousOwnersBySubscription.get(previous.id) ?? []
+          ).filter((link) => link.owner !== owner);
+          const effective = effectivePolicy([
+            ...otherPolicies,
+            { onStale: spec.onStale, maxAgeMs: spec.maxAgeMs },
+          ]);
           const base: SubscriptionRow = {
-            id,
+            id: previous?.id ?? crypto.randomUUID(),
             accountId: account.id,
             machineId: machine.id,
             type: spec.type,
             version: spec.version,
             condition: spec.condition,
-            cost: twitchSubscriptionCost(spec.type),
+            cost: subscriptionCost(spec.type),
             providerSubscriptionId: provider?.id ?? previous?.providerSubscriptionId ?? null,
             status: provider === undefined ? "pending" : "enabled",
-            onStale: spec.onStale,
-            maxAgeMs: spec.maxAgeMs,
+            onStale: effective.onStale,
+            maxAgeMs: effective.maxAgeMs,
             lastError: null,
             createdAt: previous?.createdAt ?? now,
             updatedAt: now,
@@ -608,7 +624,7 @@ export const makeCloudApp = (
 
           if (provider !== undefined) {
             yield* store.upsertSubscription(base);
-            rows.push(base);
+            rowsByKey.set(key, base);
             continue;
           }
 
@@ -636,16 +652,73 @@ export const makeCloudApp = (
             updatedAt: now,
           };
           yield* store.upsertSubscription(row);
-          rows.push(row);
+          rowsByKey.set(key, row);
         }
 
-        for (const previous of previousRows) {
-          if (![...desired.values()].some((spec) => sameKey(previous, spec)))
-            yield* store.deleteSubscription(previous.id);
+        // Record this owner's links, then drop links for specs it no longer wants.
+        for (const [key, spec] of desired) {
+          const row = rowsByKey.get(key);
+          if (row === undefined)
+            return yield* internalError("The reconciled subscription row is missing");
+          const existing = previousOwners.find(
+            (link) => link.subscriptionId === row.id && link.owner === owner,
+          );
+          yield* store.upsertSubscriptionOwner({
+            subscriptionId: row.id,
+            owner,
+            onStale: spec.onStale,
+            maxAgeMs: spec.maxAgeMs,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          });
+        }
+        for (const link of previousOwners) {
+          if (link.owner !== owner) continue;
+          const row = previousRows.find((candidate) => candidate.id === link.subscriptionId);
+          if (row !== undefined && desired.has(subscriptionKey(row))) continue;
+          yield* store.deleteSubscriptionOwner(link.subscriptionId, owner);
+        }
+
+        // Recompute shared freshness from the final owner set and delete rows
+        // that nobody owns any more.
+        const finalOwners = yield* store.listSubscriptionOwners(account.id);
+        const finalOwnersBySubscription = new Map<string, Array<SubscriptionOwnerRow>>();
+        for (const link of finalOwners) {
+          const list = finalOwnersBySubscription.get(link.subscriptionId) ?? [];
+          list.push(link);
+          finalOwnersBySubscription.set(link.subscriptionId, list);
+        }
+        const responseRows: Array<SubscriptionRow> = [];
+        for (const row of yield* store.listSubscriptions(account.id)) {
+          const owners = finalOwnersBySubscription.get(row.id) ?? [];
+          if (owners.length === 0) {
+            yield* store.deleteSubscription(row.id);
+            continue;
+          }
+          const effective = effectivePolicy(owners);
+          const updated: SubscriptionRow = {
+            ...row,
+            machineId: machine.id,
+            onStale: effective.onStale,
+            maxAgeMs: effective.maxAgeMs,
+            updatedAt: now,
+          };
+          if (
+            row.machineId !== updated.machineId ||
+            row.onStale !== updated.onStale ||
+            row.maxAgeMs !== updated.maxAgeMs
+          )
+            yield* store.upsertSubscription(updated);
+          responseRows.push(updated);
         }
 
         return json(200, {
-          subscriptions: rows.map(toSubscription),
+          subscriptions: responseRows.map((row) =>
+            toSubscription(
+              row,
+              (finalOwnersBySubscription.get(row.id) ?? []).map((link) => link.owner),
+            ),
+          ),
           totalCost,
           maxCost: config.maxSubscriptionCost,
         });
@@ -923,7 +996,7 @@ export const makeCloudApp = (
 
     const handleRevocation = (
       account: TwitchAccountRow,
-      subscription: WebhookSubscription,
+      subscription: EventSub.EventSubSubscription,
       now: number,
     ): Effect.Effect<void, HttpError> =>
       Effect.gen(function* () {
@@ -996,7 +1069,7 @@ export const makeCloudApp = (
         const now = yield* Clock.currentTimeMillis;
         const webhookSecret = yield* openSecret(account.value.secrets.webhookSecret);
 
-        yield* EventSub.verifyWebhook({
+        const delivery = yield* EventSub.decodeWebhook({
           headers: request.headers,
           body: request.body,
           secret: webhookSecret,
@@ -1004,17 +1077,37 @@ export const makeCloudApp = (
           toleranceMs: config.webhookTimestampToleranceMs,
         }).pipe(
           Effect.mapError((failure) =>
-            failure.code === "missing-header" ||
-            failure.code === "invalid-timestamp" ||
-            failure.code === "crypto-unavailable"
-              ? badRequest(failure.message)
-              : forbidden(failure.message),
+            failure._tag === "WebhookVerificationError"
+              ? failure.code === "missing-header" ||
+                failure.code === "invalid-timestamp" ||
+                failure.code === "crypto-unavailable"
+                ? badRequest(failure.message)
+                : forbidden(failure.message)
+              : badRequest("Invalid EventSub delivery"),
           ),
         );
 
-        const delivery = yield* parseWebhook(new TextDecoder().decode(request.body));
-        if (!belongsToAccount(delivery.subscription.condition, account.value.twitchUserId))
-          return yield* badRequest("EventSub condition does not belong to this connection");
+        const definition = EventSub.isSubscriptionType(delivery.subscription.type)
+          ? EventSub.subscriptions[delivery.subscription.type]
+          : undefined;
+        const needsLinkedAccounts =
+          definition !== undefined &&
+          Object.values(definition.conditionRoles).some((role) => role === "target") &&
+          definition.targetPolicy !== "linked-or-any";
+        const linkedIds = needsLinkedAccounts
+          ? new Set(
+              (yield* store.listAccountsByUser(account.value.userId)).map(
+                (linked) => linked.twitchUserId,
+              ),
+            )
+          : new Set<string>();
+        const invalid = conditionError(
+          delivery.subscription.type,
+          delivery.subscription.condition,
+          account.value.twitchUserId,
+          linkedIds,
+        );
+        if (invalid !== undefined) return yield* badRequest(invalid);
 
         if (delivery._tag === "verification") {
           if (messageType !== "webhook_callback_verification")
@@ -1031,11 +1124,8 @@ export const makeCloudApp = (
 
         if (messageType !== "notification")
           return yield* badRequest("EventSub message type does not match its body");
-        const messageId = header(request, EventSub.MESSAGE_ID_HEADER);
-        const timestamp = header(request, EventSub.MESSAGE_TIMESTAMP_HEADER);
-        if (messageId === undefined || timestamp === undefined)
-          return yield* badRequest("Missing Twitch EventSub headers");
-        const occurredAt = Date.parse(timestamp);
+        const messageId = delivery.messageId;
+        const occurredAt = delivery.messageTimestamp.getTime();
         if (!Number.isFinite(occurredAt)) return yield* badRequest("Invalid EventSub timestamp");
         if (yield* store.hasWebhookDelivery(messageId)) return { status: 204 };
 

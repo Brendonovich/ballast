@@ -8,6 +8,7 @@ import {
   type CloudStoreService,
   type OAuthStateRow,
   type PairingCodeRow,
+  type SubscriptionOwnerRow,
   type SubscriptionRow,
   type TwitchAccountRow,
 } from "./store.ts";
@@ -64,6 +65,15 @@ const SubscriptionDb = Schema.Struct({
   onStale: Schema.Literals(["drop", "deliver"]),
   maxAgeMs: Schema.Number,
   lastError: Schema.NullOr(Schema.String),
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+});
+
+const SubscriptionOwnerDb = Schema.Struct({
+  subscriptionId: Schema.String,
+  owner: Schema.String,
+  onStale: Schema.Literals(["drop", "deliver"]),
+  maxAgeMs: Schema.Number,
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
 });
@@ -128,6 +138,9 @@ const subscriptionFromDb = (row: unknown): SubscriptionRow => {
     updatedAt: decoded.updatedAt,
   };
 };
+
+const ownerFromDb = (row: unknown): SubscriptionOwnerRow =>
+  decode(SubscriptionOwnerDb, row);
 
 const subscriptionToValues = (row: SubscriptionRow) => [
   row.id,
@@ -400,7 +413,38 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
       ).pipe(Effect.asVoid),
 
     deleteSubscription: (id) =>
-      run("DELETE FROM event_subscriptions WHERE id = ?", id).pipe(Effect.asVoid),
+      run("DELETE FROM event_subscription_owners WHERE subscription_id = ?", id).pipe(
+        Effect.andThen(run("DELETE FROM event_subscriptions WHERE id = ?", id)),
+        Effect.asVoid,
+      ),
+
+    listSubscriptionOwners: (accountId) =>
+      all(
+        "SELECT o.subscription_id AS subscriptionId, o.owner, o.on_stale AS onStale, o.max_age_ms AS maxAgeMs, o.created_at AS createdAt, o.updated_at AS updatedAt " +
+          "FROM event_subscription_owners o JOIN event_subscriptions s ON s.id = o.subscription_id " +
+          "WHERE s.account_id = ? ORDER BY o.subscription_id, o.owner",
+        accountId,
+      ).pipe(Effect.map((result) => result.results.map(ownerFromDb))),
+
+    upsertSubscriptionOwner: (row) =>
+      run(
+        "INSERT INTO event_subscription_owners (subscription_id, owner, on_stale, max_age_ms, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(subscription_id, owner) DO UPDATE SET on_stale = excluded.on_stale, max_age_ms = excluded.max_age_ms, updated_at = excluded.updated_at",
+        row.subscriptionId,
+        row.owner,
+        row.onStale,
+        row.maxAgeMs,
+        row.createdAt,
+        row.updatedAt,
+      ).pipe(Effect.asVoid),
+
+    deleteSubscriptionOwner: (subscriptionId, owner) =>
+      run(
+        "DELETE FROM event_subscription_owners WHERE subscription_id = ? AND owner = ?",
+        subscriptionId,
+        owner,
+      ).pipe(Effect.asVoid),
 
     markSubscriptionRevoked: (providerId, now, reason) =>
       run(

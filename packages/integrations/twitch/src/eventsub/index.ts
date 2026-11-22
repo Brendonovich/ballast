@@ -22,6 +22,7 @@ export {
   decodeSubscriptionEvent,
   buildCondition,
   isSubscriptionType,
+  subscriptionCost,
   subscriptionRequest,
   subscriptions,
   topics,
@@ -30,6 +31,7 @@ export {
 export type {
   ConditionOf,
   ConditionRecord,
+  ConditionRole,
   NotificationFor,
   PayloadOf,
   SubscriptionDefinition,
@@ -39,6 +41,7 @@ export type {
   SubscriptionNotification,
   SubscriptionRequest,
   SubscriptionType,
+  TargetPolicy,
   TopicName,
 } from "./subscriptions.ts";
 export * as Schemas from "./schemas.ts";
@@ -61,8 +64,13 @@ export type {
   WebhookHeaders,
   WebhookVerificationCode,
 } from "./signature.ts";
-export { handleWebhook } from "./webhook.ts";
-export type { WebhookDelivery } from "./webhook.ts";
+export {
+  WebhookBody,
+  decodeWebhook,
+  decodeWebhookBody,
+  handleWebhook,
+} from "./webhook.ts";
+export type { RawWebhookDelivery, WebhookBody as WebhookBodyType, WebhookDelivery } from "./webhook.ts";
 export {
   EventSubRegistrar,
   EventSubSubscriptionError,

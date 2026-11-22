@@ -1,6 +1,6 @@
 import { Helix, OAuth, Protocol } from "@ballast/module-twitch";
-import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/http";
+import { Context, Data, Effect, Layer, Redacted } from "effect";
+import { HttpClient } from "effect/http";
 
 import { CloudConfig, type CloudConfigService } from "./config.ts";
 
@@ -22,7 +22,7 @@ export interface TwitchUser {
   readonly id: string;
   readonly login: string;
   readonly displayName: string;
-  /** `/helix/users` only returns the email with `user:read:email`; the shared User schema omits it. */
+  /** Present only when the token has `user:read:email`. */
   readonly email: string | null;
 }
 
@@ -91,14 +91,6 @@ export class TwitchApi extends Context.Service<TwitchApi, TwitchApiService>()(
   "Ballast/TwitchApi",
 ) {}
 
-const ClientCredentialsResponse = Schema.Struct({
-  access_token: Schema.String,
-  refresh_token: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  expires_in: Schema.Number,
-  scope: Schema.optionalKey(Schema.Array(Schema.String)),
-  token_type: Schema.String,
-});
-
 const toTokenSet = (token: OAuth.OAuthToken): TwitchTokenSet => ({
   accessToken: token.accessToken,
   refreshToken: token.refreshToken ?? null,
@@ -151,60 +143,10 @@ export const makeTwitchApi = (
         Effect.provideService(HttpClient.HttpClient, http),
       );
 
-    const clientCredentials = Effect.gen(function* () {
-      const request = HttpClientRequest.post(`${config.twitchIdBaseUrl}/oauth2/token`).pipe(
-        HttpClientRequest.setHeader("Accept", "application/json"),
-        HttpClientRequest.bodyUrlParams({
-          client_id: clientId,
-          client_secret: clientSecret,
-          grant_type: "client_credentials",
-        }),
-      );
-      const response = yield* http.execute(request).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TwitchError({
-              operation: "clientCredentials",
-              status: 0,
-              message: cause.message,
-            }),
-        ),
-      );
-      const body = yield* response.json.pipe(
-        Effect.mapError(
-          () =>
-            new TwitchError({
-              operation: "clientCredentials",
-              status: response.status,
-              message: "Twitch returned an invalid token response",
-            }),
-        ),
-      );
-      if (response.status < 200 || response.status >= 300) {
-        return yield* new TwitchError({
-          operation: "clientCredentials",
-          status: response.status,
-          message: `Twitch returned HTTP ${response.status}`,
-          body,
-        });
-      }
-      const decoded = yield* Schema.decodeUnknownEffect(ClientCredentialsResponse)(body).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TwitchError({
-              operation: "clientCredentials",
-              status: response.status,
-              message: "Twitch returned an invalid token response: " + cause.message,
-            }),
-        ),
-      );
-      return {
-        accessToken: decoded.access_token,
-        refreshToken: decoded.refresh_token ?? null,
-        expiresAt: Date.now() + decoded.expires_in * 1_000,
-        scopes: decoded.scope ?? [],
-      } satisfies TwitchTokenSet;
-    });
+    const clientCredentials = oauth.clientCredentials.pipe(
+      Effect.map(toTokenSet),
+      Effect.mapError((error) => oauthError("clientCredentials", error)),
+    );
 
     return {
       authorizeUrl: (input) =>
@@ -255,56 +197,28 @@ export const makeTwitchApi = (
             id: user.id,
             login: user.login,
             displayName: user.display_name,
-            email: null,
+            email: user.email ?? null,
           } satisfies TwitchUser;
         }).pipe(Effect.mapError((error) => helixError("getUser", error))),
 
       helix: (call) =>
         Effect.gen(function* () {
-          const url = new URL(
-            call.path.startsWith("/") ? call.path : `/${call.path}`,
-            config.twitchApiBaseUrl,
-          );
-          for (const [key, value] of Object.entries(call.query ?? {})) {
-            if (typeof value === "string") url.searchParams.append(key, value);
-            else for (const item of value) url.searchParams.append(key, item);
-          }
-          let request = HttpClientRequest.make(call.method)(url.toString()).pipe(
-            HttpClientRequest.setHeaders({
-              authorization: `Bearer ${call.accessToken}`,
-              "client-id": clientId,
-            }),
-          );
-          if (call.body !== undefined) {
-            request = HttpClientRequest.bodyJsonUnsafe(request, call.body).pipe(
-              HttpClientRequest.setHeader("content-type", "application/json"),
-            );
-          }
-          const response = yield* http.execute(request).pipe(
-            Effect.mapError(
-              (cause) =>
-                new TwitchError({
-                  operation: "helix",
-                  status: 0,
-                  message: cause.message,
-                }),
+          const client = yield* Helix.make({ baseUrl: config.twitchApiBaseUrl }).pipe(
+            Effect.provide(
+              Protocol.staticTokenProvider({
+                accessToken: call.accessToken,
+                clientId,
+              }),
             ),
+            Effect.provideService(HttpClient.HttpClient, http),
           );
-          const text = yield* response.text.pipe(
-            Effect.catch(() =>
-              Effect.succeed(""),
-            ),
-          );
-          let body: unknown = null;
-          if (text.length > 0) {
-            try {
-              body = JSON.parse(text);
-            } catch {
-              body = text;
-            }
-          }
-          return { status: response.status, body };
-        }),
+          return yield* client.requestRaw({
+            method: call.method,
+            path: call.path,
+            ...(call.query === undefined ? {} : { query: call.query }),
+            ...(call.body === undefined ? {} : { body: call.body }),
+          });
+        }).pipe(Effect.mapError((error) => helixError("helix", error))),
 
       createEventSubSubscription: (appAccessToken, input) =>
         Effect.gen(function* () {

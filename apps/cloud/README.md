@@ -73,13 +73,23 @@ the dev server is on another port, and `BALLAST_DEV_PORT`/`BALLAST_PUBLIC_ORIGIN
 | Pairing-code creation | 5 / 15 min | Twitch user (one code per successful OAuth callback) |
 
 Counters live in D1 (`rate_limits`) as fixed windows, so they survive Worker restarts and are
-shared by isolates. A rejected attempt returns HTTP 429 with the shared `forbidden` error tag
-(the protocol has no `rate_limited` tag yet) and `details: { limit, windowMs }`.
+shared by isolates. A rejected attempt returns HTTP 429 with the shared `rate_limited` error tag
+and `details: { limit, windowMs }`.
 
 Token refreshes take a per-account lease in D1 (`refresh_lock` + `refresh_lock_until`, 30 s).
 A request that loses the race waits up to 2 s for the winner, then returns a retryable
 `upstream_error` instead of refreshing the same rotating refresh token twice. A stale lease
 holder can never commit: `updateAccountSecrets` only applies while it still owns the lock.
+
+Reconcile accepts an optional opaque `owner` id (project/script). Provider subscriptions are
+shared: the cloud subscribes to the union of all owners and deletes one only when no owner still
+wants it. Freshness merges conservatively: `drop` if any owner asks for drop, shortest
+`maxAgeMs`. Existing clients that omit `owner` reconcile as `"default"`.
+
+Twitch condition fields are validated against the module registry. `self` fields (`user_id`,
+`moderator_user_id`, broadcaster fields on single-account topics) must be the connection's own
+Twitch user; `target` fields (`broadcaster_user_id` for chat/follows) may be another linked
+account or any channel where Twitch allows the token to read/moderate.
 
 EventSub revocations with `status: "notification_failures_exceeded"` are recoverable: the
 gateway deletes the dead provider subscription and creates it again with the stored condition

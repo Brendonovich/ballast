@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
 import {
+  ErrorTag,
   EventEnvelope,
+  ReconcileSubscriptionsRequest,
   RelayClientMessage,
   RelayServerMessage,
+  TwitchConnection,
+  TwitchSubscription,
   conditionKey,
   decodeEventSubDelivery,
   encodeRelayServerMessage,
@@ -78,6 +82,54 @@ describe("cloud protocol", () => {
     expect(twitchSubscriptionCost("channel.cheer")).toBe(1);
     expect(twitchSubscriptionCost("channel.update")).toBe(2);
     expect(twitchTopic("channel.cheer")).toBe("twitch/channel.cheer");
+  });
+
+  it("accepts owners, needsReauth and the rate_limited tag additively", () => {
+    const connection = {
+      id: "account-1",
+      twitchUserId: "12345",
+      login: "streamer",
+      displayName: "Streamer",
+      scopes: ["user:read:chat"],
+      machineId: null,
+      needsReauth: true,
+      createdAt: 1_000,
+    };
+    expect(Schema.decodeUnknownSync(TwitchConnection)(connection)).toMatchObject({
+      needsReauth: true,
+    });
+    const { needsReauth: _needsReauth, ...legacyConnection } = connection;
+    expect(Schema.decodeUnknownSync(TwitchConnection)(legacyConnection)).toMatchObject({
+      login: "streamer",
+    });
+    expect(
+      Schema.decodeUnknownSync(ReconcileSubscriptionsRequest)({
+        connectionId: "account-1",
+        owner: "project-a",
+        subscriptions: [],
+      }).owner,
+    ).toBe("project-a");
+    expect(
+      Schema.decodeUnknownSync(ReconcileSubscriptionsRequest)({
+        connectionId: "account-1",
+        subscriptions: [],
+      }).owner,
+    ).toBeUndefined();
+    expect(Schema.decodeUnknownSync(ErrorTag)("rate_limited")).toBe("rate_limited");
+    expect(
+      Schema.decodeUnknownSync(TwitchSubscription)({
+        id: "sub-1",
+        providerSubscriptionId: null,
+        type: "channel.cheer",
+        version: 1,
+        condition: { broadcaster_user_id: "1" },
+        status: "enabled",
+        cost: 1,
+        owners: ["project-a", "project-b"],
+        createdAt: 1,
+        updatedAt: 2,
+      }).owners,
+    ).toEqual(["project-a", "project-b"]);
   });
 
   it("decodes a Twitch EventSub delivery", () => {

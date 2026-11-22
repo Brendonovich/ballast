@@ -34,6 +34,8 @@ export const TwitchSubscription = Schema.Struct({
   condition: Schema.Record(Schema.String, Schema.String),
   status: TwitchSubscriptionStatus,
   cost: Schema.Number,
+  /** Client-supplied owners currently keeping this provider subscription alive. */
+  owners: Schema.optionalKey(Schema.Array(Schema.String)),
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
 });
@@ -46,6 +48,8 @@ export const TwitchConnection = Schema.Struct({
   displayName: Schema.String,
   scopes: Schema.Array(Schema.String),
   machineId: Schema.NullOr(Schema.String),
+  /** The user must reconnect this Twitch account before subscriptions work again. */
+  needsReauth: Schema.optionalKey(Schema.Boolean),
   createdAt: Schema.Number,
 });
 export type TwitchConnection = typeof TwitchConnection.Type;
@@ -131,6 +135,12 @@ export type HelixResponse = typeof HelixResponse.Type;
 
 export const ReconcileSubscriptionsRequest = Schema.Struct({
   connectionId: Schema.String,
+  /**
+   * Opaque owner id (for example a project or script id). Each owner's
+   * reconcile only removes subscriptions no other owner still wants. Older
+   * clients may omit it; the cloud uses `"default"`.
+   */
+  owner: Schema.optionalKey(Schema.String),
   subscriptions: Schema.Array(TwitchSubscriptionSpec),
 });
 export type ReconcileSubscriptionsRequest = typeof ReconcileSubscriptionsRequest.Type;
@@ -168,6 +178,7 @@ export const ErrorTag = Schema.Literals([
   "conflict",
   "missing_scopes",
   "cost_limit_exceeded",
+  "rate_limited",
   "upstream_error",
   "internal",
 ]);

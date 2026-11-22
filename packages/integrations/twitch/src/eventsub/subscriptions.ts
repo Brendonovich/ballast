@@ -16,6 +16,21 @@ import {
 
 export type ConditionRecord = Readonly<Record<string, string>>;
 
+/**
+ * How a condition field identifies a user:
+ * - `self` must be the connection's own Twitch user (whose token authorizes).
+ * - `target` is another channel/account (broadcaster or moderator target).
+ * - `any` is an opaque filter such as `reward_id`.
+ */
+export type ConditionRole = "self" | "target" | "any";
+
+/**
+ * For `target` fields, whether Twitch accepts any channel or only a channel
+ * linked to the same Ballast user. Twitch itself enforces moderator/read
+ * permissions; the cloud only guards account ownership.
+ */
+export type TargetPolicy = "linked-or-any" | "linked-only";
+
 export interface SubscriptionEventFor<Type extends string, Payload> {
   readonly type: Type;
   /** Ballast topic key: `twitch/<subscription type>`. */
@@ -40,6 +55,12 @@ export interface SubscriptionDefinition<
   readonly condition: Schema.Codec<Condition, unknown, never, never>;
   /** Scopes that authorize this subscription. Empty means no scope is required. */
   readonly scopes: ReadonlyArray<string>;
+  /** Twitch's EventSub cost for this subscription type (1 unless documented otherwise). */
+  readonly cost: number;
+  /** How each condition field identifies a user, for cross-account validation. */
+  readonly conditionRoles: Readonly<Record<string, ConditionRole>>;
+  /** Applies to `target` fields; omitted when the type has no target fields. */
+  readonly targetPolicy?: TargetPolicy;
   readonly payload: Schema.Codec<Payload, unknown, never, never>;
   readonly docsUrl: string;
   readonly decode: (payload: unknown) => Effect.Effect<SubscriptionEventFor<Type, Payload>, Schema.SchemaError>;
@@ -59,6 +80,9 @@ const defineSubscription = <
   readonly version: number;
   readonly condition: Schema.Codec<Condition, unknown, never, never>;
   readonly scopes: ReadonlyArray<string>;
+  readonly cost: number;
+  readonly conditionRoles: Readonly<Record<string, ConditionRole>>;
+  readonly targetPolicy?: TargetPolicy;
   readonly payload: Schema.Codec<Payload, unknown, never, never>;
   readonly docsUrl: string;
 }): SubscriptionDefinition<Name, Type, Condition, Payload> => ({
@@ -67,6 +91,9 @@ const defineSubscription = <
   version: config.version,
   condition: config.condition,
   scopes: config.scopes,
+  cost: config.cost,
+  conditionRoles: config.conditionRoles,
+  ...(config.targetPolicy === undefined ? {} : { targetPolicy: config.targetPolicy }),
   payload: config.payload,
   docsUrl: config.docsUrl,
   decode: (payload) =>
@@ -106,6 +133,8 @@ export const subscriptions = {
       reward_id: Schema.optional(Schema.String),
     }),
     scopes: ["channel:read:redemptions"],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "self", reward_id: "any" },
     payload: ChannelPointsRedemptionAddPayload,
     docsUrl: docsUrl("channelchannel_points_custom_reward_redemptionadd"),
   }),
@@ -118,6 +147,9 @@ export const subscriptions = {
       user_id: Schema.String,
     }),
     scopes: ["user:read:chat"],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "target", user_id: "self" },
+    targetPolicy: "linked-or-any",
     payload: ChatMessagePayload,
     docsUrl: docsUrl("channelchatmessage"),
   }),
@@ -130,6 +162,9 @@ export const subscriptions = {
       moderator_user_id: Schema.String,
     }),
     scopes: ["moderator:read:followers"],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "target", moderator_user_id: "self" },
+    targetPolicy: "linked-or-any",
     payload: FollowPayload,
     docsUrl: docsUrl("channelfollow"),
   }),
@@ -139,6 +174,8 @@ export const subscriptions = {
     version: 1,
     condition: Schema.Struct({ broadcaster_user_id: Schema.String }),
     scopes: ["channel:read:subscriptions"],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "self" },
     payload: SubscribePayload,
     docsUrl: docsUrl("channelsubscribe"),
   }),
@@ -148,6 +185,8 @@ export const subscriptions = {
     version: 1,
     condition: Schema.Struct({ broadcaster_user_id: Schema.String }),
     scopes: ["bits:read"],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "self" },
     payload: CheerPayload,
     docsUrl: docsUrl("channelcheer"),
   }),
@@ -157,6 +196,11 @@ export const subscriptions = {
     version: 1,
     condition: RaidCondition,
     scopes: [],
+    cost: 1,
+    conditionRoles: {
+      from_broadcaster_user_id: "self",
+      to_broadcaster_user_id: "self",
+    },
     payload: RaidPayload,
     docsUrl: docsUrl("channelraid"),
   }),
@@ -166,6 +210,8 @@ export const subscriptions = {
     version: 1,
     condition: Schema.Struct({ broadcaster_user_id: Schema.String }),
     scopes: [],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "self" },
     payload: StreamOnlinePayload,
     docsUrl: docsUrl("streamonline"),
   }),
@@ -175,6 +221,8 @@ export const subscriptions = {
     version: 1,
     condition: Schema.Struct({ broadcaster_user_id: Schema.String }),
     scopes: [],
+    cost: 1,
+    conditionRoles: { broadcaster_user_id: "self" },
     payload: StreamOfflinePayload,
     docsUrl: docsUrl("streamoffline"),
   }),
@@ -226,6 +274,10 @@ export type TopicName = keyof typeof topics;
 
 export const isSubscriptionType = (value: string): value is SubscriptionType =>
   Object.hasOwn(subscriptions, value);
+
+/** Twitch's published cost for a known type; unknown types default to 1. */
+export const subscriptionCost = (type: string): number =>
+  isSubscriptionType(type) ? subscriptions[type].cost : 1;
 
 export class UnknownSubscriptionType extends Schema.TaggedError<UnknownSubscriptionType>()(
   "UnknownSubscriptionType",

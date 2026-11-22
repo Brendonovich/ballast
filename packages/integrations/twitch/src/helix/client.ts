@@ -7,7 +7,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { TokenProvider, type TokenProviderError } from "../protocol/token.ts";
 import { HelixError, isTransientStatus } from "./errors.ts";
-import type { HelixRequest } from "./requests.ts";
+import type { HelixMethod, HelixRequest } from "./requests.ts";
 import { requests } from "./requests.ts";
 
 export const DEFAULT_HELIX_BASE_URL = "https://api.twitch.tv/helix";
@@ -15,6 +15,21 @@ export const DEFAULT_HELIX_BASE_URL = "https://api.twitch.tv/helix";
 export interface HelixClientOptions {
   /** Overridable for a proxy transport or a local mock server. */
   readonly baseUrl?: string;
+}
+
+/** An arbitrary Helix call, for a proxy that must preserve status and body. */
+export interface HelixRawRequest {
+  readonly method: HelixMethod;
+  /** Path relative to the client's base URL, e.g. `/helix/channels`. */
+  readonly path: string;
+  readonly query?: Readonly<Record<string, string | ReadonlyArray<string>>>;
+  readonly body?: unknown;
+}
+
+export interface HelixRawResponse {
+  readonly status: number;
+  /** Parsed JSON when possible, otherwise the response text (or null when empty). */
+  readonly body: unknown;
 }
 
 const ErrorBody = Schema.Struct({
@@ -76,6 +91,13 @@ export interface HelixClientService {
     request: HelixRequest<Input, Output>,
     input: Input,
   ) => Effect.Effect<Output, HelixError | TokenProviderError>;
+  /**
+   * Execute an arbitrary Helix call and return Twitch's status and body
+   * unchanged, including non-2xx responses. Used by the cloud proxy.
+   */
+  readonly requestRaw: (
+    input: HelixRawRequest,
+  ) => Effect.Effect<HelixRawResponse, HelixError | TokenProviderError>;
   readonly getUsers: (input: Schema.Schema.Type<typeof requests.getUsers.input>) => Effect.Effect<
     Schema.Schema.Type<typeof requests.getUsers.output>,
     HelixError | TokenProviderError
@@ -241,8 +263,57 @@ export const make = (
         );
       });
 
+    const requestRaw = (
+      input: HelixRawRequest,
+    ): Effect.Effect<HelixRawResponse, HelixError | TokenProviderError> =>
+      Effect.gen(function* () {
+        const url = new URL(baseUrl + input.path);
+        for (const [key, value] of Object.entries(input.query ?? {})) {
+          if (typeof value === "string") url.searchParams.append(key, value);
+          else for (const item of value) url.searchParams.append(key, item);
+        }
+        let token = yield* tokens.getToken;
+        const sendRaw = (accessToken: string) => {
+          let httpRequest = HttpClientRequest.make(input.method)(url.toString());
+          httpRequest = HttpClientRequest.setHeaders(httpRequest, {
+            "Client-Id": token.clientId,
+            Authorization: "Bearer " + accessToken,
+            Accept: "application/json",
+          });
+          if (input.body !== undefined)
+            httpRequest = HttpClientRequest.bodyJsonUnsafe(httpRequest, input.body).pipe(
+              HttpClientRequest.setHeader("content-type", "application/json"),
+            );
+          return http.execute(httpRequest).pipe(
+            Effect.mapError(
+              (cause) =>
+                new HelixError({
+                  reason: cause.message,
+                  transient: cause.reason._tag === "TransportError",
+                }),
+            ),
+          );
+        };
+        let response = yield* sendRaw(token.accessToken);
+        if (response.status === 401 && tokens.refresh !== undefined) {
+          token = yield* tokens.refresh;
+          response = yield* sendRaw(token.accessToken);
+        }
+        const text = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")));
+        let body: unknown = null;
+        if (text.trim().length > 0) {
+          try {
+            body = JSON.parse(text);
+          } catch {
+            body = text;
+          }
+        }
+        return { status: response.status, body };
+      });
+
     return {
       request,
+      requestRaw,
       getUsers: (input) => request(requests.getUsers, input),
       getChannelInformation: (input) => request(requests.getChannelInformation, input),
       modifyChannelInformation: (input) => request(requests.modifyChannelInformation, input),

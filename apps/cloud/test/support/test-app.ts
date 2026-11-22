@@ -178,6 +178,16 @@ export const makeTestApp = async (options: {
       updatedAt: now,
     };
     await Effect.runPromise(store.upsertSubscription(row));
+    await Effect.runPromise(
+      store.upsertSubscriptionOwner({
+        subscriptionId: row.id,
+        owner: "default",
+        onStale: row.onStale,
+        maxAgeMs: row.maxAgeMs,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
     return row;
   };
 

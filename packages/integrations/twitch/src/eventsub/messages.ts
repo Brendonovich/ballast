@@ -22,7 +22,8 @@ export const EventSubSubscription = Schema.Struct({
   type: Schema.String,
   version: Schema.String,
   condition: Schema.Record(Schema.String, Schema.String),
-  created_at: Schema.DateFromString,
+  /** Twitch CLI mock deliveries omit this; real EventSub includes it. */
+  created_at: Schema.optional(Schema.DateFromString),
   transport: Schema.optional(EventSubTransport),
   cost: Schema.optional(Schema.Number),
 });

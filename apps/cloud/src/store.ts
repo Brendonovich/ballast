@@ -85,6 +85,21 @@ export const SubscriptionRow = Schema.Struct({
 export type SubscriptionRow = typeof SubscriptionRow.Type;
 
 /**
+ * One client (project/script) that wants a provider subscription to exist.
+ * Provider subscriptions are shared; an owner link carries that client's
+ * freshness policy. The row is deleted when the last owner goes away.
+ */
+export const SubscriptionOwnerRow = Schema.Struct({
+  subscriptionId: Schema.String,
+  owner: Schema.String,
+  onStale: Schema.Literals(["drop", "deliver"]),
+  maxAgeMs: Schema.Number,
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+});
+export type SubscriptionOwnerRow = typeof SubscriptionOwnerRow.Type;
+
+/**
  * Durable storage for everything except relay buffers. Relay buffers live in
  * the per-machine Durable Object so hot event traffic never touches D1.
  */
@@ -177,6 +192,14 @@ export interface CloudStoreService {
   ) => Effect.Effect<Option.Option<SubscriptionRow>>;
   readonly upsertSubscription: (row: SubscriptionRow) => Effect.Effect<void>;
   readonly deleteSubscription: (id: string) => Effect.Effect<void>;
+  readonly listSubscriptionOwners: (
+    accountId: string,
+  ) => Effect.Effect<ReadonlyArray<SubscriptionOwnerRow>>;
+  readonly upsertSubscriptionOwner: (row: SubscriptionOwnerRow) => Effect.Effect<void>;
+  readonly deleteSubscriptionOwner: (
+    subscriptionId: string,
+    owner: string,
+  ) => Effect.Effect<void>;
   readonly markSubscriptionRevoked: (
     providerId: string,
     now: number,

@@ -238,21 +238,25 @@ in Ballast with the new scopes. There is no local re-auth path in cloud mode.
 
 ### Multiple running scripts
 
-The cloud subscription API reconciles one desired set per Twitch connection,
-and the agent currently calls it with the manifest of the script being run.
-Two scripts running at once against the same account would overwrite each
-other's EventSub subscriptions. Merge manifests per connection (or run one
-script per account) before supporting concurrent scripts.
+The cloud reconcile request accepts an optional opaque `owner` id. Provider
+subscriptions are shared: the cloud subscribes to the union of all owners and
+only deletes one when no owner still wants it. Freshness policies merge
+conservatively (`drop` if any owner wants drop, shortest `maxAgeMs`).
 
-### Cloud condition limitation
+The agent does **not send an owner yet**, so every reconcile uses the legacy
+`"default"` owner. Two scripts running at once against the same Twitch
+connection therefore still overwrite each other. Follow-up: pass a stable
+project/script id as `owner` from `startCloudTwitchTransport`'s reconcile.
 
-The current cloud reconcile route requires every EventSub condition value to
-equal the bound connection's own Twitch user id. A bot reading another
-channel's chat (or following with another broadcaster) therefore works in
-local mode but is rejected by the cloud until the cloud allows sibling
-connections of the same user in one subscription. Single-account topics
-(redemptions, cheers, subscriptions, stream online/offline, incoming raids,
-follows as the broadcaster) are unaffected.
+### Cloud cross-slot conditions
+
+The cloud now follows the same `self` / `target` condition rules as local mode.
+A bot connection may read the broadcaster's chat
+(`{ broadcaster_user_id: broadcaster, user_id: bot }`) and a moderator
+connection may watch another channel's follows
+(`{ broadcaster_user_id: streamer, moderator_user_id: moderator }`). Fields
+whose token Twitch authorizes (`user_id`, `moderator_user_id`, broadcaster
+fields on single-account topics) must still match the bound connection.
 
 ## Demos and tests
 

@@ -10,7 +10,7 @@ import {
   topics,
 } from "../src/eventsub/subscriptions.ts";
 import { computeSignature } from "../src/eventsub/signature.ts";
-import { handleWebhook } from "../src/eventsub/webhook.ts";
+import { decodeWebhook, decodeWebhookBody, handleWebhook } from "../src/eventsub/webhook.ts";
 
 const subscription = (type: string, version: string, condition: Record<string, string>) => ({
   id: "sub-1",
@@ -33,6 +33,18 @@ describe("EventSub subscription catalog", () => {
     expect(topics.ChatMessage.type).toBe("channel.chat.message");
     expect(catalog["twitch/channel.cheer"].name).toBe("Cheer");
     expect(catalog["twitch/stream.online"].version).toBe(1);
+    expect(subscriptions["channel.chat.message"].cost).toBe(1);
+    expect(subscriptions["channel.chat.message"].conditionRoles).toEqual({
+      broadcaster_user_id: "target",
+      user_id: "self",
+    });
+    expect(subscriptions["channel.follow"].conditionRoles).toEqual({
+      broadcaster_user_id: "target",
+      moderator_user_id: "self",
+    });
+    expect(
+      subscriptions["channel.channel_points_custom_reward_redemption.add"].conditionRoles,
+    ).toEqual({ broadcaster_user_id: "self", reward_id: "any" });
   });
 
   it("builds flat Twitch conditions and drops unset optional keys", () => {
@@ -335,6 +347,56 @@ describe("EventSub webhook delivery", () => {
         return;
       }
       expect(delivery.notification.payload.reward.title).toBe("Test Reward from CLI");
+    }),
+  );
+
+  it.effect("decodes a payload-agnostic notification without created_at", () =>
+    Effect.gen(function* () {
+      const timestamp = new Date().toISOString();
+      const body = JSON.stringify({
+        subscription: {
+          id: "sub-new",
+          status: "enabled",
+          type: "channel.some_new_topic",
+          version: "1",
+          condition: { broadcaster_user_id: "1337" },
+        },
+        event: { whatever: true },
+      });
+      const secret = "s3cret";
+      const messageId = "raw-message-1";
+      const signature = yield* computeSignature({ secret, messageId, timestamp, body });
+      const delivery = yield* decodeWebhook({
+        headers: {
+          "Twitch-Eventsub-Message-Id": messageId,
+          "Twitch-Eventsub-Message-Timestamp": timestamp,
+          "Twitch-Eventsub-Message-Signature": signature,
+          "Twitch-Eventsub-Message-Type": "notification",
+        },
+        body,
+        secret,
+      });
+      expect(delivery._tag).toBe("notification");
+      if (delivery._tag !== "notification") return;
+      expect(delivery.subscription.created_at).toBeUndefined();
+      expect(delivery.event).toEqual({ whatever: true });
+      expect(delivery.messageId).toBe(messageId);
+    }),
+  );
+
+  it.effect("exports the body-only parser", () =>
+    Effect.gen(function* () {
+      const parsed = yield* decodeWebhookBody({
+        subscription: {
+          id: "sub-body",
+          status: "enabled",
+          type: "stream.online",
+          version: "1",
+          condition: { broadcaster_user_id: "1337" },
+        },
+        event: { id: "9001" },
+      });
+      expect("event" in parsed).toBe(true);
     }),
   );
 

@@ -49,6 +49,32 @@ const postRevocation = async (
   });
 };
 
+const postSignedNotification = async (
+  test: Awaited<ReturnType<typeof makeTestApp>>,
+  accountId: string,
+  webhookSecret: string,
+  messageId: string,
+  payload: unknown,
+) => {
+  const timestamp = new Date().toISOString();
+  const body = JSON.stringify(payload);
+  const signature = await Effect.runPromise(
+    EventSub.computeSignature({ secret: webhookSecret, messageId, timestamp, body }),
+  );
+  return test.request({
+    method: "POST",
+    path: `/webhooks/twitch/eventsub/${accountId}`,
+    headers: {
+      "twitch-eventsub-message-id": messageId,
+      "twitch-eventsub-message-timestamp": timestamp,
+      "twitch-eventsub-message-signature": signature,
+      "twitch-eventsub-message-type": "notification",
+      "content-type": "application/json",
+    },
+    rawBody: body,
+  });
+};
+
 describe("EventSub signature verification", () => {
   it("delegates to the shared Twitch module's HMAC scheme", async () => {
     const messageId = "msg-1";
@@ -406,7 +432,7 @@ describe("deployment hardening", () => {
     });
     expect(limited.status).toBe(429);
     expect(json(limited.body)).toMatchObject({
-      error: { tag: "forbidden", details: { limit: PAIRING_CLAIM_LIMIT } },
+      error: { tag: "rate_limited", details: { limit: PAIRING_CLAIM_LIMIT } },
     });
   });
 
@@ -565,6 +591,280 @@ describe("deployment hardening", () => {
     expect(response.status).toBe(403);
     expect(json(response.body)).toMatchObject({
       error: { tag: "missing_scopes", details: { missing: ["channel:read:redemptions"] } },
+    });
+  });
+});
+
+describe("cross-slot Twitch conditions", () => {
+  const reconcile = (
+    test: Awaited<ReturnType<typeof makeTestApp>>,
+    token: string,
+    connectionId: string,
+    subscriptions: ReadonlyArray<{
+      readonly type: string;
+      readonly version: number;
+      readonly condition: Readonly<Record<string, string>>;
+    }>,
+  ) =>
+    test.request({
+      method: "POST",
+      path: "/api/twitch/subscriptions/reconcile",
+      headers: { authorization: `Bearer ${token}` },
+      body: {
+        connectionId,
+        subscriptions: subscriptions.map((spec) => ({
+          ...spec,
+          onStale: "drop",
+          maxAgeMs: 60_000,
+        })),
+      },
+    });
+
+  it("accepts a bot reading a linked broadcaster's chat", async () => {
+    const test = await makeTestApp();
+    await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "broadcaster",
+      login: "streamer",
+      scopes: ["user:read:chat"],
+    });
+    const { account: bot } = await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "bot",
+      login: "bot",
+      scopes: ["user:read:chat"],
+    });
+    const machine = await test.seedMachine("user-1");
+    const response = await reconcile(test, machine.token, bot.id, [
+      {
+        type: "channel.chat.message",
+        version: 1,
+        condition: { broadcaster_user_id: "broadcaster", user_id: "bot" },
+      },
+    ]);
+    expect(response.status).toBe(200);
+    expect(test.twitch.createdSubscriptions).toHaveLength(1);
+    expect(test.twitch.createdSubscriptions[0]?.condition).toEqual({
+      broadcaster_user_id: "broadcaster",
+      user_id: "bot",
+    });
+  });
+
+  it("accepts a moderator following another linked channel", async () => {
+    const test = await makeTestApp();
+    await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "streamer",
+      login: "streamer",
+      scopes: ["moderator:read:followers"],
+    });
+    const { account: moderator } = await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "moderator",
+      login: "moderator",
+      scopes: ["moderator:read:followers"],
+    });
+    const machine = await test.seedMachine("user-1");
+    const response = await reconcile(test, machine.token, moderator.id, [
+      {
+        type: "channel.follow",
+        version: 2,
+        condition: {
+          broadcaster_user_id: "streamer",
+          moderator_user_id: "moderator",
+        },
+      },
+    ]);
+    expect(response.status).toBe(200);
+    expect(test.twitch.createdSubscriptions).toHaveLength(1);
+  });
+
+  it("accepts an arbitrary channel as a chat target but rejects a self mismatch", async () => {
+    const test = await makeTestApp();
+    const { account: bot } = await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "bot",
+      login: "bot",
+      scopes: ["user:read:chat"],
+    });
+    const machine = await test.seedMachine("user-1");
+    const target = await reconcile(test, machine.token, bot.id, [
+      {
+        type: "channel.chat.message",
+        version: 1,
+        condition: { broadcaster_user_id: "999", user_id: "bot" },
+      },
+    ]);
+    expect(target.status).toBe(200);
+
+    const mismatch = await reconcile(test, machine.token, bot.id, [
+      {
+        type: "channel.chat.message",
+        version: 1,
+        condition: { broadcaster_user_id: "bot", user_id: "someone-else" },
+      },
+    ]);
+    expect(mismatch.status).toBe(400);
+    expect(json(mismatch.body)).toMatchObject({
+      error: { tag: "invalid_request", message: expect.stringContaining("user_id") },
+    });
+  });
+
+  it("relays a cross-slot chat notification", async () => {
+    const test = await makeTestApp();
+    await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "broadcaster",
+      login: "streamer",
+      scopes: ["user:read:chat"],
+    });
+    const { account: bot, webhookSecret } = await test.seedAccount({
+      userId: "user-1",
+      twitchUserId: "bot",
+      login: "bot",
+      scopes: ["user:read:chat"],
+    });
+    const machine = await test.seedMachine("user-1");
+    await test.seedSubscription(bot, machine.machineId, {
+      providerSubscriptionId: "sub-chat",
+      type: "channel.chat.message",
+      condition: { broadcaster_user_id: "broadcaster", user_id: "bot" },
+    });
+
+    const response = await postSignedNotification(test, bot.id, webhookSecret, "chat-msg-1", {
+      subscription: {
+        id: "sub-chat",
+        status: "enabled",
+        type: "channel.chat.message",
+        version: "1",
+        condition: { broadcaster_user_id: "broadcaster", user_id: "bot" },
+      },
+      event: { message: { text: "hello" } },
+    });
+    expect(response.status).toBe(204);
+    expect(test.relay.events).toHaveLength(1);
+    expect(test.relay.events[0]?.envelope).toMatchObject({
+      id: "twitch:chat-msg-1",
+      topic: "twitch/channel.chat.message",
+      connectionId: bot.id,
+    });
+  });
+});
+
+describe("multi-owner EventSub reconciliation", () => {
+  const reconcile = (
+    test: Awaited<ReturnType<typeof makeTestApp>>,
+    token: string,
+    connectionId: string,
+    owner: string | undefined,
+    subscriptions: ReadonlyArray<{
+      readonly type: string;
+      readonly version: number;
+      readonly condition: Readonly<Record<string, string>>;
+      readonly onStale?: "drop" | "deliver";
+      readonly maxAgeMs?: number;
+    }>,
+  ) =>
+    test.request({
+      method: "POST",
+      path: "/api/twitch/subscriptions/reconcile",
+      headers: { authorization: `Bearer ${token}` },
+      body: {
+        connectionId,
+        ...(owner === undefined ? {} : { owner }),
+        subscriptions: subscriptions.map((spec) => ({
+          ...spec,
+          onStale: spec.onStale ?? "drop",
+          maxAgeMs: spec.maxAgeMs ?? 60_000,
+        })),
+      },
+    });
+
+  const redemption = (broadcasterUserId: string) => ({
+    type: "channel.channel_points_custom_reward_redemption.add",
+    version: 1,
+    condition: { broadcaster_user_id: broadcasterUserId },
+  });
+  const online = (broadcasterUserId: string) => ({
+    type: "stream.online",
+    version: 1,
+    condition: { broadcaster_user_id: broadcasterUserId },
+  });
+
+  it("keeps the union and only deletes provider subscriptions nobody owns", async () => {
+    const test = await makeTestApp();
+    const { account } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+
+    const all = await reconcile(test, machine.token, account.id, "script-a", [
+      redemption(account.twitchUserId),
+      online(account.twitchUserId),
+    ]);
+    expect(all.status).toBe(200);
+    expect(test.twitch.createdSubscriptions).toHaveLength(2);
+    expect(json(all.body)).toMatchObject({ totalCost: 2 });
+
+    const second = await reconcile(test, machine.token, account.id, "script-b", [
+      online(account.twitchUserId),
+    ]);
+    expect(second.status).toBe(200);
+    expect(test.twitch.createdSubscriptions).toHaveLength(2);
+    const secondBody = json(second.body) as {
+      subscriptions: Array<{ type: string; owners: ReadonlyArray<string> }>;
+    };
+    expect(secondBody.subscriptions).toHaveLength(2);
+    expect(secondBody.subscriptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "stream.online", owners: ["script-a", "script-b"] }),
+      ]),
+    );
+
+    const removed = await reconcile(test, machine.token, account.id, "script-a", []);
+    expect(removed.status).toBe(200);
+    expect(test.twitch.deletedSubscriptions).toEqual(["sub_1"]);
+    expect(json(removed.body)).toMatchObject({
+      subscriptions: [expect.objectContaining({ type: "stream.online", owners: ["script-b"] })],
+      totalCost: 1,
+    });
+
+    const empty = await reconcile(test, machine.token, account.id, "script-b", []);
+    expect(empty.status).toBe(200);
+    expect(test.twitch.deletedSubscriptions).toEqual(["sub_1", "sub_2"]);
+    expect(json(empty.body)).toMatchObject({ subscriptions: [], totalCost: 0 });
+    expect(await Effect.runPromise(test.store.listSubscriptions(account.id))).toHaveLength(0);
+    expect(await Effect.runPromise(test.store.listSubscriptionOwners(account.id))).toHaveLength(0);
+  });
+
+  it("merges freshness policies and keeps the provider subscription alive", async () => {
+    const test = await makeTestApp();
+    const { account } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+    const spec = redemption(account.twitchUserId);
+
+    const first = await reconcile(test, machine.token, account.id, "script-a", [
+      { ...spec, onStale: "drop", maxAgeMs: 60_000 },
+    ]);
+    expect(first.status).toBe(200);
+    const second = await reconcile(test, machine.token, account.id, "script-b", [
+      { ...spec, onStale: "deliver", maxAgeMs: 120_000 },
+    ]);
+    expect(second.status).toBe(200);
+    expect(test.twitch.createdSubscriptions).toHaveLength(1);
+    const mergedRows = await Effect.runPromise(test.store.listSubscriptions(account.id));
+    expect(mergedRows).toHaveLength(1);
+    expect(mergedRows[0]).toMatchObject({ onStale: "drop", maxAgeMs: 60_000 });
+    expect(json(second.body)).toMatchObject({
+      subscriptions: [expect.objectContaining({ owners: ["script-a", "script-b"] })],
+    });
+
+    const removed = await reconcile(test, machine.token, account.id, "script-a", []);
+    expect(removed.status).toBe(200);
+    expect(test.twitch.deletedSubscriptions).toEqual([]);
+    const remainingRows = await Effect.runPromise(test.store.listSubscriptions(account.id));
+    expect(remainingRows).toHaveLength(1);
+    expect(remainingRows[0]).toMatchObject({ onStale: "deliver", maxAgeMs: 120_000 });
+    expect(json(removed.body)).toMatchObject({
+      subscriptions: [expect.objectContaining({ owners: ["script-b"] })],
     });
   });
 });

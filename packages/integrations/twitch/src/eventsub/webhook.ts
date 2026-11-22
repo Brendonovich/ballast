@@ -20,6 +20,27 @@ import {
   type WebhookVerificationError,
 } from "./signature.ts";
 
+/** A delivery whose event payload has deliberately not been typed yet. */
+export type RawWebhookDelivery =
+  | {
+      readonly _tag: "verification";
+      readonly challenge: string;
+      readonly subscription: EventSubSubscription;
+    }
+  | {
+      readonly _tag: "notification";
+      readonly messageId: string;
+      readonly messageTimestamp: Date;
+      readonly receivedAt: Date;
+      readonly subscription: EventSubSubscription;
+      /** The raw EventSub event. Decode it against the subscription registry. */
+      readonly event: unknown;
+    }
+  | {
+      readonly _tag: "revocation";
+      readonly subscription: EventSubSubscription;
+    };
+
 export type WebhookDelivery =
   | {
       readonly _tag: "verification";
@@ -40,7 +61,7 @@ export type WebhookDelivery =
  * when forwarding a mock event, even though real EventSub deliveries include
  * metadata. Accepting both keeps the same handler useful for local testing.
  */
-const WebhookBodyOnly = Schema.Union([
+export const WebhookBody = Schema.Union([
   Schema.Struct({
     subscription: EventSubSubscription,
     challenge: Schema.String,
@@ -51,50 +72,51 @@ const WebhookBodyOnly = Schema.Union([
   }),
   Schema.Struct({ subscription: EventSubSubscription }),
 ]);
+export type WebhookBody = Schema.Schema.Type<typeof WebhookBody>;
+
+export const decodeWebhookBody = (
+  value: unknown,
+): Effect.Effect<WebhookBody, Schema.SchemaError> =>
+  Schema.decodeUnknownEffect(WebhookBody)(value);
 
 const decoder = new TextDecoder();
 
-const deliveryFromMessage = (
+const notificationDelivery = (
   message: EventSubWebhookMessageType,
   input: VerifyWebhookInput,
-): Effect.Effect<
-  WebhookDelivery,
-  Schema.SchemaError | UnknownSubscriptionType
-> => {
+): RawWebhookDelivery => {
   if (isWebhookMessageType(message, "webhook_callback_verification")) {
-    return Effect.succeed({
-      _tag: "verification" as const,
+    return {
+      _tag: "verification",
       challenge: message.payload.challenge,
       subscription: message.payload.subscription,
-    });
+    };
   }
   if (isWebhookMessageType(message, "notification")) {
-    return Effect.map(
-      decodeNotification(message.payload.subscription.type, message.payload.event, {
-        messageId: message.metadata.message_id,
-        messageTimestamp: message.metadata.message_timestamp,
-        receivedAt: new Date(input.now ?? Date.now()),
-        subscription: message.payload.subscription,
-      }),
-      (notification): WebhookDelivery => ({ _tag: "notification", notification }),
-    );
+    return {
+      _tag: "notification",
+      messageId: message.metadata.message_id,
+      messageTimestamp: message.metadata.message_timestamp,
+      receivedAt: new Date(input.now ?? Date.now()),
+      subscription: message.payload.subscription,
+      event: message.payload.event,
+    };
   }
-  return Effect.succeed({
-    _tag: "revocation" as const,
+  return {
+    _tag: "revocation",
     subscription: message.payload.subscription,
-  });
+  };
 };
 
 /**
- * Verify and decode one EventSub webhook delivery. Verification runs before
- * JSON parsing so unauthenticated bodies are never interpreted.
+ * Verify and decode one EventSub webhook delivery without decoding its event
+ * payload. This is the decoder for a gateway that relays unknown or newer
+ * subscription types; use {@link handleWebhook} when the payload type is
+ * known and typed.
  */
-export const handleWebhook = (
+export const decodeWebhook = (
   input: VerifyWebhookInput,
-): Effect.Effect<
-  WebhookDelivery,
-  WebhookVerificationError | Schema.SchemaError | UnknownSubscriptionType
-> =>
+): Effect.Effect<RawWebhookDelivery, WebhookVerificationError | Schema.SchemaError> =>
   Effect.gen(function* () {
     yield* verifyWebhook(input);
     const body = typeof input.body === "string" ? input.body : decoder.decode(input.body);
@@ -102,9 +124,9 @@ export const handleWebhook = (
     const envelope = Option.getOrUndefined(
       Schema.decodeUnknownOption(EventSubWebhookMessage)(json),
     );
-    if (envelope !== undefined) return yield* deliveryFromMessage(envelope, input);
+    if (envelope !== undefined) return notificationDelivery(envelope, input);
 
-    const bodyOnly = yield* Schema.decodeUnknownEffect(WebhookBodyOnly)(json);
+    const bodyOnly = yield* decodeWebhookBody(json);
     const messageId =
       getWebhookHeader(input.headers, MESSAGE_ID_HEADER) ?? bodyOnly.subscription.id;
     const receivedAt = new Date(input.now ?? Date.now());
@@ -121,12 +143,39 @@ export const handleWebhook = (
     if ("event" in bodyOnly) {
       return {
         _tag: "notification" as const,
-        notification: yield* decodeNotification(
-          bodyOnly.subscription.type,
-          bodyOnly.event,
-          { messageId, messageTimestamp, receivedAt, subscription: bodyOnly.subscription },
-        ),
+        messageId,
+        messageTimestamp,
+        receivedAt,
+        subscription: bodyOnly.subscription,
+        event: bodyOnly.event,
       };
     }
     return { _tag: "revocation" as const, subscription: bodyOnly.subscription };
+  });
+
+/**
+ * Verify and decode one EventSub webhook delivery, including its typed event.
+ * Unknown subscription types fail with {@link UnknownSubscriptionType}; the
+ * gateway should use {@link decodeWebhook} when it relays payloads as-is.
+ */
+export const handleWebhook = (
+  input: VerifyWebhookInput,
+): Effect.Effect<
+  WebhookDelivery,
+  WebhookVerificationError | Schema.SchemaError | UnknownSubscriptionType
+> =>
+  Effect.gen(function* () {
+    const delivery = yield* decodeWebhook(input);
+    if (delivery._tag === "verification" || delivery._tag === "revocation") return delivery;
+    const notification = yield* decodeNotification(
+      delivery.subscription.type,
+      delivery.event,
+      {
+        messageId: delivery.messageId,
+        messageTimestamp: delivery.messageTimestamp,
+        receivedAt: delivery.receivedAt,
+        subscription: delivery.subscription,
+      },
+    );
+    return { _tag: "notification" as const, notification };
   });
