@@ -1,0 +1,25 @@
+{
+  "name": "@ballast/module-obs",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/generate.ts",
+    "typecheck": "tsgo -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ballast/core": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@ballast/planner": "workspace:*",
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  }
+}

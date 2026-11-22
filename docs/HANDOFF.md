@@ -1,6 +1,6 @@
 # Ballast: handoff
 
-*Last updated 2026-11-22. Status: the repo is scaffolded and nothing is implemented. The next task is the **Phase 0 Alchemy spike**.*
+*Last updated 2026-11-22. Status: **Phase 0 spike complete** — plan, run and hot reload work end to end. The next task is **Phase 1: the local agent plus OBS and VTube Studio**.*
 
 Read `docs/PLAN.md` first. This file covers what has been decided, what is still open, where to look, and exactly what to build next.
 
@@ -77,12 +77,22 @@ ballast/
 ├── package.json         pnpm 12.2.1, tsgo typecheck
 ├── pnpm-workspace.yaml  apps/*, packages/*, packages/integrations/*, examples; catalog: effect 4.0.6, alchemy 2.0.0-beta.84
 ├── tsconfig.base.json   strict, bundler resolution, .ts imports, composite
-└── tsconfig.json        project references (empty)
+└── tsconfig.json        project references to every package
 ```
 
-No packages exist yet. Until the first package is added to `references`, `pnpm typecheck` fails with `TS18002` (empty `files` list); that's expected. Versions match MacroGraph so known-good versions of Effect and Alchemy are used together.
+Phase 0 now fills in these packages:
 
-## 6. Next task: Phase 0 Alchemy spike (1–2 weeks)
+```
+packages/core                 @ballast/core: Script platform, Param, EventHost, Manifest, RPC schemas
+packages/planner              @ballast/planner: plan worker, manifest recorder, diff
+packages/integrations/fake    @ballast/fake: fake/tick, fake/chat, fake/echo
+apps/agent                    @ballast/agent: ballast CLI, runtime host, worker sessions, hot reload
+examples                      tick-echo.ts and future sample scripts
+```
+
+Versions match MacroGraph so known-good versions of Effect and Alchemy are used together. `rolldown` was added for runtime bundling.
+
+## 6. Phase 0 Alchemy spike (complete)
 
 **Goal:** show that a Ballast script can be an Alchemy program that is (a) planned on its own into a manifest and (b) run in a Node worker with events delivered to it, with hot reload. If Alchemy can't do this cleanly, switch to the fallback (step 7).
 
@@ -166,17 +176,29 @@ export default Ballast.Script(
 ```
 
 ### Exit criteria (all must be shown working, not just compiled)
-- [ ] `ballast plan examples/tick-echo.ts` prints a manifest with: param `prefix`, connection `fake/main`, topic `fake/tick` (scope `fake:read`), request `fake/echo` (scope `fake:write`).
-- [ ] Planning makes **no** request calls and opens no connections. Test this: a plan-mode request client that dies makes the test fail if it's called.
-- [ ] `ballast run` logs `> tick 1`, `> tick 2`, …
-- [ ] Changing the prefix in the file hot-reloads with no duplicate handlers (the old worker's scope closes).
-- [ ] Adding a second topic causes `requiresConsent: true` in the diff, and the run pauses for approval (a y/N prompt in the CLI is enough).
-- [ ] Decision record 0001 written, choosing Alchemy or the fallback.
-- [ ] `pnpm typecheck` and `pnpm test` pass.
+- [x] `ballast plan examples/tick-echo.ts` prints a manifest with: param `prefix`, connection `fake/main`, topic `fake/tick` (scope `fake:read`), request `fake/echo` (scope `fake:write`).
+- [x] Planning makes **no** request calls and opens no connections. The plan client dies; `call-request.ts` tests the failure, and `plan` never evaluates handlers.
+- [x] `ballast run` logs `> tick 1`, `> tick 2`, … (and `hi tick N` with `--param prefix=hi`).
+- [x] Changing the prefix in the file hot-reloads with no duplicate handlers; the old worker is terminated and its session scope closes.
+- [x] Adding `Fake.onChat` causes `requiresConsent: true` and the run pauses at `Apply? [y/N]`. Yes starts a new worker; no keeps the old one running.
+- [x] Decision record 0001 written, choosing the hybrid (Alchemy host model, Ballast recorder).
+- [x] `pnpm typecheck` and `pnpm test` pass.
 
-## 7. After Phase 0
+### Phase 0 result and deviations
+
+The spike uses Alchemy's `Platform`/`RuntimeContext`/`hostServices`/phase handling, but not `Stack`/`Plan`/`Apply`/`Provider`/`State`; the manifest is Ballast's own recorder. Implementation notes that differ from the sketch:
+
+- **Runtime RPC was built as a custom Effect RPC `Protocol` over a dedicated `MessageChannel`.** The built-in worker transports are one-directional for this use case: `RpcClient.layerProtocolWorker` is a host-side client pool that spawns its own workers, and `RpcServer.layerProtocolWorkerRunner` makes the worker the server. The script worker needs to be the RPC *client* of host services, so the agent serves `RuntimeRpcs` on one port and the worker runs `RpcClient.make` on the other. Event delivery uses ordinary `parentPort` messages after the worker registers a topic; only subscriptions, params and requests use RPC.
+- **`Ballast.run` uses a `ScriptRunner` host service, not Alchemy's `ServerHost`.** `alchemy/Runtime/Process` is exported as raw TypeScript from the package, which Node's type stripping cannot load from `node_modules`; the `run`/`exports.program` shape is copied.
+- **`providePlan` lives in `@ballast/core`, not `@ballast/planner`,** so `alchemy` imports stay inside core. Scripts never import `alchemy`.
+- **`Script(id, init)` props are `{ id }`; there is no `entry` prop.** The planner knows the entry path; the entry path is only used for bundling and watching.
+- **Static enum values are not in the manifest.** The fixed HANDOFF shape has no field for them; `Param.enum(key, values, opts)` validates the value at runtime, but UI/MCP consumers cannot see the allowed values yet.
+- **Consent is driven by new scopes or new connection slots.** A new topic whose scopes are already granted does not prompt. Changes that only alter defaults or handler code still restart the worker when the file content changes.
+- Runtime bundling uses **rolldown** with `globalThis.__ALCHEMY_RUNTIME__ = true` and `codeSplitting: false`. A custom resolver lets a script copied to a temp folder bundle without its own `node_modules`. Alchemy's Bun-only dynamic imports are left external and are never executed in the Node worker.
+
+## 7. Next task: Phase 1
 Follow `docs/PLAN.md` §9:
-- Phase 1: agent service, OBS + VTube Studio drivers
+- **Phase 1 (next): the agent service, project store, and `@ballast/obs` + `@ballast/vtube-studio` local drivers.** Wire the integration catalog and generated types, settings and logs. **Exit:** a script that switches OBS scenes when a VTube Studio hotkey fires runs, reloads on save and logs to the CLI.
 - Phase 2: cloud, pairing, OAuth vault, Twitch EventSub, relay Durable Object
 - Phase 3: web editor (collaborative), plan diff UI, event inspector and replay
 - Phase 4: more integrations + MCP

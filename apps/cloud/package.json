@@ -1,0 +1,36 @@
+{
+  "name": "@ballast/cloud",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/worker.ts",
+  "exports": {
+    ".": "./src/worker.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo -b",
+    "test": "vitest run",
+    "alchemy": "node --experimental-transform-types --no-warnings=ExperimentalWarning --env-file-if-exists=.env node_modules/alchemy/bin/alchemy.js",
+    "dev": "pnpm alchemy dev",
+    "dev:local": "wrangler dev --local --port 8787",
+    "demo:local": "node scripts/local-demo.mjs",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "deploy": "pnpm alchemy deploy"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare": "catalog:",
+    "@ballast/cloud-protocol": "workspace:*",
+    "@effect/platform-node": "catalog:",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/ws": "^8.18.2",
+    "vitest": "catalog:",
+    "wrangler": "catalog:",
+    "ws": "^8.23.0"
+  }
+}

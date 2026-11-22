@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist/types",
+    "types": ["node"]
+  },
+  "include": ["src", "test", "scripts"],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/planner"
+    },
+    {
+      "path": "../../packages/integrations/fake"
+    },
+    {
+      "path": "../../packages/integrations/obs"
+    }
+  ]
+}

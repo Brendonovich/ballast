@@ -1,0 +1,35 @@
+{
+  "name": "@ballast/agent",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "ballast": "./src/bin.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsgo -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ballast/core": "workspace:*",
+    "@ballast/fake": "workspace:*",
+    "@ballast/module-obs": "workspace:*",
+    "@ballast/planner": "workspace:*",
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
+    "rolldown": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/ws": "^8.18.2",
+    "vitest": "catalog:",
+    "ws": "^8.23.0"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist/types"
+  },
+  "include": ["src", "tick-echo.ts", "obs-scene.ts"],
+  "references": [
+    {
+      "path": "../packages/core"
+    },
+    {
+      "path": "../packages/integrations/fake"
+    },
+    {
+      "path": "../packages/integrations/obs"
+    }
+  ]
+}

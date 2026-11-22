@@ -1,0 +1,26 @@
+# Local `wrangler dev` configuration, for running the Worker + Relay DO without
+# Cloudflare. Deployment is done by `alchemy.run.ts`, which owns the real bindings.
+name = "ballast-cloud-local"
+main = "src/worker.ts"
+compatibility_date = "2026-08-31"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ballast-cloud-local"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]
+
+[vars]
+BALLAST_PUBLIC_ORIGIN = "http://127.0.0.1:8787"
+BALLAST_TOKEN_PEPPER = "local-dev-pepper"
+BALLAST_TWITCH_MAX_SUBSCRIPTION_COST = "10"
+TWITCH_ID_BASE_URL = "http://127.0.0.1:4010"
+TWITCH_API_BASE_URL = "http://127.0.0.1:4010"

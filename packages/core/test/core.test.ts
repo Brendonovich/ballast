@@ -1,0 +1,210 @@
+import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Ref from "effect/Ref";
+import * as Ballast from "../src/index.ts";
+
+const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderService => ({
+  script: (id) => Ref.update(ref, (manifest) => ({ ...manifest, script: { id } })),
+  param: (param) =>
+    Ref.update(ref, (manifest) => ({ ...manifest, params: [...manifest.params, param] })),
+  connection: (connection) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      connections: [...manifest.connections, connection],
+    })),
+  topic: (topic) =>
+    Ref.update(ref, (manifest) => ({ ...manifest, topics: [...manifest.topics, topic] })),
+  request: (request) =>
+    Ref.update(ref, (manifest) => ({ ...manifest, requests: [...manifest.requests, request] })),
+  unresolved: (unresolved) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      unresolved: [...manifest.unresolved, unresolved],
+    })),
+});
+
+describe("@ballast/core plan phase", () => {
+  it.effect("records declarations made by init", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("records"));
+      const recorder = makeRecorder(ref);
+
+      const script = Ballast.Script(
+        "records",
+        Effect.gen(function* () {
+          yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
+          const connection = yield* Ballast.Connection<"fake">({
+            integration: "fake",
+            slot: "main",
+            location: "local",
+          });
+          const echo = yield* Ballast.Request<{ text: string }, { text: string }>({
+            integration: "fake",
+            slot: connection.slot,
+            request: "fake/echo",
+            scopes: ["fake:write"],
+          });
+          const tick = Ballast.Topic<{ n: number }, "fake">({
+            integration: "fake",
+            topic: "fake/tick",
+            scopes: ["fake:read"],
+          });
+          yield* tick.subscribe(connection, () => Effect.void);
+          expect(tick.key(connection)).toBe("fake/main/fake/tick");
+          expect(tick.topic).toBe("fake/tick");
+          expect(tick.scopes).toEqual(["fake:read"]);
+          expect(typeof echo).toBe("function");
+        }),
+      );
+
+      yield* Ballast.providePlan(script, recorder);
+
+      const manifest = yield* Ref.get(ref);
+      expect(manifest.script.id).toBe("records");
+      expect(manifest.params.map((param) => param.key)).toEqual(["prefix"]);
+      expect(manifest.connections).toEqual([
+        { integration: "fake", slot: "main", location: "local" },
+      ]);
+      expect(manifest.topics).toEqual([
+        {
+          integration: "fake",
+          slot: "main",
+          topic: "fake/tick",
+          scopes: ["fake:read"],
+          onStale: "drop",
+          maxAgeMs: 60_000,
+        },
+      ]);
+      expect(manifest.requests).toEqual([
+        {
+          integration: "fake",
+          slot: "main",
+          request: "fake/echo",
+          scopes: ["fake:write"],
+        },
+      ]);
+    }),
+  );
+
+  it.effect("records a connection request namespace", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("namespace"));
+      const recorder = makeRecorder(ref);
+
+      const script = Ballast.Script(
+        "namespace",
+        Effect.gen(function* () {
+          yield* Ballast.Connection({
+            integration: "obs",
+            slot: "main",
+            location: "local",
+            requests: ["*"],
+          });
+        }),
+      );
+
+      yield* Ballast.providePlan(script, recorder);
+
+      const manifest = yield* Ref.get(ref);
+      expect(manifest.requests).toEqual([
+        { integration: "obs", slot: "main", request: "obs/*", scopes: [] },
+      ]);
+    }),
+  );
+
+  it.effect("dies when a granted client is called in plan", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("granted"));
+      const recorder = makeRecorder(ref);
+
+      const script = Ballast.Script(
+        "granted",
+        Effect.gen(function* () {
+          const host = yield* Ballast.RequestHost;
+          const call = host.granted<{ text: string }, { text: string }>({
+            integration: "obs",
+            slot: "main",
+            request: "SetCurrentProgramScene",
+            scopes: [],
+            key: "obs/main/SetCurrentProgramScene",
+          });
+          yield* call({ text: "no" });
+        }),
+      );
+
+      const exit = yield* Ballast.providePlan(script, recorder).pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("RequestCalledDuringPlanError");
+      }
+    }),
+  );
+
+  it.effect("dies when a request client is called", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("call-request"));
+      const recorder = makeRecorder(ref);
+
+      const script = Ballast.Script(
+        "call-request",
+        Effect.gen(function* () {
+          const echo = yield* Ballast.Request<{ text: string }, { text: string }>({
+            integration: "fake",
+            slot: "main",
+            request: "fake/echo",
+            scopes: ["fake:write"],
+          });
+          yield* echo({ text: "no" });
+        }),
+      );
+
+      const exit = yield* Ballast.providePlan(script, recorder).pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("RequestCalledDuringPlanError");
+      }
+    }),
+  );
+
+  it.effect("reads the current setting in runtime phase", () =>
+    Effect.gen(function* () {
+      const value = yield* Effect.gen(function* () {
+        const prefix = yield* Ballast.Param.string("prefix", { default: ">" });
+        return yield* prefix;
+      }).pipe(
+        Effect.provideService(Ballast.ScriptPhase, "runtime"),
+        Effect.provideService(Ballast.Settings, {
+          get: (key) => Effect.succeed(key === "prefix" ? "hi" : undefined),
+        }),
+      );
+
+      expect(value).toBe("hi");
+    }),
+  );
+
+  it.effect("dies when a param is read", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("read-param"));
+      const recorder = makeRecorder(ref);
+
+      const script = Ballast.Script(
+        "read-param",
+        Effect.gen(function* () {
+          const prefix = yield* Ballast.Param.string("prefix", { default: ">" });
+          yield* prefix;
+        }),
+      );
+
+      const exit = yield* Ballast.providePlan(script, recorder).pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("read during plan");
+      }
+    }),
+  );
+});

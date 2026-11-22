@@ -1,4 +1,32 @@
 {
   "files": [],
-  "references": []
+  "references": [
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/planner"
+    },
+    {
+      "path": "packages/cloud-protocol"
+    },
+    {
+      "path": "packages/integrations/fake"
+    },
+    {
+      "path": "packages/integrations/obs"
+    },
+    {
+      "path": "packages/integrations/twitch"
+    },
+    {
+      "path": "apps/agent"
+    },
+    {
+      "path": "apps/cloud"
+    },
+    {
+      "path": "examples"
+    }
+  ]
 }
