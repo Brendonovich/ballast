@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Artifact spike dashboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #0b1020;
+        color: #e6edf7;
+      }
+      body { margin: 0; padding: 32px; }
+      main { max-width: 720px; margin: 0 auto; }
+      .card {
+        border: 1px solid #26324a;
+        border-radius: 16px;
+        padding: 20px;
+        background: #11182b;
+        margin-bottom: 20px;
+      }
+      .row { display: flex; align-items: center; gap: 16px; }
+      #count { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      #status { color: #8fa3c4; }
+      button {
+        border: 1px solid #4c7dff;
+        background: #2456d6;
+        color: white;
+        padding: 10px 16px;
+        border-radius: 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button[disabled] { opacity: 0.5; cursor: default; }
+      ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+      li {
+        border: 1px solid #26324a;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #0d1425;
+        font-variant-numeric: tabular-nums;
+      }
+      code { color: #9fb7ff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Stream dashboard</h1>
+      <p id="status">connecting…</p>
+      <section class="card">
+        <div class="row">
+          <div>
+            <div>Counters</div>
+            <div id="count">…</div>
+          </div>
+          <button id="increment">Increment</button>
+        </div>
+        <p id="project"></p>
+      </section>
+      <section class="card">
+        <h2>Event log</h2>
+        <ul id="events"></ul>
+        <p><code>Events</code> is a streaming RPC over the same WebSocket.</p>
+      </section>
+    </main>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "@ballast/artifacts-spike",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway spike for decision 0011: Effect RPC artifacts over a scoped WebSocket proxy"
+}
