@@ -5,6 +5,7 @@ import { ConnectionSummary } from "./connections.ts";
 import { ProjectSummary } from "./projects.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
 import { ConsentRequest, ScriptSummary } from "./scripts.ts";
+import { TimerSummary } from "./timers.ts";
 
 /**
  * The complete state a UI needs to render its first frame. `WatchService`
@@ -72,6 +73,13 @@ export const ServiceEvent = Schema.Union([
   }),
   Schema.TaggedStruct("health", {
     health: HealthStatus,
+  }),
+  /**
+   * A durable timer was taken and posted to the active worker generation.
+   * The timer row is a snapshot for a UI timer list.
+   */
+  Schema.TaggedStruct("timer-fired", {
+    timer: TimerSummary,
   }),
 ]);
 export type ServiceEvent = typeof ServiceEvent.Type;

@@ -236,13 +236,14 @@ export const createAgentStore = (
   const execute = async <A, E>(
     key: string,
     effect: Effect.Effect<A, E>,
+    options?: { readonly ignoreError?: (message: string) => boolean },
   ): Promise<Outcome<A>> => {
     markPending(key, true);
     try {
       return { ok: true, value: await runtime.run(effect) };
     } catch (error) {
       const message = errorMessage(error);
-      notifyError(message);
+      if (!options?.ignoreError?.(message)) notifyError(message);
       return { ok: false, message };
     } finally {
       markPending(key, false);
@@ -559,8 +560,12 @@ export const createAgentStore = (
       runtime.start(
         runResilient(
           Effect.gen(function* () {
+            while (snapshot() === undefined) {
+              yield* Effect.sleep("50 millis");
+            }
             const request = lastLogSeq === 0 ? {} : { afterSeq: lastLogSeq };
             yield* runtime.client.StreamLogs(request).pipe(
+              Stream.onStart(Effect.sync(() => setLogStatus("live"))),
               Stream.runForEach((entry) =>
                 Effect.sync(() => {
                   if (entry.seq <= lastLogSeq) return;
@@ -739,8 +744,9 @@ export const createAgentStore = (
   const runScriptAction = async (
     key: string,
     effect: Effect.Effect<ScriptDetail, unknown>,
+    options?: { readonly ignoreError?: (message: string) => boolean },
   ): Promise<ScriptDetail | undefined> => {
-    const outcome = await execute(key, effect);
+    const outcome = await execute(key, effect, options);
     if (!outcome.ok) return undefined;
     applyDetail(outcome.value);
     return outcome.value;
@@ -762,6 +768,7 @@ export const createAgentStore = (
     runScriptAction(
       `script:${scriptKey(projectId, scriptId)}:start`,
       runtime.client.StartScript({ projectId, scriptId }),
+      { ignoreError: (message) => message.includes("needs consent before it can start") },
     );
 
   const stopScript = (
@@ -780,6 +787,7 @@ export const createAgentStore = (
     runScriptAction(
       `script:${scriptKey(projectId, scriptId)}:restart`,
       runtime.client.RestartScript({ projectId, scriptId }),
+      { ignoreError: (message) => message.includes("needs consent before it can start") },
     );
 
   const setScriptParam = (

@@ -12,7 +12,7 @@ describe("desktop config", () => {
     expect(config.stateDir).toBe("/tmp/ballast-config/home/.local/state/ballast");
     expect(config.dataDir).toBe("/tmp/ballast-config/home/.local/share/ballast");
     expect(config.launchAgentsDir).toBe("/tmp/ballast-config/home/Library/LaunchAgents");
-    expect(config.serviceBuildDir).toBe("/tmp/ballast-config/dev/stub-service");
+    expect(config.serviceBuildDir).toBe("/tmp/agent/dist-service");
     expect(config.restartThrottleSeconds).toBe(5);
     expect(config.startTimeoutMs).toBe(30_000);
     expect(config.uiUrl).toBeUndefined();

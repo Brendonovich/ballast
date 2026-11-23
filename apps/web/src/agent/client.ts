@@ -146,6 +146,51 @@ export const resolveTransport = (
   };
 };
 
+/**
+ * When the service serves the UI itself there is no `?service=` parameter:
+ * the page origin is the agent. Probe the unauthenticated `/health` endpoint
+ * and use a same-origin WebSocket (the session cookie authorized it) when it
+ * identifies a Ballast agent. Vite dev and the standalone mock fall through to
+ * `MockAgentLayer`.
+ */
+export const probeSameOriginService = async (): Promise<TransportConfig | undefined> => {
+  if (!isBrowser()) return undefined;
+  // Vite dev is always the mock unless an explicit service URL is configured;
+  // do not let a missing /health show up as a console 404.
+  if (import.meta.env.DEV) return undefined;
+  const { protocol, host, origin } = window.location;
+  if (protocol !== "http:" && protocol !== "https:") return undefined;
+  try {
+    const response = await fetch(new URL("/health", origin), {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) return undefined;
+    const body: unknown = await response.json();
+    if (body === null || typeof body !== "object") return undefined;
+    if (!("name" in body) || body.name !== "ballast-agent") return undefined;
+    if (!("apiVersion" in body) || body.apiVersion !== 1) return undefined;
+    const rpc = new URL(AGENT_RPC_PATH, origin);
+    rpc.protocol = protocol === "https:" ? "wss:" : "ws:";
+    return {
+      kind: "websocket",
+      label: host,
+      origin,
+      rpcUrl: rpc.toString(),
+      note: "Using the agent that served this page (session cookie).",
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+/** Explicit transport first; otherwise detect the agent that served this page. */
+export const resolvePageTransport = async (): Promise<TransportConfig> => {
+  const configured = resolveTransport();
+  if (configured.kind === "websocket") return configured;
+  return (await probeSameOriginService()) ?? configured;
+};
+
 export interface AgentRuntime {
   readonly client: WebAgentClient;
   readonly transport: TransportConfig;

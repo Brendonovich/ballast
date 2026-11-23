@@ -14,7 +14,9 @@ import {
   emptyManifest as emptyWireManifest,
   scriptView,
   type AgentError,
+  type CancelTimerRequest,
   type ConsentRequest,
+  type ListTimersRequest,
   type ManifestConnection,
   type ManifestDiff,
   type ManifestRequest,
@@ -25,12 +27,14 @@ import {
   type ScriptManifest,
   type ScriptSource,
   type ScriptSummary,
+  type TimerSummary,
 } from "@ballast/agent-protocol";
 import type {
   ConnectionManifest,
   Manifest,
   ParamManifest,
   RequestManifest,
+  TimerManifest,
   TopicManifest,
 } from "@ballast/core";
 import { emptyManifest } from "@ballast/core";
@@ -45,6 +49,7 @@ import type { ActiveScript } from "./connections.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { EventRouter, Logs, ServiceHub } from "./telemetry.ts";
+import { makeTimerManager } from "./timers.ts";
 
 export interface ScriptRecord {
   readonly projectId: string;
@@ -176,6 +181,8 @@ export interface ScriptManagerService {
     scriptId: string,
     enabled: boolean,
   ) => Effect.Effect<ScriptDetail, AgentError>;
+  readonly listTimers: (request: ListTimersRequest) => Effect.Effect<ReadonlyArray<TimerSummary>>;
+  readonly cancelTimer: (request: CancelTimerRequest) => Effect.Effect<boolean>;
   readonly consents: (projectId?: string) => Effect.Effect<ReadonlyArray<ConsentRequest>>;
   readonly approve: (consentId: string) => Effect.Effect<ScriptDetail, AgentError>;
   readonly reject: (consentId: string, reason?: string) => Effect.Effect<ScriptDetail, AgentError>;
@@ -271,6 +278,13 @@ export const toWireManifest = (
   topics: manifest.topics.map(toWireTopic),
   requests: manifest.requests.map(toWireRequest),
   unresolved: manifest.unresolved.map((entry) => ({ path: entry.path, reason: entry.reason })),
+  timers: manifest.timers.map((timer) => ({
+    name: timer.name,
+    ...(timer.title === undefined ? {} : { title: timer.title }),
+    onStale: timer.onStale,
+    maxAgeMs: timer.maxAgeMs,
+    payloadFingerprint: timer.payloadFingerprint,
+  })),
 });
 
 const toWireDiff = (
@@ -342,6 +356,8 @@ export const ScriptManagerLive = Layer.effect(
     const logs = yield* Logs;
     const router = yield* EventRouter;
     const hub = yield* ServiceHub;
+    const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
+    const timers = yield* makeTimerManager({ clock, logs, hub });
     const state = yield* Ref.make<ReadonlyMap<string, ScriptRecord>>(new Map());
     const settings = yield* Ref.make<ReadonlyMap<string, ProjectSettings>>(new Map());
     const semaphore = yield* Semaphore.make(1);
@@ -678,17 +694,85 @@ export const ScriptManagerLive = Layer.effect(
     ): Effect.Effect<ScriptRecord, AgentError> =>
       Effect.gen(function* () {
         const previous = record.session;
+        // Declare the subscriptions this generation will register before the
+        // connection drivers start. A cloud relay can replay an event as soon
+        // as its listener attaches; the router buffers it here until the worker
+        // has registered the topic (and drops it if the start fails).
+        yield* router.expectSubscriptions({
+          projectId: record.projectId,
+          scriptId: record.scriptId,
+          subscriptions: manifest.topics.map(
+            (topic) => `${topic.integration}/${topic.slot}/${topic.topic}`,
+          ),
+        });
         yield* prepareConnections(record, manifest);
         const generation = record.generation + 1;
         const params = record.params;
         const bundle = yield* bundleScript(record.absolutePath, generation).pipe(
           Effect.mapError((error) => agentError("internal", error.message)),
         );
+        const declarationFor = (name: string): TimerManifest | undefined =>
+          manifest.timers.find((timer) => timer.name === name);
         const session = yield* startRuntimeSession({
           bundlePath: bundle.path,
           generation,
           settings: { get: (key) => params[key] },
           request: requestHandler(record),
+          registerTimer: (name) => {
+            if (declarationFor(name) === undefined) {
+              return Effect.die(
+                new Error(
+                  `Timer "${name}" was registered without a declaration in the running manifest`,
+                ),
+              );
+            }
+            return timers.registerName({
+              projectId: record.projectId,
+              scriptId: record.scriptId,
+              generation,
+              name,
+            });
+          },
+          scheduleTimer: (input) => {
+            const declaration = declarationFor(input.name);
+            if (declaration === undefined) {
+              return Effect.fail(
+                `Timer "${input.name}" is not declared by the running manifest`,
+              );
+            }
+            if (input.payloadFingerprint !== declaration.payloadFingerprint) {
+              return Effect.fail(
+                `Timer "${input.name}" payload fingerprint does not match the running manifest`,
+              );
+            }
+            if (
+              input.onStale !== declaration.onStale ||
+              input.maxAgeMs !== declaration.maxAgeMs
+            ) {
+              return Effect.fail(
+                `Timer "${input.name}" policy does not match the running manifest`,
+              );
+            }
+            return timers.schedule({
+              projectId: record.projectId,
+              scriptId: record.scriptId,
+              generation,
+              declaration,
+              manifest,
+              key: input.key,
+              delayMs: input.delayMs,
+              payload: input.payload,
+            });
+          },
+          cancelTimer: (input) =>
+            timers
+              .cancel({
+                projectId: record.projectId,
+                scriptId: record.scriptId,
+                timer: input.name,
+                key: input.key,
+              })
+              .pipe(Effect.asVoid),
           onLog: (line) => {
             Effect.runForkWith(context)(
               logs
@@ -718,6 +802,13 @@ export const ScriptManagerLive = Layer.effect(
           projectId: record.projectId,
           scriptId: record.scriptId,
           session,
+        });
+        yield* timers.activate({
+          projectId: record.projectId,
+          scriptId: record.scriptId,
+          generation,
+          session,
+          manifest,
         });
 
         const next: ScriptRecord = {
@@ -751,6 +842,15 @@ export const ScriptManagerLive = Layer.effect(
       }).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
+            yield* router.cancelExpected({
+              projectId: record.projectId,
+              scriptId: record.scriptId,
+            });
+            yield* timers.deactivate({
+              projectId: record.projectId,
+              scriptId: record.scriptId,
+              generation: record.generation + 1,
+            });
             yield* markError(record, error.message);
             return yield* Effect.fail(error);
           }),
@@ -856,6 +956,11 @@ export const ScriptManagerLive = Layer.effect(
           );
         }
         const session = record.session;
+        yield* timers.deactivate({
+          projectId: record.projectId,
+          scriptId: record.scriptId,
+          generation: record.generation,
+        });
         if (session !== undefined) yield* session.close;
         yield* router.unregister(recordKey(record.projectId, record.scriptId));
         yield* updateSettings(project, record.scriptId, (entry) => ({
@@ -1197,6 +1302,7 @@ export const ScriptManagerLive = Layer.effect(
         Effect.gen(function* () {
           const project = yield* projects.get(projectId);
           if (project === undefined) return;
+          yield* timers.loadProject({ id: project.id, root: project.root });
           const discovered = yield* projects.scan(project);
           const discoveredIds = new Set(discovered.map((entry) => entry.id));
           const current = (yield* records()).filter(
@@ -1205,6 +1311,11 @@ export const ScriptManagerLive = Layer.effect(
           for (const record of current) {
             if (discoveredIds.has(record.scriptId)) continue;
             if (record.session !== undefined) yield* record.session.close;
+            yield* timers.deactivate({
+              projectId: record.projectId,
+              scriptId: record.scriptId,
+            });
+            yield* timers.removeScript(record.projectId, record.scriptId);
             yield* router.unregister(recordKey(record.projectId, record.scriptId));
             yield* removeRecord(record.projectId, record.scriptId);
             yield* hub.publish({
@@ -1260,6 +1371,13 @@ export const ScriptManagerLive = Layer.effect(
               fingerprint,
               updatedAt: Date.now(),
             });
+            yield* hub.publish({
+              _tag: "script-source-changed",
+              projectId,
+              scriptId: discoveredScript.id,
+              sha256: fingerprint,
+              updatedAt: updated.updatedAt,
+            });
             if (updated.session !== undefined) {
               yield* reloadRunning(updated);
             } else {
@@ -1295,6 +1413,7 @@ export const ScriptManagerLive = Layer.effect(
               scriptId: record.scriptId,
             });
           }
+          yield* timers.removeProject(projectId);
           yield* reconcileConnections;
         }),
       );
@@ -1349,6 +1468,11 @@ export const ScriptManagerLive = Layer.effect(
     const closeAll = (): Effect.Effect<void> =>
       Effect.gen(function* () {
         for (const record of yield* records()) {
+          yield* timers.deactivate({
+            projectId: record.projectId,
+            scriptId: record.scriptId,
+            generation: record.generation,
+          });
           yield* router.unregister(recordKey(record.projectId, record.scriptId));
           if (record.session !== undefined) yield* record.session.close;
         }
@@ -1392,6 +1516,14 @@ export const ScriptManagerLive = Layer.effect(
       restartScript,
       setParam,
       setEnabled,
+      listTimers: (request: ListTimersRequest) => timers.list(request),
+      cancelTimer: (request: CancelTimerRequest) =>
+        timers.cancel({
+          projectId: request.projectId,
+          scriptId: request.scriptId,
+          timer: request.timer,
+          key: request.key,
+        }),
       consents,
       approve,
       reject,

@@ -11,7 +11,7 @@ import {
   ListConnectionsResponse,
   StartConnectionAuthRequest,
 } from "./connections.ts";
-import { AgentError } from "./common.ts";
+import { AgentError, PermissionStatus } from "./common.ts";
 import { ServiceEvent, WatchServiceRequest } from "./events.ts";
 import {
   EventRecord,
@@ -34,6 +34,12 @@ import {
 } from "./requests.ts";
 import { ConsentRequest, ScriptDetail, ScriptSource, ScriptSummary } from "./scripts.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
+import {
+  CancelTimerRequest,
+  CancelTimerResponse,
+  ListTimersRequest,
+  ListTimersResponse,
+} from "./timers.ts";
 
 export const AGENT_RPC_PATH = "/rpc" as const;
 
@@ -73,6 +79,21 @@ export const ShutdownService = Rpc.make("ShutdownService", {
 export const RestartService = Rpc.make("RestartService", {
   payload: Schema.Struct({
     reason: Schema.optionalKey(Schema.String),
+  }),
+  success: Schema.Void,
+  error: AgentError,
+});
+
+/**
+ * Report a permission only the desktop shell can query. The service applies it
+ * to running keyboard connections and exposes it in `GetHealth.permissions`.
+ * `accessibility` maps to `systemPreferences.isTrustedAccessibilityClient` on
+ * macOS; other platforms report `granted`.
+ */
+export const ReportShellPermission = Rpc.make("ReportShellPermission", {
+  payload: Schema.Struct({
+    permission: Schema.Literals(["accessibility"]),
+    status: PermissionStatus,
   }),
   success: Schema.Void,
   error: AgentError,
@@ -187,6 +208,20 @@ export const SetScriptEnabled = Rpc.make("SetScriptEnabled", {
 });
 
 /** Consent is per script and per plan, not global. */
+/** Durable timer instances; declarations live in `ScriptManifest.timers`. */
+export const ListTimers = Rpc.make("ListTimers", {
+  payload: ListTimersRequest,
+  success: ListTimersResponse,
+  error: AgentError,
+});
+
+/** Cancel one persisted timer instance. Missing keys are not an error. */
+export const CancelTimer = Rpc.make("CancelTimer", {
+  payload: CancelTimerRequest,
+  success: CancelTimerResponse,
+  error: AgentError,
+});
+
 export const ListConsents = Rpc.make("ListConsents", {
   payload: Schema.Struct({
     projectId: Schema.optionalKey(Schema.String),
@@ -311,6 +346,7 @@ export const AgentRpcs = RpcGroup.make(
   GetHealth,
   ShutdownService,
   RestartService,
+  ReportShellPermission,
   ListProjects,
   GetProject,
   AddProject,
@@ -324,6 +360,8 @@ export const AgentRpcs = RpcGroup.make(
   RestartScript,
   SetScriptParam,
   SetScriptEnabled,
+  ListTimers,
+  CancelTimer,
   ListConsents,
   ApproveConsent,
   RejectConsent,

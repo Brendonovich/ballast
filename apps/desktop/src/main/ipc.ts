@@ -6,6 +6,7 @@ import {
   type ServiceStatus,
 } from "../bridge.ts";
 import type { Logger } from "./logger.ts";
+import type { PermissionController } from "./permissions.ts";
 import type { ServiceLauncher } from "./service/launcher.ts";
 import type { UpdateManager } from "./update.ts";
 import type { WindowController } from "./window.ts";
@@ -16,6 +17,7 @@ export interface BridgeIpcOptions {
   readonly update: UpdateManager;
   readonly appInfo: AppInfo;
   readonly logger: Logger;
+  readonly permissions: PermissionController;
   readonly showLogs: () => Promise<void>;
   readonly afterServiceChange: (status: ServiceStatus) => Promise<void>;
 }
@@ -43,6 +45,14 @@ export function registerBridgeIpc(options: BridgeIpcOptions): void {
   ipcMain.handle(BRIDGE_CHANNELS.serviceStart, () => action(() => options.launcher.start()));
   ipcMain.handle(BRIDGE_CHANNELS.serviceStop, () => action(() => options.launcher.stop()));
   ipcMain.handle(BRIDGE_CHANNELS.serviceRestart, () => action(() => options.launcher.restart()));
+
+  ipcMain.handle(BRIDGE_CHANNELS.permissionsStatus, () => options.permissions.status());
+  ipcMain.handle(BRIDGE_CHANNELS.permissionsRequestAccessibility, async () => {
+    const state = await options.permissions.requestAccessibility();
+    await options.launcher.reportPermissions();
+    await options.afterServiceChange(await options.launcher.status());
+    return state;
+  });
 
   ipcMain.handle(BRIDGE_CHANNELS.updateStatus, () => options.update.status());
   ipcMain.handle(BRIDGE_CHANNELS.updateInstall, async () => {

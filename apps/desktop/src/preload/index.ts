@@ -11,6 +11,10 @@ const bridge: BallastBridge = {
     stop: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceStop),
     restart: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceRestart),
   },
+  permissions: {
+    status: () => ipcRenderer.invoke(BRIDGE_CHANNELS.permissionsStatus),
+    requestAccessibility: () => ipcRenderer.invoke(BRIDGE_CHANNELS.permissionsRequestAccessibility),
+  },
   update: {
     status: () => ipcRenderer.invoke(BRIDGE_CHANNELS.updateStatus),
     install: () => ipcRenderer.invoke(BRIDGE_CHANNELS.updateInstall),

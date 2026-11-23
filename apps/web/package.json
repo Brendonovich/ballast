@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsgo -b",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "pnpm build && playwright test"
   },
   "dependencies": {
     "@ballast/agent-protocol": "workspace:*",
@@ -19,6 +19,7 @@
     "solid-js": "catalog:"
   },
   "devDependencies": {
+    "@ballast/desktop": "workspace:*",
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@types/node": "catalog:",

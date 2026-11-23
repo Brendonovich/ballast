@@ -175,6 +175,7 @@ const redeemManifest: ScriptManifest = {
     },
   ],
   unresolved: [],
+  timers: [],
 };
 
 const cheerManifest: ScriptManifest = {
@@ -224,6 +225,7 @@ const cheerManifest: ScriptManifest = {
     },
   ],
   unresolved: [],
+  timers: [],
 };
 
 const tickManifest: ScriptManifest = {
@@ -265,6 +267,7 @@ const tickManifest: ScriptManifest = {
     },
   ],
   unresolved: [],
+  timers: [],
 };
 
 const rotationManifest: ScriptManifest = {
@@ -304,6 +307,7 @@ const rotationManifest: ScriptManifest = {
     },
   ],
   unresolved: [],
+  timers: [],
 };
 
 const summary = (input: ScriptSummary): ScriptSummary => input;
@@ -1018,6 +1022,7 @@ const handlers = Effect.gen(function* () {
     GetHealth: () => Effect.map(Ref.get(store.state), healthOf),
     ShutdownService: () => Effect.void,
     RestartService: () => Effect.void,
+    ReportShellPermission: () => Effect.void,
 
     ListProjects: () =>
       Effect.map(Ref.get(store.state), (state) => ({
@@ -1358,6 +1363,9 @@ const handlers = Effect.gen(function* () {
         ]);
         return next;
       }),
+
+    ListTimers: () => Effect.succeed({ timers: [] }),
+    CancelTimer: () => Effect.succeed({ cancelled: false }),
 
     SetScriptParam: (request: {
       readonly projectId: string;

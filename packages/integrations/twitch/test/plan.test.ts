@@ -41,6 +41,8 @@ describe("plan Twitch scripts", () => {
         ],
         requests: [{ integration: "obs", slot: "main", request: "obs/*", scopes: [] }],
         unresolved: [],
+        timers: [],
+        workflows: [],
       });
     }),
   );

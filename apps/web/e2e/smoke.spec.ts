@@ -39,6 +39,12 @@ const openScripts = async (page: Page): Promise<void> => {
 const cursorOf = async (locator: Locator): Promise<string> =>
   locator.evaluate((element) => getComputedStyle(element).cursor);
 
+const boxOf = async (locator: Locator): Promise<{ x: number; y: number; width: number; height: number }> => {
+  const box = await locator.boundingBox();
+  if (box === null) throw new Error("Expected a visible element");
+  return box;
+};
+
 const openScript = async (page: Page, name: string): Promise<void> => {
   await page
     .getByTestId("script-row")
@@ -78,22 +84,70 @@ test("reduced mock workspace: switch project, start/stop, approve consent, logs,
 
   await page.getByTestId("project-switcher").selectOption("proj_main");
   await openScript(page, "Cheer Alert");
-  expect(await cursorOf(page.getByTestId("tab-logs"))).toBe("default");
+  const detailLayout = await page.evaluate(() => ({
+    documentHeight: document.documentElement.scrollHeight,
+    viewportHeight: window.innerHeight,
+  }));
+  expect(detailLayout.documentHeight).toBeLessThanOrEqual(detailLayout.viewportHeight + 1);
   expect(await cursorOf(page.getByTestId("approve-consent"))).toBe("default");
+  expect(await cursorOf(page.getByTestId("source-panel"))).toBe("default");
+  expect(await cursorOf(page.getByTestId("script-splitter"))).toBe("row-resize");
   await expect(page.getByText("Approval required")).toBeVisible();
-  await expect(page.getByTestId("approve-consent")).toBeVisible();
   await page.getByTestId("approve-consent").click();
   await expect(page.getByTestId("approve-consent")).toHaveCount(0);
   await expect(page.getByText("Running", { exact: true }).first()).toBeVisible();
 
-  await page.getByTestId("tab-logs").click();
   await expect(
     page.getByTestId("log-line").filter({ hasText: "consent approved" }).first(),
   ).toBeVisible();
-
-  await page.getByTestId("tab-source").click();
   await expect(page.getByTestId("source-panel")).toContainText("Effect.gen");
   await expect(page.getByTestId("source-panel")).toContainText("cheer-alert");
+
+  // Parameters live in the collapsible right sidebar.
+  await expect(page.getByTestId("script-sidebar")).toBeVisible();
+  const message = page.getByRole("textbox", { name: "Chat message" });
+  await message.fill("Thanks for the raid!");
+  await message.press("Enter");
+  await expect(message).toHaveValue("Thanks for the raid!");
+
+  // Drag the splitter and check the ratio is persisted.
+  const splitter = page.getByTestId("script-splitter");
+  const splitterBox = await boxOf(splitter);
+  const sourceBefore = await boxOf(page.getByTestId("source-panel"));
+  await page.mouse.move(splitterBox.x + splitterBox.width / 2, splitterBox.y + splitterBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    splitterBox.x + splitterBox.width / 2,
+    splitterBox.y + splitterBox.height / 2 + 110,
+    { steps: 5 },
+  );
+  await page.mouse.up();
+  const sourceAfter = await boxOf(page.getByTestId("source-panel"));
+  expect(sourceAfter.height).toBeGreaterThan(sourceBefore.height + 40);
+  const storedSplit = await page.evaluate(() => localStorage.getItem("ballast.scriptSplit"));
+  expect(storedSplit === null ? 0 : Number(storedSplit)).toBeGreaterThan(0.58);
+
+  // Maximize/restore each pane; Esc restores.
+  await page.getByTestId("source-maximize").click();
+  await expect.poll(async () => (await boxOf(page.getByTestId("log-panel"))).height).toBeLessThan(50);
+  expect((await boxOf(page.getByTestId("source-panel"))).height).toBeGreaterThan(400);
+  await page.keyboard.press("Escape");
+  await expect.poll(async () => (await boxOf(page.getByTestId("log-panel"))).height).toBeGreaterThan(90);
+
+  await page.getByTestId("logs-maximize").click();
+  await expect.poll(async () => (await boxOf(page.getByTestId("source-panel"))).height).toBeLessThan(50);
+  expect((await boxOf(page.getByTestId("log-panel"))).height).toBeGreaterThan(400);
+  await page.keyboard.press("Escape");
+  await expect.poll(async () => (await boxOf(page.getByTestId("source-panel"))).height).toBeGreaterThan(90);
+
+  // Collapse and expand the sidebar.
+  await page.getByTestId("toggle-sidebar").click();
+  await expect(page.getByTestId("script-sidebar")).toHaveCount(0);
+  const collapsedSource = await boxOf(page.getByTestId("source-panel"));
+  await page.getByTestId("toggle-sidebar").click();
+  await expect(page.getByTestId("script-sidebar")).toBeVisible();
+  const expandedSource = await boxOf(page.getByTestId("source-panel"));
+  expect(expandedSource.width).toBeLessThan(collapsedSource.width);
 
   await page.getByTestId("nav-connections").click();
   await page
@@ -124,23 +178,29 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.screenshot({ path: `screenshots/${theme}-01-scripts.png` });
 
   await openScript(page, "Redeem to Scene");
+  await expect(page.getByTestId("source-panel")).toContainText("Effect.gen");
+  await expect(page.getByTestId("log-line").first()).toBeVisible();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-02-script.png` });
 
-  await page.getByTestId("tab-source").click();
-  await expect(page.getByTestId("source-panel")).toContainText("Effect.gen");
+  await page.getByTestId("source-maximize").click();
   await page.waitForTimeout(150);
-  await page.screenshot({ path: `screenshots/${theme}-03-source.png` });
+  await page.screenshot({ path: `screenshots/${theme}-03-script-source.png` });
+  await page.keyboard.press("Escape");
+  await page.getByTestId("logs-maximize").click();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-04-script-logs.png` });
+  await page.keyboard.press("Escape");
 
   await page.getByTestId("nav-scripts").click();
   await openScript(page, "Cheer Alert");
   await expect(page.getByText("Approval required")).toBeVisible();
   await page.waitForTimeout(150);
-  await page.screenshot({ path: `screenshots/${theme}-04-consent.png` });
+  await page.screenshot({ path: `screenshots/${theme}-05-consent.png` });
 
   await page.getByTestId("nav-connections").click();
   await page.waitForTimeout(150);
-  await page.screenshot({ path: `screenshots/${theme}-05-connections.png` });
+  await page.screenshot({ path: `screenshots/${theme}-06-connections.png` });
 
   await page
     .locator('[data-testid="connection-row"][data-connection-id="obs/main"]')
@@ -148,13 +208,23 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
     .click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.waitForTimeout(150);
-  await page.screenshot({ path: `screenshots/${theme}-06-connection-dialog.png` });
+  await page.screenshot({ path: `screenshots/${theme}-07-connection-dialog.png` });
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
   await page.getByTestId("nav-settings").click();
   await page.waitForTimeout(150);
-  await page.screenshot({ path: `screenshots/${theme}-07-settings.png` });
+  await page.screenshot({ path: `screenshots/${theme}-08-settings.png` });
 };
+
+test("collapses the parameters sidebar in a narrow window", async ({ page }) => {
+  await useTheme(page, "dark");
+  await page.setViewportSize({ width: 1_000, height: 900 });
+  await openScripts(page);
+  await openScript(page, "Redeem to Scene");
+  await expect(page.getByTestId("script-sidebar")).toHaveCount(0);
+  await page.getByTestId("toggle-sidebar").click();
+  await expect(page.getByTestId("script-sidebar")).toBeVisible();
+});
 
 test("captures dark screenshots", async ({ page }) => {
   await capture(page, "dark");

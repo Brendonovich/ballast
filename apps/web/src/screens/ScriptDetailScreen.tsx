@@ -1,7 +1,20 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import type { JSX } from "solid-js";
-import { A, useParams, useSearchParams } from "@solidjs/router";
-import type { ConnectionStatus, ParamValue, ParamView, ScriptDetail } from "@ballast/agent-protocol";
+import { A, useParams } from "@solidjs/router";
+import type {
+  ConnectionStatus,
+  ParamValue,
+  ParamView,
+  ScriptDetail,
+} from "@ballast/agent-protocol";
 
 import { useAgent } from "../state/context.tsx";
 import { scriptKey } from "../state/store.ts";
@@ -10,31 +23,76 @@ import {
   connectionStatusTone,
   integrationName,
   isScriptBusy,
+  scriptDisplayName,
   scriptStatusLabel,
   scriptStatusTone,
 } from "../lib/format.ts";
-import { AlertIcon, ArrowLeftIcon, PlayIcon, StopIcon } from "../ui/icons.tsx";
+import {
+  AlertIcon,
+  ArrowLeftIcon,
+  PanelRightIcon,
+  PlayIcon,
+  StopIcon,
+} from "../ui/icons.tsx";
 import {
   Button,
   EmptyState,
-  PageHeader,
+  IconButton,
   SelectInput,
   Spinner,
   Status,
   StatusDot,
   Switch,
-  Tabs,
   TextInput,
   cx,
 } from "../ui/primitives.tsx";
 import { LogsPanel } from "./script/LogsPanel.tsx";
 import { SourcePanel } from "./script/SourcePanel.tsx";
 
+const SPLIT_KEY = "ballast.scriptSplit";
+const SIDEBAR_KEY = "ballast.scriptSidebarCollapsed";
+const DEFAULT_SPLIT = 0.58;
+
 const safeDecode = (value: string): string => {
   try {
     return decodeURIComponent(value);
   } catch {
     return value;
+  }
+};
+
+const readSplit = (): number => {
+  if (typeof window === "undefined") return DEFAULT_SPLIT;
+  try {
+    const value = Number(window.localStorage.getItem(SPLIT_KEY));
+    return Number.isFinite(value) && value >= 0.22 && value <= 0.82 ? value : DEFAULT_SPLIT;
+  } catch {
+    return DEFAULT_SPLIT;
+  }
+};
+
+const writeSplit = (value: number): void => {
+  try {
+    window.localStorage.setItem(SPLIT_KEY, String(value));
+  } catch {
+    // Non-critical.
+  }
+};
+
+const readSidebar = (): boolean => {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(SIDEBAR_KEY) === "true";
+  } catch {
+    return false;
+  }
+};
+
+const writeSidebar = (collapsed: boolean): void => {
+  try {
+    window.localStorage.setItem(SIDEBAR_KEY, String(collapsed));
+  } catch {
+    // Non-critical.
   }
 };
 
@@ -92,15 +150,17 @@ const ParamRow = (props: {
   };
 
   return (
-    <div class="flex items-start gap-4 border-b border-edge py-2.5 last:border-b-0">
-      <div class="w-40 shrink-0 pt-0.5">
-        <p class="text-[12px] text-body">
+    <div class="border-b border-edge py-2.5 last:border-b-0">
+      <div class="flex items-baseline justify-between gap-3">
+        <p class="min-w-0 truncate text-[12px] text-body">
           {props.param.title ?? props.param.key}
-          {props.param.required && <span class="ml-0.5 text-faint">*</span>}
+          <Show when={props.param.required}>
+            <span class="ml-0.5 text-faint">*</span>
+          </Show>
         </p>
-        <p class="truncate font-mono text-[10px] text-faint">{props.param.key}</p>
+        <span class="shrink-0 truncate font-mono text-[10px] text-faint">{props.param.key}</span>
       </div>
-      <div class="min-w-0 flex-1">
+      <div class="mt-1.5">
         <Show
           when={props.param.type === "boolean"}
           fallback={
@@ -123,26 +183,24 @@ const ParamRow = (props: {
                       event.currentTarget.blur();
                     }
                   }}
-                  class={cx("max-w-64", props.param.type === "number" && "tabular")}
+                  class={cx(props.param.type === "number" && "tabular")}
                 />
               }
             >
-              <div class="max-w-64">
-                <SelectInput
-                  value={textOf(current())}
-                  disabled={saving()}
-                  aria-label={props.param.title ?? props.param.key}
-                  onChange={(event) => void save(event.currentTarget.value)}
-                >
-                  <For each={options()}>
-                    {(option) => (
-                      <option value={option} selected={option === textOf(current())}>
-                        {option}
-                      </option>
-                    )}
-                  </For>
-                </SelectInput>
-              </div>
+              <SelectInput
+                value={textOf(current())}
+                disabled={saving()}
+                aria-label={props.param.title ?? props.param.key}
+                onChange={(event) => void save(event.currentTarget.value)}
+              >
+                <For each={options()}>
+                  {(option) => (
+                    <option value={option} selected={option === textOf(current())}>
+                      {option}
+                    </option>
+                  )}
+                </For>
+              </SelectInput>
             </Show>
           }
         >
@@ -153,22 +211,27 @@ const ParamRow = (props: {
             onChange={(checked) => void save(checked)}
           />
         </Show>
+      </div>
+      <div class="mt-1 flex min-h-4 items-center gap-2">
+        <Show when={saving()}>
+          <Spinner size={10} class="text-faint" />
+        </Show>
         <Show when={error()}>
-          <p class="mt-1 text-[11px] text-danger">{error()}</p>
+          <span class="text-[10px] text-danger">{error()}</span>
         </Show>
         <Show when={props.param.type !== "boolean" && props.param.type !== "enum" && dirty()}>
           <button
             type="button"
-            class="mt-1 text-[11px] text-accent hover:underline"
+            class="text-[10px] text-accent hover:underline"
             onClick={() => apply()}
           >
             Save
           </button>
         </Show>
+        <Show when={props.param.optionsSource}>
+          <span class="truncate text-[10px] text-faint">options from connection</span>
+        </Show>
       </div>
-      <Show when={saving()}>
-        <Spinner size={11} class="mt-2 text-faint" />
-      </Show>
     </div>
   );
 };
@@ -178,32 +241,35 @@ const ManifestDetails = (props: { readonly detail: ScriptDetail }): JSX.Element 
   const manifest = (): ScriptDetail["manifest"] => props.detail.manifest;
   const total = (): number =>
     manifest().connections.length + manifest().topics.length + manifest().requests.length;
+
   return (
-    <details class="group mt-6 border-t border-edge pt-3">
-      <summary class="list-none text-[12px] text-muted hover:text-body">
+    <details class="group mt-5 border-t border-edge pt-3">
+      <summary class="list-none text-[11px] text-muted hover:text-body">
         <span class="mr-1 inline-block text-faint transition-transform group-open:rotate-90">›</span>
         Manifest · {total()} entries
       </summary>
-      <div class="mt-3 space-y-4 pl-3 text-[12px]">
+      <div class="mt-2.5 space-y-3 text-[11px]">
         <Show when={manifest().connections.length > 0}>
           <div>
-            <p class="mb-1 text-[11px] text-faint">Connections</p>
+            <p class="mb-1 text-[10px] text-faint">Connections</p>
             <div class="space-y-1">
               <For each={manifest().connections}>
                 {(connection) => {
-                  const live = (): ConnectionStatus | undefined =>
-                    connection.connectionId === undefined
-                      ? undefined
-                      : store.connection(connection.connectionId)?.status;
                   const status = (): ConnectionStatus =>
-                    live() ?? connection.connectionStatus ?? "unconfigured";
+                    (connection.connectionId === undefined
+                      ? undefined
+                      : store.connection(connection.connectionId)?.status) ??
+                    connection.connectionStatus ??
+                    "unconfigured";
                   return (
                     <div class="flex items-center gap-2">
                       <StatusDot tone={connectionStatusTone(status())} />
-                      <span class="text-body">
+                      <span class="min-w-0 flex-1 truncate text-body">
                         {integrationName(connection.integration)} · {connection.slot}
                       </span>
-                      <span class="text-faint">{connectionStatusLabel(status())}</span>
+                      <span class="shrink-0 text-[10px] text-faint">
+                        {connectionStatusLabel(status())}
+                      </span>
                     </div>
                   );
                 }}
@@ -213,15 +279,15 @@ const ManifestDetails = (props: { readonly detail: ScriptDetail }): JSX.Element 
         </Show>
         <Show when={manifest().topics.length > 0}>
           <div>
-            <p class="mb-1 text-[11px] text-faint">Topics</p>
+            <p class="mb-1 text-[10px] text-faint">Topics</p>
             <div class="space-y-1">
               <For each={manifest().topics}>
                 {(topic) => (
-                  <div class="flex flex-wrap items-baseline gap-x-3">
-                    <span class="font-mono text-[11px] text-body">{topic.topic}</span>
-                    <span class="text-[11px] text-faint">
+                  <div>
+                    <p class="break-all font-mono text-[10px] text-body">{topic.topic}</p>
+                    <p class="text-[10px] text-faint">
                       {topic.scopes.length === 0 ? "no scopes" : topic.scopes.join(", ")}
-                    </span>
+                    </p>
                   </div>
                 )}
               </For>
@@ -230,15 +296,15 @@ const ManifestDetails = (props: { readonly detail: ScriptDetail }): JSX.Element 
         </Show>
         <Show when={manifest().requests.length > 0}>
           <div>
-            <p class="mb-1 text-[11px] text-faint">Requests</p>
+            <p class="mb-1 text-[10px] text-faint">Requests</p>
             <div class="space-y-1">
               <For each={manifest().requests}>
                 {(request) => (
-                  <div class="flex flex-wrap items-baseline gap-x-3">
-                    <span class="font-mono text-[11px] text-body">{request.request}</span>
-                    <span class="text-[11px] text-faint">
+                  <div>
+                    <p class="break-all font-mono text-[10px] text-body">{request.request}</p>
+                    <p class="text-[10px] text-faint">
                       {request.scopes.length === 0 ? "no scopes" : request.scopes.join(", ")}
-                    </span>
+                    </p>
                   </div>
                 )}
               </For>
@@ -247,10 +313,10 @@ const ManifestDetails = (props: { readonly detail: ScriptDetail }): JSX.Element 
         </Show>
         <Show when={manifest().unresolved.length > 0}>
           <div>
-            <p class="mb-1 text-[11px] text-faint">Unresolved</p>
+            <p class="mb-1 text-[10px] text-faint">Unresolved</p>
             <For each={manifest().unresolved}>
               {(entry) => (
-                <p class="text-[11px] text-warning">
+                <p class="text-[10px] text-warning">
                   {entry.path} — {entry.reason}
                 </p>
               )}
@@ -265,7 +331,6 @@ const ManifestDetails = (props: { readonly detail: ScriptDetail }): JSX.Element 
 export const ScriptDetailScreen = (): JSX.Element => {
   const store = useAgent();
   const params = useParams<{ projectId?: string; scriptId?: string }>();
-  const [searchParams, setSearchParams] = useSearchParams<{ tab?: string }>();
 
   const projectId = createMemo(() => safeDecode(params.projectId ?? ""));
   const scriptId = createMemo(() => safeDecode(params.scriptId ?? ""));
@@ -273,7 +338,11 @@ export const ScriptDetailScreen = (): JSX.Element => {
   const detail = createMemo(() => store.detail(projectId(), scriptId()));
   const summary = createMemo(() => store.script(projectId(), scriptId()) ?? detail()?.summary);
   const loading = createMemo(() => store.isDetailLoading(key()));
-  const tab = (): string => (searchParams.tab === "source" ? "source" : "logs");
+
+  const [split, setSplit] = createSignal(readSplit());
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(readSidebar());
+  const [maximized, setMaximized] = createSignal<"source" | "logs">();
+  let splitArea: HTMLDivElement | undefined;
 
   createEffect(() => {
     const pid = projectId();
@@ -283,6 +352,61 @@ export const ScriptDetailScreen = (): JSX.Element => {
     void store.fetchScript(pid, sid, true);
   });
 
+  onMount(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && maximized() !== undefined) {
+        event.preventDefault();
+        setMaximized(undefined);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    const media = window.matchMedia("(max-width: 1100px)");
+    const collapse = (): void => {
+      if (media.matches && !sidebarCollapsed()) {
+        setSidebarCollapsed(true);
+        writeSidebar(true);
+      }
+    };
+    collapse();
+    media.addEventListener("change", collapse);
+    onCleanup(() => {
+      document.removeEventListener("keydown", onKeyDown);
+      media.removeEventListener("change", collapse);
+    });
+  });
+
+  const toggleSidebar = (): void => {
+    const next = !sidebarCollapsed();
+    setSidebarCollapsed(next);
+    writeSidebar(next);
+  };
+
+  const toggleMaximize = (pane: "source" | "logs"): void => {
+    setMaximized((current) => (current === pane ? undefined : pane));
+  };
+
+  const beginResize = (event: PointerEvent): void => {
+    if (splitArea === undefined) return;
+    event.preventDefault();
+    const rect = splitArea.getBoundingClientRect();
+    const move = (moveEvent: PointerEvent): void => {
+      const ratio = (moveEvent.clientY - rect.top) / rect.height;
+      setSplit(Math.min(0.82, Math.max(0.22, ratio)));
+    };
+    const end = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      writeSplit(split());
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+  };
+
+  const resetSplit = (): void => {
+    setSplit(DEFAULT_SPLIT);
+    writeSplit(DEFAULT_SPLIT);
+  };
+
   const toggle = async (): Promise<void> => {
     const script = summary();
     if (script === undefined) return;
@@ -291,6 +415,18 @@ export const ScriptDetailScreen = (): JSX.Element => {
     } else if (script.status !== "needs-consent") {
       await store.startScript(script.projectId, script.id);
     }
+  };
+
+  const sourceStyle = (): JSX.CSSProperties => {
+    if (maximized() === "source") return { flex: "1 1 0%" };
+    if (maximized() === "logs") return { height: "32px", flex: "0 0 32px" };
+    return { "flex-grow": split(), "flex-basis": "0%", "min-height": "96px" };
+  };
+
+  const logsStyle = (): JSX.CSSProperties => {
+    if (maximized() === "logs") return { flex: "1 1 0%" };
+    if (maximized() === "source") return { height: "32px", flex: "0 0 32px" };
+    return { "flex-grow": 1 - split(), "flex-basis": "0%", "min-height": "96px" };
   };
 
   return (
@@ -311,77 +447,81 @@ export const ScriptDetailScreen = (): JSX.Element => {
             />
           }
         >
-          <div class="flex items-center gap-2 text-[12px] text-muted">
+          <div class="flex h-full items-center justify-center gap-2 text-[12px] text-muted">
             <Spinner size={12} /> Loading script…
           </div>
         </Show>
       }
     >
       {(script) => (
-        <div>
-          <A
-            href="/scripts"
-            class="inline-flex items-center gap-1 text-[12px] text-muted hover:text-body"
-          >
-            <ArrowLeftIcon size={12} />
-            Scripts
-          </A>
-
-          <div class="mt-4">
-            <PageHeader
-              title={script().name}
-              description={script().entry}
-              actions={
-                <>
-                  <Status tone={scriptStatusTone(script())}>
-                    {scriptStatusLabel(script())}
-                  </Status>
-                  <Show when={script().status !== "needs-consent"}>
-                    <Button
-                      size="normal"
-                      variant={
-                        script().status === "running" || isScriptBusy(script().status)
-                          ? "outline"
-                          : "primary"
-                      }
-                      loading={
-                        store.isPending(`script:${key()}:start`) ||
-                        store.isPending(`script:${key()}:stop`)
-                      }
-                      icon={
-                        script().status === "running" ? (
-                          <StopIcon size={12} />
-                        ) : (
-                          <PlayIcon size={12} />
-                        )
-                      }
-                      onClick={() => void toggle()}
-                    >
-                      {script().status === "running" || isScriptBusy(script().status)
-                        ? "Stop"
-                        : "Start"}
-                    </Button>
-                  </Show>
-                </>
-              }
-            />
+        <div class="flex h-full min-h-0 flex-col gap-2 overflow-hidden px-5 pb-4 pt-3">
+          <div class="flex shrink-0 items-center gap-3">
+            <A
+              href="/scripts"
+              aria-label="Back to Scripts"
+              class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-body"
+            >
+              <ArrowLeftIcon size={14} />
+            </A>
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <h1 class="truncate text-[16px] font-medium leading-6 tracking-[-0.02em] text-strong">
+                  {scriptDisplayName(script())}
+                </h1>
+                <Status tone={scriptStatusTone(script())}>
+                  {scriptStatusLabel(script())}
+                </Status>
+              </div>
+              <p class="truncate font-mono text-[10px] text-faint">{script().entry}</p>
+            </div>
+            <Button
+              size="small"
+              variant="ghost"
+              data-testid="toggle-sidebar"
+              aria-expanded={!sidebarCollapsed()}
+              icon={<PanelRightIcon size={13} />}
+              onClick={toggleSidebar}
+            >
+              <span class="hidden sm:inline">Parameters</span>
+            </Button>
+            <Show when={script().status !== "needs-consent"}>
+              <Button
+                size="normal"
+                variant={
+                  script().status === "running" || isScriptBusy(script().status)
+                    ? "outline"
+                    : "primary"
+                }
+                loading={
+                  store.isPending(`script:${key()}:start`) ||
+                  store.isPending(`script:${key()}:stop`)
+                }
+                icon={
+                  script().status === "running" ? <StopIcon size={12} /> : <PlayIcon size={12} />
+                }
+                onClick={() => void toggle()}
+              >
+                {script().status === "running" || isScriptBusy(script().status) ? "Stop" : "Start"}
+              </Button>
+            </Show>
           </div>
+
+          <Show when={script().lastError}>
+            <div class="shrink-0 rounded-md border border-[var(--v2-state-border-danger)] bg-[var(--v2-state-bg-danger)] px-2.5 py-1.5 text-[11px] text-danger">
+              {script().lastError}
+            </div>
+          </Show>
 
           <Show when={detail()?.pendingConsent}>
             {(consent) => (
-              <div class="mt-5 rounded-md border border-[var(--v2-state-border-warning)] bg-[var(--v2-state-bg-warning)] px-3 py-2.5">
-                <div class="flex items-start gap-2.5">
-                  <AlertIcon size={14} class="mt-0.5 shrink-0 text-warning" />
+              <div class="shrink-0 rounded-md border border-[var(--v2-state-border-warning)] bg-[var(--v2-state-bg-warning)] px-3 py-2">
+                <div class="flex items-center gap-2.5">
+                  <AlertIcon size={13} class="shrink-0 text-warning" />
                   <div class="min-w-0 flex-1">
-                    <p class="text-[12px] font-medium text-warning">Approval required</p>
-                    <p class="mt-0.5 text-[12px] text-body">{consent().summary}</p>
-                    <Show when={consent().diff.added.scopes.length > 0}>
-                      <p class="mt-1 font-mono text-[11px] text-muted">
-                        + {consent().diff.added.scopes.join(", ")}
-                      </p>
-                    </Show>
+                    <p class="truncate text-[12px] font-medium text-warning">Approval required</p>
+                    <p class="truncate text-[11px] text-body">{consent().summary}</p>
                   </div>
-                  <div class="flex shrink-0 items-center gap-2">
+                  <div class="flex shrink-0 items-center gap-1.5">
                     <Button
                       size="small"
                       variant="ghost"
@@ -405,49 +545,87 @@ export const ScriptDetailScreen = (): JSX.Element => {
             )}
           </Show>
 
-          <Show when={detail()}>
-            {(current) => (
-              <>
-                <Show when={current().manifest.params.length > 0}>
-                  <section class="mt-6">
-                    <h2 class="text-[13px] font-medium text-strong">Parameters</h2>
-                    <div class="mt-1 border-t border-edge">
-                      <For each={current().manifest.params}>
-                        {(param) => (
-                          <ParamRow
-                            projectId={current().summary.projectId}
-                            scriptId={current().summary.id}
-                            param={param}
-                          />
-                        )}
-                      </For>
-                    </div>
-                  </section>
-                </Show>
-
-                <ManifestDetails detail={current()} />
-
-                <div class="mt-8">
-                  <Tabs
-                    items={[
-                      { id: "logs", label: "Logs" },
-                      { id: "source", label: "Source" },
-                    ]}
-                    value={tab()}
-                    onChange={(id) => setSearchParams({ tab: id }, { replace: true })}
-                  />
-                  <div class="mt-3">
-                    <Show when={tab() === "logs"}>
-                      <LogsPanel projectId={projectId()} scriptId={scriptId()} />
-                    </Show>
-                    <Show when={tab() === "source"}>
-                      <SourcePanel projectId={projectId()} scriptId={scriptId()} />
-                    </Show>
-                  </div>
+          <div class="flex min-h-0 flex-1 gap-3">
+            <div ref={splitArea} class="flex min-h-0 min-w-0 flex-1 flex-col">
+              <div class="min-h-0" style={sourceStyle()}>
+                <SourcePanel
+                  projectId={projectId()}
+                  scriptId={scriptId()}
+                  collapsed={maximized() === "logs"}
+                  maximized={maximized() === "source"}
+                  onToggleMaximize={() => toggleMaximize("source")}
+                />
+              </div>
+              <Show when={maximized() === undefined}>
+                <div
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize source and logs"
+                  data-testid="script-splitter"
+                  class="group flex h-1.5 shrink-0 cursor-row-resize touch-none items-center justify-center"
+                  onPointerDown={beginResize}
+                  onDblClick={resetSplit}
+                >
+                  <span class="h-px w-10 rounded bg-[var(--v2-border-border-base)] transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
                 </div>
-              </>
-            )}
-          </Show>
+              </Show>
+              <div class="min-h-0" style={logsStyle()}>
+                <LogsPanel
+                  projectId={projectId()}
+                  scriptId={scriptId()}
+                  collapsed={maximized() === "source"}
+                  maximized={maximized() === "logs"}
+                  onToggleMaximize={() => toggleMaximize("logs")}
+                />
+              </div>
+            </div>
+
+            <Show when={!sidebarCollapsed()}>
+              <aside
+                data-testid="script-sidebar"
+                class="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-md border border-edge bg-canvas"
+              >
+                <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5">
+                  <span class="text-[11px] font-medium text-body">Parameters</span>
+                  <IconButton
+                    label="Collapse parameters"
+                    size="small"
+                    class="ml-auto"
+                    onClick={toggleSidebar}
+                  >
+                    <PanelRightIcon size={12} />
+                  </IconButton>
+                </div>
+                <div class="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+                  <Show when={detail()}>
+                    {(current) => (
+                      <>
+                        <Show
+                          when={current().manifest.params.length > 0}
+                          fallback={
+                            <p class="py-6 text-center text-[11px] text-faint">
+                              No parameters for this script.
+                            </p>
+                          }
+                        >
+                          <For each={current().manifest.params}>
+                            {(param) => (
+                              <ParamRow
+                                projectId={projectId()}
+                                scriptId={scriptId()}
+                                param={param}
+                              />
+                            )}
+                          </For>
+                        </Show>
+                        <ManifestDetails detail={current()} />
+                      </>
+                    )}
+                  </Show>
+                </div>
+              </aside>
+            </Show>
+          </div>
         </div>
       )}
     </Show>

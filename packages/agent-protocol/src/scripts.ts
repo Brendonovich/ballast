@@ -109,6 +109,16 @@ export const UnresolvedEntry = Schema.Struct({
 });
 export type UnresolvedEntry = typeof UnresolvedEntry.Type;
 
+/** A durable timer declaration, as recorded in the applied manifest. */
+export const ManifestTimer = Schema.Struct({
+  name: Schema.String,
+  title: Schema.optionalKey(Schema.String),
+  onStale: Schema.Literals(["drop", "deliver"]),
+  maxAgeMs: Schema.Number,
+  payloadFingerprint: Schema.String,
+});
+export type ManifestTimer = typeof ManifestTimer.Type;
+
 /**
  * The declarative view of a planned script. This mirrors
  * `@ballast/core`'s `Manifest` on the wire so the protocol package does not
@@ -120,6 +130,8 @@ export const ScriptManifest = Schema.Struct({
   topics: Schema.Array(ManifestTopic),
   requests: Schema.Array(ManifestRequest),
   unresolved: Schema.Array(UnresolvedEntry),
+  /** Durable timer declarations; instances are listed by `ListTimers`. */
+  timers: Schema.Array(ManifestTimer),
 });
 export type ScriptManifest = typeof ScriptManifest.Type;
 
@@ -231,6 +243,7 @@ export const emptyManifest = (): ScriptManifest => ({
   topics: [],
   requests: [],
   unresolved: [],
+  timers: [],
 });
 
 export const scriptView = (graph?: GraphView): ScriptView =>

@@ -9,6 +9,7 @@ import { registerBridgeIpc } from "./ipc.ts";
 import { runLifecycleDemo, type DemoAction } from "./lifecycle-demo.ts";
 import { createLogger } from "./logger.ts";
 import { installApplicationMenu } from "./menu.ts";
+import { createPermissionController } from "./permissions.ts";
 import { createServiceLauncher } from "./service/launcher.ts";
 import { createTray, type TrayController } from "./tray.ts";
 import { createUpdateManager } from "./update.ts";
@@ -89,7 +90,11 @@ async function start(): Promise<void> {
     stateDir: config.stateDir,
   });
 
-  const launcher = createServiceLauncher(config, { logger });
+  const permissions = createPermissionController(process.platform);
+  const launcher = createServiceLauncher(config, {
+    logger,
+    permissions: () => permissions.status(),
+  });
 
   if (demo !== undefined) {
     const code = await runLifecycleDemo(launcher, config, demo);
@@ -123,6 +128,7 @@ async function start(): Promise<void> {
       if (update !== null) tray.update(status, update.status());
     }
     await windows?.sync(status);
+    await launcher.reportPermissions();
     return status;
   };
 
@@ -132,6 +138,7 @@ async function start(): Promise<void> {
     windows?.broadcastServiceStatus(status);
     if (tray !== null && update !== null) tray.update(status, update.status());
     await windows?.sync(status);
+    await launcher.reportPermissions();
   };
 
   const perform = async (label: string, run: () => Promise<ServiceAction>): Promise<void> => {
@@ -236,6 +243,7 @@ async function start(): Promise<void> {
     update: currentUpdate,
     appInfo,
     logger,
+    permissions,
     showLogs,
     afterServiceChange,
   });

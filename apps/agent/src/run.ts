@@ -11,7 +11,8 @@ import * as Scope from "effect/Scope";
 import { FetchHttpClient } from "effect/http";
 import { diff, plan } from "@ballast/planner";
 import type { ManifestDiff } from "@ballast/planner";
-import type { Manifest, ParamManifest, ParamOptionSource } from "@ballast/core";
+import { makeTimerScheduler } from "@ballast/core";
+import type { Manifest, ParamManifest, ParamOptionSource, TimerManifest } from "@ballast/core";
 import { RequestSchemas } from "@ballast/module-obs";
 import { AgentEventBus } from "./event-bus.ts";
 import { bundleScript } from "./bundle.ts";
@@ -234,11 +235,26 @@ interface AppliedState {
   readonly content: string;
 }
 
+interface RunTimerHandlers {
+  readonly registerTimer: (name: string) => Effect.Effect<void>;
+  readonly scheduleTimer: (input: {
+    readonly name: string;
+    readonly key: string;
+    readonly delayMs: number;
+    readonly payload: import("effect/Schema").Json;
+    readonly payloadFingerprint: string;
+    readonly onStale: "drop" | "deliver";
+    readonly maxAgeMs: number;
+  }) => Effect.Effect<void, string>;
+  readonly cancelTimer: (input: { readonly name: string; readonly key: string }) => Effect.Effect<void>;
+}
+
 const startWorker = (
   entry: string,
   generation: number,
   params: RuntimeParamStore,
   request: RequestHandler,
+  timers: RunTimerHandlers,
 ): Effect.Effect<RuntimeSession, Error> =>
   Effect.gen(function* () {
     const bundle = yield* bundleScript(entry, generation).pipe(
@@ -252,6 +268,7 @@ const startWorker = (
       generation,
       settings: params,
       request,
+      ...timers,
     });
     console.log(`[run] started worker generation ${generation}`);
     return session;
@@ -493,6 +510,83 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
         return Effect.fail(`No runtime handler for integration "${integration}"`);
       };
 
+      // In-process `ballast run` keeps timers in memory. The service uses the
+      // persisted project store; here a Ctrl-C loses pending timers.
+      let currentManifest: Manifest = initialManifest;
+      let currentSession: RuntimeSession | undefined;
+      const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
+      const timerScheduler = yield* makeTimerScheduler({
+        clock,
+        onFire: (fire) =>
+          Effect.gen(function* () {
+            const declaration = currentManifest.timers.find(
+              (timer) => timer.name === fire.timer,
+            );
+            if (declaration === undefined) {
+              console.error(
+                `[run] timer "${fire.timer}" fired without a declaration; dropped`,
+              );
+              return;
+            }
+            if (currentSession === undefined) return;
+            currentSession.deliverTimer({
+              name: fire.timer,
+              key: fire.key,
+              payload: fire.payload,
+              scheduledAt: fire.scheduledAt,
+              dueAt: fire.dueAt,
+              firedAt: fire.firedAt,
+              lateByMs: fire.lateByMs,
+            });
+            console.log(
+              `[run] timer "${fire.timer}" fired for ${fire.key} (late ${fire.lateByMs}ms)`,
+            );
+          }),
+      });
+      const timerHandlers = (manifest: Manifest): RunTimerHandlers => ({
+        registerTimer: (name) =>
+          manifest.timers.some((timer) => timer.name === name)
+            ? Effect.void
+            : Effect.die(
+                new Error(`Timer "${name}" was registered without a declaration`),
+              ),
+        scheduleTimer: (input) => {
+          const declaration: TimerManifest | undefined = manifest.timers.find(
+            (timer) => timer.name === input.name,
+          );
+          if (declaration === undefined) {
+            return Effect.fail(
+              `Timer "${input.name}" is not declared by the running manifest`,
+            );
+          }
+          if (input.payloadFingerprint !== declaration.payloadFingerprint) {
+            return Effect.fail(
+              `Timer "${input.name}" payload fingerprint does not match the running manifest`,
+            );
+          }
+          if (
+            input.onStale !== declaration.onStale ||
+            input.maxAgeMs !== declaration.maxAgeMs
+          ) {
+            return Effect.fail(
+              `Timer "${input.name}" policy does not match the running manifest`,
+            );
+          }
+          return timerScheduler.schedule({
+            scriptId: "run",
+            timer: input.name,
+            key: input.key,
+            delayMs: input.delayMs,
+            payload: input.payload,
+            payloadFingerprint: input.payloadFingerprint,
+            onStale: input.onStale,
+            maxAgeMs: input.maxAgeMs,
+          });
+        },
+        cancelTimer: (input) =>
+          timerScheduler.cancel("run", input.name, input.key),
+      });
+
       let applied: AppliedState = {
         manifest: initialManifest,
         session: yield* startWorker(
@@ -500,9 +594,11 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           0,
           new RuntimeParamStore(initialValues),
           requestHandler,
+          timerHandlers(initialManifest),
         ),
         content: initialContent,
       };
+      currentSession = applied.session;
       let lastPlannedContent = initialContent;
       let generation = 1;
       bus.setActive(applied.session);
@@ -598,6 +694,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
             generation++,
             new RuntimeParamStore(nextValues),
             requestHandler,
+            timerHandlers(nextManifest),
           ).pipe(
             Effect.catch((error) => {
               console.error(`[run] could not start worker: ${error.message}`);
@@ -606,7 +703,25 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           );
           if (nextSession === undefined) return;
 
+          const snapshot = yield* timerScheduler.snapshot;
+          const declarations = new Map(
+            nextManifest.timers.map((timer) => [timer.name, timer]),
+          );
+          yield* timerScheduler.restore({
+            version: 1,
+            timers: snapshot.timers.filter((timer) => {
+              const declaration = declarations.get(timer.timer);
+              return (
+                timer.state === "pending" &&
+                declaration !== undefined &&
+                declaration.payloadFingerprint === timer.payloadFingerprint
+              );
+            }),
+          });
+
           bus.setActive(nextSession);
+          currentManifest = nextManifest;
+          currentSession = nextSession;
           const previous = applied.session;
           applied = {
             manifest: nextManifest,

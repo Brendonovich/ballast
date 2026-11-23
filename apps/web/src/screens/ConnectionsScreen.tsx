@@ -28,8 +28,37 @@ import {
   TextInput,
 } from "../ui/primitives.tsx";
 
+const subtitle = (connection: ConnectionSummary): string => {
+  const integration = integrationName(connection.integration);
+  const parts: Array<string> = [];
+  if (connection.label !== connection.slot && connection.label !== integration) {
+    parts.push(connection.label);
+  }
+  if (connection.account !== undefined) parts.push(`@${connection.account.login}`);
+  if (
+    connection.detail !== undefined &&
+    connection.detail !== integration &&
+    connection.detail !== connection.label
+  ) {
+    parts.push(connection.detail);
+  }
+  return parts.join(" · ");
+};
+
+/*
+ * HOOK(connection-needs-action): VTube Studio is gaining a distinct "waiting
+ * for the user to allow the plugin" state (and keyboard capture gains an
+ * Accessibility permission). When ConnectionSummary exposes that shape, drive
+ * the row label and render exactly one needs-action banner + action button in
+ * the dialog from it. Until then, authorization/scopes are the fallback.
+ */
+const connectionNeedsAction = (connection: ConnectionSummary): boolean =>
+  connection.requiresAuth ||
+  connection.status === "reauth-required" ||
+  connection.scopes.missing.length > 0;
+
 const actionLabel = (connection: ConnectionSummary): string => {
-  if (connection.scopes.missing.length > 0 || connection.status === "reauth-required") return "Sign in";
+  if (connectionNeedsAction(connection)) return "Sign in";
   if (connection.status === "unconfigured") return "Configure";
   if (connection.status === "connected") return "Manage";
   return "Connect";
@@ -96,18 +125,14 @@ export const ConnectionsScreen = (): JSX.Element => {
                 />
                 <div class="min-w-0 flex-1">
                   <p class="flex items-baseline gap-2 text-[13px] font-medium text-strong">
-                    <span class="truncate">{connection.label}</span>
+                    <span class="truncate">{integrationName(connection.integration)}</span>
                     <span class="text-[11px] font-normal text-faint">·</span>
                     <span class="font-mono text-[11px] font-normal text-faint">
                       {connection.slot}
                     </span>
                   </p>
                   <p class="truncate text-[11px] text-muted">
-                    {integrationName(connection.integration)}
-                    <span class="px-1 text-faint">·</span>
-                    {connection.account === undefined
-                      ? (connection.detail ?? connection.title)
-                      : `@${connection.account.login}`}
+                    {subtitle(connection)}
                     <Show when={connection.lastError}>
                       <span class="ml-2 text-danger">{connection.lastError}</span>
                     </Show>
@@ -218,7 +243,9 @@ const ConnectionDialog = (props: {
   return (
     <Dialog
       title={`${integrationName(props.connection.integration)} · ${props.connection.slot}`}
-      description={props.connection.label}
+      description={
+        props.connection.label === props.connection.slot ? undefined : props.connection.label
+      }
       onClose={props.onClose}
       footer={
         <>
@@ -255,6 +282,7 @@ const ConnectionDialog = (props: {
                 size="normal"
                 variant="primary"
                 data-testid="connection-connect"
+                disabled={!requiredSatisfied()}
                 loading={store.isPending(`connection:${props.connection.id}:connect`)}
                 onClick={() => void connect()}
               >
@@ -308,7 +336,7 @@ const ConnectionDialog = (props: {
             <For each={props.connection.fields}>
               {(field) => (
                 <Field
-                  label={field.label}
+                  label={field.required ? `${field.label} *` : field.label}
                   hint={
                     field.kind === "secret" &&
                     valueOf(props.connection.values, field.key)?.isSet === true

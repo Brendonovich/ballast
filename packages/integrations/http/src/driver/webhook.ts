@@ -309,8 +309,14 @@ const cloudRegistration = (definition: WebhookDefinition) => {
 /** Standalone webhook driver: local HTTP listeners plus cloud relay deliveries. */
 export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
   WebhookDriver,
-  Effect.succeed(
-    WebhookDriver.of({
+  Effect.gen(function* () {
+    // Capture the relay in the driver layer. `start` runs in the caller's
+    // context (the ConnectionManager), so looking the service up there misses
+    // a relay that was only provided around this layer. Keeping the caller
+    // lookup as a fallback preserves standalone tests/embedders that provide
+    // the relay next to the start call.
+    const layerRelay = yield* Effect.serviceOption(WebhookRelay);
+    return WebhookDriver.of({
       start: (definitions) =>
         Effect.gen(function* () {
           const statuses = yield* Ref.make<ReadonlyArray<WebhookStatus>>([]);
@@ -361,6 +367,9 @@ export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
             (definition) => definition.transport === "cloud",
           );
           if (cloudDefinitions.length > 0) {
+            const relay = Option.isSome(layerRelay)
+              ? layerRelay
+              : yield* Effect.serviceOption(WebhookRelay);
             const registrations = cloudDefinitions.map(cloudRegistration);
             if (registrations.some((registration) => registration === undefined)) {
               return yield* new HttpDriverError({
@@ -372,7 +381,6 @@ export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
               (registration): registration is NonNullable<typeof registration> =>
                 registration !== undefined,
             );
-            const relay = yield* Effect.serviceOption(WebhookRelay);
             if (Option.isNone(relay)) {
               return yield* new HttpDriverError({
                 reason: "Cloud webhooks need a WebhookRelay service",
@@ -443,6 +451,6 @@ export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
             close: Scope.close(scope, Exit.void),
           };
         }),
-    }),
-  ),
+    });
+  }),
 );

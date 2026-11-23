@@ -13,7 +13,8 @@
   "dependencies": {
     "@ballast/core": "workspace:*",
     "effect": "catalog:",
-    "rolldown": "catalog:"
+    "rolldown": "catalog:",
+    "source-map-js": "1.2.4"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

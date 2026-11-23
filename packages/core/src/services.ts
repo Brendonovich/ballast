@@ -4,8 +4,10 @@ import type {
   ConnectionManifest,
   ParamManifest,
   RequestManifest,
+  TimerManifest,
   TopicManifest,
   UnresolvedManifest,
+  WorkflowManifest,
 } from "./manifest.ts";
 import type { RequestRef } from "./request.ts";
 
@@ -20,6 +22,8 @@ export interface ManifestRecorderService {
   readonly topic: (topic: TopicManifest) => Effect.Effect<void>;
   readonly request: (request: RequestManifest) => Effect.Effect<void>;
   readonly unresolved: (unresolved: UnresolvedManifest) => Effect.Effect<void>;
+  readonly timer: (timer: TimerManifest) => Effect.Effect<void>;
+  readonly workflow: (workflow: WorkflowManifest) => Effect.Effect<void>;
 }
 
 export class ManifestRecorder extends Context.Service<ManifestRecorder, ManifestRecorderService>()(

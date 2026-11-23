@@ -79,6 +79,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       const projectList = yield* projects.projects;
       const lastLogSeq = yield* logs.lastSeq;
       const lastEventSeq = yield* events.lastSeq;
+      const shellPermissions = yield* connections.permissions();
       return {
         ok: true,
         version: options.version,
@@ -96,6 +97,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
             .length,
         },
         cloud: cloudStatus.state,
+        permissions: shellPermissions,
         lastLogSeq,
         lastEventSeq,
       } satisfies HealthStatus;
@@ -176,6 +178,19 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       ShutdownService: () => shutdown(0),
       RestartService: () => shutdown(75),
 
+      ReportShellPermission: (request: {
+        readonly permission: "accessibility";
+        readonly status: "granted" | "denied" | "unknown";
+      }) =>
+        Effect.gen(function* () {
+          yield* connections.reportShellPermission(request);
+          yield* publishHealth;
+          for (const connection of yield* connections.summaries()) {
+            if (connection.integration !== "keyboard") continue;
+            yield* hub.publish({ _tag: "connection", connection });
+          }
+        }),
+
       ListProjects: () =>
         Effect.gen(function* () {
           const list = yield* projects.projects;
@@ -251,6 +266,21 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         readonly scriptId: string;
         readonly enabled: boolean;
       }) => scripts.setEnabled(request.projectId, request.scriptId, request.enabled),
+
+      ListTimers: (request: {
+        readonly projectId?: string;
+        readonly scriptId?: string;
+        readonly includeFinished?: boolean;
+      }) =>
+        Effect.map(scripts.listTimers(request), (timers) => ({ timers })),
+
+      CancelTimer: (request: {
+        readonly projectId: string;
+        readonly scriptId: string;
+        readonly timer: string;
+        readonly key: string;
+      }) =>
+        Effect.map(scripts.cancelTimer(request), (cancelled) => ({ cancelled })),
 
       ListConsents: (request: { readonly projectId?: string }) =>
         Effect.map(scripts.consents(request.projectId), (consents) => ({ consents })),

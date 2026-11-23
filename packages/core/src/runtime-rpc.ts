@@ -44,6 +44,27 @@ export const RuntimeRpcs = RpcGroup.make(
     success: Schema.Unknown,
     error: Schema.String,
   }),
+  Rpc.make("RegisterTimer", {
+    payload: { name: Schema.String },
+    success: Schema.Void,
+  }),
+  Rpc.make("ScheduleTimer", {
+    payload: {
+      name: Schema.String,
+      key: Schema.String,
+      delayMs: Schema.Number,
+      payload: Schema.Json,
+      payloadFingerprint: Schema.String,
+      onStale: Schema.Literals(["drop", "deliver"]),
+      maxAgeMs: Schema.Number,
+    },
+    success: Schema.Void,
+    error: Schema.String,
+  }),
+  Rpc.make("CancelTimer", {
+    payload: { name: Schema.String, key: Schema.String },
+    success: Schema.Void,
+  }),
 );
 
 export interface RuntimeHostHandlers {
@@ -56,6 +77,24 @@ export interface RuntimeHostHandlers {
     readonly slot: string;
     readonly input: unknown;
   }) => Effect.Effect<unknown, string>;
+  /**
+   * Optional so existing hosts keep compiling. A host that does not implement
+   * timers fails loudly when a script uses one.
+   */
+  readonly registerTimer?: (payload: { readonly name: string }) => Effect.Effect<void>;
+  readonly scheduleTimer?: (payload: {
+    readonly name: string;
+    readonly key: string;
+    readonly delayMs: number;
+    readonly payload: Schema.Json;
+    readonly payloadFingerprint: string;
+    readonly onStale: "drop" | "deliver";
+    readonly maxAgeMs: number;
+  }) => Effect.Effect<void, string>;
+  readonly cancelTimer?: (payload: {
+    readonly name: string;
+    readonly key: string;
+  }) => Effect.Effect<void>;
 }
 
 const codecFor = Schema.toCodecJson;
@@ -182,6 +221,24 @@ export const serveRuntimeRpc = (
           RegisterTopic: handlers.registerTopic,
           GetSetting: handlers.getSetting,
           Request: handlers.request,
+          RegisterTimer:
+            handlers.registerTimer ??
+            (() =>
+              Effect.die(
+                new Error("Timer support is not implemented by this runtime host"),
+              )),
+          ScheduleTimer:
+            handlers.scheduleTimer ??
+            (() =>
+              Effect.die(
+                new Error("Timer support is not implemented by this runtime host"),
+              )),
+          CancelTimer:
+            handlers.cancelTimer ??
+            (() =>
+              Effect.die(
+                new Error("Timer support is not implemented by this runtime host"),
+              )),
         }),
       ),
     );

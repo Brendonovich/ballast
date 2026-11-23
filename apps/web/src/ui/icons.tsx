@@ -116,6 +116,38 @@ export const TrashIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const MaximizeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M9 4H4v5" />
+    <path d="M15 4h5v5" />
+    <path d="M9 20H4v-5" />
+    <path d="M15 20h5v-5" />
+  </Icon>
+);
+
+export const MinimizeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4 9h5V4" />
+    <path d="M20 9h-5V4" />
+    <path d="M4 15h5v5" />
+    <path d="M20 15h-5v5" />
+  </Icon>
+);
+
+export const PanelRightIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M15 4v16" />
+  </Icon>
+);
+
+export const ArrowDownIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M12 5v14" />
+    <path d="m6 13 6 6 6-6" />
+  </Icon>
+);
+
 export const ExternalLinkIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M14 4h6v6" />

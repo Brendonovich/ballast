@@ -13,7 +13,9 @@
     "midi-cc.ts",
     "vts-hotkey.ts",
     "webhook-to-obs.ts",
-    "ws-bridge.ts"
+    "ws-bridge.ts",
+    "timer-cooldown.ts",
+    "redeem-takeover.ts"
   ],
   "references": [
     {
@@ -42,6 +44,9 @@
     },
     {
       "path": "../packages/integrations/websocket"
+    },
+    {
+      "path": "../packages/workflow"
     }
   ]
 }

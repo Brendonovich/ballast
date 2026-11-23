@@ -3,7 +3,7 @@ import type { JSX } from "solid-js";
 
 import "./styles.css";
 import { App } from "./App.tsx";
-import { createAgentRuntime, resolveTransport } from "./agent/client.ts";
+import { createAgentRuntime, resolvePageTransport } from "./agent/client.ts";
 import type { TransportConfig } from "./agent/client.ts";
 import { errorMessage } from "./agent/errors.ts";
 import { createAgentStore } from "./state/store.ts";
@@ -23,7 +23,7 @@ const mount = (view: () => JSX.Element): void => {
 };
 
 const boot = async (): Promise<void> => {
-  const transport = resolveTransport();
+  const transport = await resolvePageTransport();
   try {
     const runtime = await createAgentRuntime(transport);
     const store = createAgentStore(runtime, {

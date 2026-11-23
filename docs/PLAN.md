@@ -79,6 +79,8 @@ Rules:
 - **Init declares, handlers act.** Init has no `Scope` and no I/O; the core's `ScriptHostServices` types it that way. Anything with side effects belongs in a handler or `Ballast.run(...)` (a long-running loop).
 - Param values are **lazy** `Effect`s, so plan mode never needs real values. A topic can depend on a param (for example "subscribe to the channel named in this param"); planning records it as unresolved and apply resolves it.
 - Imports are limited to `effect`, `@ballast/*` and relative files at first. npm dependencies come later through bundling.
+- Scripts are AI-authored, so script APIs favour being explicit and machine-verifiable (named, declared, schema-typed, checkable at plan time) over convenience.
+- Delays that outlive a handler are durable timers (`Ballast.Timer`), not `Effect.sleep`; timer declarations are part of the manifest (decision 0006).
 
 ### 4.2 Plan, apply, run
 

@@ -44,6 +44,8 @@ describe("plan MIDI scripts", () => {
           { integration: "midi", slot: "controller", request: "midi/noteOn", scopes: [] },
         ],
         unresolved: [],
+        timers: [],
+        workflows: [],
       });
     }),
   );

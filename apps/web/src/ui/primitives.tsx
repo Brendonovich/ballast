@@ -72,12 +72,14 @@ export const IconButton = (props: {
   readonly variant?: ButtonVariant;
   readonly size?: "small" | "normal";
   readonly class?: string;
+  readonly testId?: string;
   readonly children: JSX.Element;
 }): JSX.Element => (
   <button
     type="button"
     aria-label={props.label}
     title={props.label}
+    data-testid={props.testId}
     disabled={props.disabled}
     onClick={props.onClick}
     class={cx(
@@ -297,7 +299,7 @@ const focusableSelector =
 
 export const Dialog = (props: {
   readonly title: string;
-  readonly description?: string;
+  readonly description?: string | undefined;
   readonly onClose: () => void;
   readonly children: JSX.Element;
   readonly footer?: JSX.Element;

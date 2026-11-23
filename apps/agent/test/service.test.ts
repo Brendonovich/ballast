@@ -8,6 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
 import type { LiveAgentClient } from "../src/service/client.ts";
@@ -315,6 +316,19 @@ describe("ballast serve", () => {
           client.GetConnection({ connectionId: "fake/main" }),
         );
         expect(runningFake.status).toBe("connected");
+        expect(runningFake.label).toBe("Fake");
+
+        const firstTick = yield* call((client) =>
+          client.StreamLogs({
+            projectId: projectADetail.summary.id,
+            scriptId: "scripts/tick-echo.ts",
+          }).pipe(
+            Stream.filter((entry) => /^> tick \d+$/.test(entry.message)),
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ).pipe(Effect.timeout("15 seconds"));
+        expect(firstTick[0]?.message).toMatch(/^> tick \d+$/);
 
         const startedObs = yield* call((client) =>
           client.StartScript({
@@ -395,6 +409,33 @@ describe("ballast serve", () => {
             Stream.runCollect,
           ),
         ).pipe(Effect.timeout("20 seconds"));
+
+        const sourceEvent = yield* Effect.forkChild(
+          call((client) =>
+            client.WatchService({}).pipe(
+              Stream.filter(
+                (event) =>
+                  event._tag === "script-source-changed" &&
+                  event.projectId === projectADetail.summary.id &&
+                  event.scriptId === "scripts/tick-echo.ts",
+              ),
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          ),
+        );
+        yield* Effect.sleep("300 millis");
+        yield* Effect.promise(() =>
+          writeFile(
+            join(projectA, "scripts", "tick-echo.ts"),
+            tickScript + "\n// e2e source change\n",
+            "utf8",
+          ),
+        );
+        const changedSource = yield* Fiber.join(sourceEvent).pipe(
+          Effect.timeout("15 seconds"),
+        );
+        expect(changedSource[0]?._tag).toBe("script-source-changed");
 
         const watchChunk = yield* call((client) =>
           client.WatchService({}).pipe(Stream.take(1), Stream.runCollect),

@@ -58,6 +58,28 @@ export const ConnectionStatus = Schema.Literals([
 export type ConnectionStatus = typeof ConnectionStatus.Type;
 
 /**
+ * A permission the service cannot query itself, reported by the desktop shell.
+ * macOS Accessibility is the first one: the shell owns
+ * `systemPreferences.isTrustedAccessibilityClient`.
+ */
+export const PermissionStatus = Schema.Literals(["granted", "denied", "unknown"]);
+export type PermissionStatus = typeof PermissionStatus.Type;
+
+/**
+ * A user action outside Ballast that a connection is waiting for. This is
+ * deliberately separate from `reauth-required`: VTube Studio's Allow dialog
+ * and macOS Accessibility are approvals, not broken or expired credentials.
+ */
+export const ConnectionApproval = Schema.Struct({
+  kind: Schema.Literals(["vtuber-studio", "accessibility"]),
+  /** A human-readable explanation for the connection row. */
+  message: Schema.optionalKey(Schema.String),
+  /** Present for accessibility: the shell-reported permission state. */
+  status: Schema.optionalKey(PermissionStatus),
+});
+export type ConnectionApproval = typeof ConnectionApproval.Type;
+
+/**
  * The typed failure every request/response RPC can return. Streaming RPCs use
  * the same shape as their stream error, so a UI can render one error path.
  */

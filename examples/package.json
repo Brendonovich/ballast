@@ -20,6 +20,7 @@
     "@ballast/module-twitch": "workspace:*",
     "@ballast/module-vtube-studio": "workspace:*",
     "@ballast/module-websocket": "workspace:*",
+    "@ballast/workflow": "workspace:*",
     "effect": "catalog:"
   }
 }

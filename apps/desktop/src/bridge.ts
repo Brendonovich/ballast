@@ -19,6 +19,8 @@ export const BRIDGE_CHANNELS = {
   serviceStart: "ballast:service:start",
   serviceStop: "ballast:service:stop",
   serviceRestart: "ballast:service:restart",
+  permissionsStatus: "ballast:permissions:status",
+  permissionsRequestAccessibility: "ballast:permissions:request-accessibility",
   updateStatus: "ballast:update:status",
   updateInstall: "ballast:update:install",
   appInfo: "ballast:app:info",
@@ -44,6 +46,17 @@ export type ServicePhase =
 
 /** Which OS supervisor owns (or would own) the service process. */
 export type ServiceSupervisorKind = "launch-agent" | "scheduled-task" | "process" | "none";
+
+/**
+ * A shell-owned permission the agent cannot query itself.
+ * On macOS, `accessibility` is `systemPreferences.isTrustedAccessibilityClient`;
+ * Windows and Linux report `granted` because global input hooks need no extra grant.
+ */
+export type PermissionStatus = "granted" | "denied" | "unknown";
+
+export interface ServicePermissions {
+  readonly accessibility: PermissionStatus;
+}
 
 export interface ServicePaths {
   readonly userDataDir: string;
@@ -75,6 +88,8 @@ export interface ServiceStatus {
   readonly pendingConsents: number | null;
   readonly updateAvailable: boolean;
   readonly lastError: string | null;
+  /** Shell permissions the background service needs (macOS Accessibility). */
+  readonly permissions: ServicePermissions;
   readonly paths: ServicePaths;
 }
 
@@ -123,6 +138,16 @@ export interface BallastBridge {
     start(): Promise<ServiceAction>;
     stop(): Promise<ServiceAction>;
     restart(): Promise<ServiceAction>;
+  };
+  readonly permissions: {
+    /** Current shell permissions without prompting. */
+    status(): Promise<ServicePermissions>;
+    /**
+     * Ask macOS to grant Accessibility: opens the system prompt or System
+     * Settings, reports the result to the running service, and returns it.
+     * A no-op returning `granted` on Windows and Linux.
+     */
+    requestAccessibility(): Promise<ServicePermissions>;
   };
   readonly update: {
     status(): Promise<UpdateState>;

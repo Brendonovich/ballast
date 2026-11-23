@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+import { PermissionStatus } from "./common.ts";
 import type { Timestamp } from "./common.ts";
 
 /** The API version the service and its clients must agree on. */
@@ -50,6 +51,16 @@ export const HealthStatus = Schema.Struct({
     error: Schema.Number,
   }),
   cloud: Schema.Literals(["unlinked", "linking", "linked", "error"]),
+  /**
+   * Shell-owned permissions. A service started by the desktop app learns these
+   * through `ReportShellPermission`; a standalone `ballast serve` reports
+   * `unknown` until a shell reports.
+   */
+  permissions: Schema.optionalKey(
+    Schema.Struct({
+      accessibility: PermissionStatus,
+    }),
+  ),
   lastLogSeq: Schema.Number,
   lastEventSeq: Schema.Number,
 });

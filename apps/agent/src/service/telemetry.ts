@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type {
   EventRecord,
@@ -35,8 +36,40 @@ export interface LogFilter {
   readonly limit?: number;
 }
 
+/**
+ * Record a JSON-safe copy of a payload. Service events are often decoded
+ * schemas (Twitch timestamps become `Date`) and webhook deliveries contain
+ * bytes, neither of which `Schema.Json` accepts directly. JSON.stringify
+ * turns Dates into ISO strings and skips undefined/function values; the
+ * replacer keeps bigints and cycles from throwing.
+ */
 const jsonValue = (value: unknown): Schema.Json => {
-  const decoded = Schema.decodeUnknownOption(Schema.Json)(value);
+  const convert = (entry: unknown, stack: WeakSet<object>): unknown => {
+    if (entry === null || typeof entry === "string" || typeof entry === "boolean") {
+      return entry;
+    }
+    if (typeof entry === "number") return Number.isFinite(entry) ? entry : null;
+    if (typeof entry === "bigint") return entry.toString();
+    if (typeof entry === "undefined" || typeof entry === "function" || typeof entry === "symbol") {
+      return undefined;
+    }
+    if (entry instanceof Date) return entry.toISOString();
+    if (entry instanceof Uint8Array) return Array.from(entry);
+    if (Array.isArray(entry)) return entry.map((item) => convert(item, stack) ?? null);
+    if (typeof entry === "object") {
+      if (stack.has(entry)) return "[Circular]";
+      stack.add(entry);
+      const output: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(entry)) {
+        const converted = convert(item, stack);
+        if (converted !== undefined) output[key] = converted;
+      }
+      stack.delete(entry);
+      return output;
+    }
+    return undefined;
+  };
+  const decoded = Schema.decodeUnknownOption(Schema.Json)(convert(value, new WeakSet()));
   return decoded._tag === "Some" ? decoded.value : {};
 };
 
@@ -231,20 +264,47 @@ interface SessionEntry {
   readonly scriptId: string;
 }
 
+export interface InboundEvent {
+  readonly integration: string;
+  readonly slot: string;
+  readonly topic: string;
+  readonly payload: unknown;
+  readonly connectionId?: string;
+  readonly eventId?: string;
+  readonly stale?: boolean;
+  /** Explicit agent-bus key (hotkeys embed condition data in it). */
+  readonly key?: string;
+}
+
+interface PendingEntry {
+  readonly projectId: string;
+  readonly scriptId: string;
+  readonly subscriptions: ReadonlySet<string>;
+  readonly events: ReadonlyArray<{
+    readonly key: string;
+    readonly input: InboundEvent;
+  }>;
+}
+
 interface EventRouterService {
   readonly register: (entry: SessionEntry) => Effect.Effect<void>;
   readonly unregister: (key: string) => Effect.Effect<void>;
-  readonly publishInbound: (input: {
-    readonly integration: string;
-    readonly slot: string;
-    readonly topic: string;
-    readonly payload: unknown;
-    readonly connectionId?: string;
-    readonly eventId?: string;
-    readonly stale?: boolean;
-    /** Explicit agent-bus key (hotkeys embed condition data in it). */
-    readonly key?: string;
+  /**
+   * Announce the subscriptions a starting generation will register before
+   * its connection drivers run. Events that arrive before `register` are held
+   * here, deterministically, instead of being dropped. Call
+   * `cancelExpected` when the start fails.
+   */
+  readonly expectSubscriptions: (entry: {
+    readonly projectId: string;
+    readonly scriptId: string;
+    readonly subscriptions: ReadonlyArray<string>;
   }) => Effect.Effect<void>;
+  readonly cancelExpected: (entry: {
+    readonly projectId: string;
+    readonly scriptId: string;
+  }) => Effect.Effect<void>;
+  readonly publishInbound: (input: InboundEvent) => Effect.Effect<void>;
   readonly recordOutbound: (input: {
     readonly projectId: string;
     readonly scriptId: string;
@@ -260,85 +320,201 @@ export class EventRouter extends Context.Service<EventRouter, EventRouterService
   "ballast/service/EventRouter",
 ) {}
 
+const MAX_PENDING_EVENTS = 1_000;
+
 export const EventRouterLive = Layer.effect(
   EventRouter,
   Effect.gen(function* () {
     const sessions = yield* Ref.make<ReadonlyMap<string, SessionEntry>>(new Map());
+    const pending = yield* Ref.make<ReadonlyMap<string, PendingEntry>>(new Map());
+    const semaphore = yield* Semaphore.make(1);
     const events = yield* EventLog;
 
-    const register = (entry: SessionEntry): Effect.Effect<void> =>
-      Ref.update(sessions, (current) => {
-        const next = new Map(current);
-        next.set(`${entry.projectId}\u0000${entry.scriptId}`, entry);
-        return next;
+    const keyOf = (projectId: string, scriptId: string): string =>
+      `${projectId}\u0000${scriptId}`;
+    const eventKey = (input: InboundEvent): string =>
+      input.key ?? `${input.integration}/${input.slot}/${input.topic}`;
+
+    const recordDropped = (input: InboundEvent): Effect.Effect<void> =>
+      events.record({
+        ...(input.eventId === undefined ? {} : { id: input.eventId }),
+        direction: "inbound",
+        integration: input.integration,
+        topic: input.topic,
+        ...(input.connectionId === undefined
+          ? {}
+          : { connectionId: input.connectionId }),
+        payload: input.payload,
+        dropped: true,
+        ...(input.stale === undefined ? {} : { stale: input.stale }),
       });
 
-    const unregister = (key: string): Effect.Effect<void> =>
-      Ref.update(sessions, (current) => {
-        if (!current.has(key)) return current;
-        const next = new Map(current);
-        next.delete(key);
-        return next;
+    const recordDelivered = (
+      entry: SessionEntry,
+      input: InboundEvent,
+    ): Effect.Effect<void> =>
+      events.record({
+        ...(input.eventId === undefined ? {} : { id: input.eventId }),
+        direction: "inbound",
+        integration: input.integration,
+        topic: input.topic,
+        ...(input.connectionId === undefined
+          ? {}
+          : { connectionId: input.connectionId }),
+        projectId: entry.projectId,
+        scriptId: entry.scriptId,
+        payload: input.payload,
+        ...(input.stale === undefined ? {} : { stale: input.stale }),
+        dropped: false,
       });
 
-    const publishInbound = (input: {
-      readonly integration: string;
-      readonly slot: string;
-      readonly topic: string;
-      readonly payload: unknown;
-      readonly connectionId?: string;
-      readonly eventId?: string;
-      readonly stale?: boolean;
-      readonly key?: string;
-    }): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const current = yield* Ref.get(sessions);
-        const key = input.key ?? `${input.integration}/${input.slot}/${input.topic}`;
-        const matched = [...current.values()].filter((entry) =>
-          entry.session.subscriptions.has(key),
-        );
-        if (matched.length === 0) {
-          yield* events.record({
-            ...(input.eventId === undefined ? {} : { id: input.eventId }),
-            direction: "inbound",
-            integration: input.integration,
-            topic: input.topic,
-            ...(input.connectionId === undefined
-              ? {}
-              : { connectionId: input.connectionId }),
-            payload: input.payload,
-            dropped: true,
-            ...(input.stale === undefined ? {} : { stale: input.stale }),
+    const deliver = (
+      entry: SessionEntry,
+      key: string,
+      input: InboundEvent,
+    ): Effect.Effect<void> =>
+      Effect.sync(() => entry.session.deliver(key, input.payload)).pipe(
+        Effect.andThen(recordDelivered(entry, input)),
+      );
+
+    const expectSubscriptions: EventRouterService["expectSubscriptions"] = (entry) =>
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          if (entry.subscriptions.length === 0) return;
+          const key = keyOf(entry.projectId, entry.scriptId);
+          const next: PendingEntry = {
+            projectId: entry.projectId,
+            scriptId: entry.scriptId,
+            subscriptions: new Set(entry.subscriptions),
+            events: [],
+          };
+          yield* Ref.update(pending, (current) => {
+            const map = new Map(current);
+            map.set(key, next);
+            return map;
           });
-          return;
-        }
-        yield* Effect.forEach(
-          matched,
-          (entry) =>
-            Effect.gen(function* () {
-              entry.session.deliver(key, input.payload);
-              yield* events.record({
-                ...(input.eventId === undefined ? {} : { id: input.eventId }),
-                direction: "inbound",
-                integration: input.integration,
-                topic: input.topic,
-                ...(input.connectionId === undefined
-                  ? {}
-                  : { connectionId: input.connectionId }),
-                projectId: entry.projectId,
-                scriptId: entry.scriptId,
-                payload: input.payload,
-                ...(input.stale === undefined ? {} : { stale: input.stale }),
-                dropped: false,
-              });
-            }),
-          { discard: true },
-        );
-      });
+        }),
+      );
+
+    const cancelExpected: EventRouterService["cancelExpected"] = (entry) =>
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          const key = keyOf(entry.projectId, entry.scriptId);
+          const current = yield* Ref.get(pending);
+          const discarded = current.get(key);
+          if (discarded === undefined) return;
+          yield* Ref.update(pending, (map) => {
+            const next = new Map(map);
+            next.delete(key);
+            return next;
+          });
+          for (const buffered of discarded.events) {
+            yield* recordDropped(buffered.input);
+          }
+        }),
+      );
+
+    const register: EventRouterService["register"] = (entry) =>
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          const key = keyOf(entry.projectId, entry.scriptId);
+          const currentPending = yield* Ref.get(pending);
+          const buffered = currentPending.get(key);
+          yield* Ref.update(pending, (current) => {
+            if (!current.has(key)) return current;
+            const next = new Map(current);
+            next.delete(key);
+            return next;
+          });
+          yield* Ref.update(sessions, (current) => {
+            const next = new Map(current);
+            next.set(key, entry);
+            return next;
+          });
+          if (buffered === undefined) return;
+          for (const event of buffered.events) {
+            if (entry.session.subscriptions.has(event.key)) {
+              yield* deliver(entry, event.key, event.input);
+            } else {
+              yield* recordDropped(event.input);
+            }
+          }
+        }),
+      );
+
+    const unregister: EventRouterService["unregister"] = (key) =>
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          const currentPending = yield* Ref.get(pending);
+          const discarded = currentPending.get(key);
+          yield* Ref.update(pending, (current) => {
+            if (!current.has(key)) return current;
+            const next = new Map(current);
+            next.delete(key);
+            return next;
+          });
+          yield* Ref.update(sessions, (current) => {
+            if (!current.has(key)) return current;
+            const next = new Map(current);
+            next.delete(key);
+            return next;
+          });
+          if (discarded !== undefined) {
+            for (const event of discarded.events) {
+              yield* recordDropped(event.input);
+            }
+          }
+        }),
+      );
+
+    const publishInbound: EventRouterService["publishInbound"] = (input) =>
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          const key = eventKey(input);
+          const current = yield* Ref.get(sessions);
+          const matched = [...current.values()].filter((entry) =>
+            entry.session.subscriptions.has(key),
+          );
+          if (matched.length > 0) {
+            yield* Effect.forEach(
+              matched,
+              (entry) => deliver(entry, key, input),
+              { discard: true },
+            );
+            return;
+          }
+
+          const currentPending = yield* Ref.get(pending);
+          const waiting = [...currentPending.values()].filter((entry) =>
+            entry.subscriptions.has(key),
+          );
+          if (waiting.length > 0) {
+            yield* Ref.update(pending, (currentMap) => {
+              const next = new Map(currentMap);
+              for (const entry of waiting) {
+                const pk = keyOf(entry.projectId, entry.scriptId);
+                const latest = next.get(pk);
+                if (latest === undefined) continue;
+                if (latest.events.length >= MAX_PENDING_EVENTS) continue;
+                next.set(pk, {
+                  ...latest,
+                  events: [...latest.events, { key, input }],
+                });
+              }
+              return next;
+            });
+            return;
+          }
+
+          yield* recordDropped(input);
+        }),
+      );
 
     return {
       register,
       unregister,
+      expectSubscriptions,
+      cancelExpected,
       publishInbound,
       recordOutbound: (input) =>
         events

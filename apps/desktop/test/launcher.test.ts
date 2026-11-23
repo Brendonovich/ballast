@@ -123,6 +123,11 @@ describe("service launcher handoff", () => {
     const launcher = createServiceLauncher(config, {
       runtime,
       logger: createLogger(config.logDir),
+      permissions: () => ({ accessibility: "denied" }),
+    });
+
+    await expect(launcher.status()).resolves.toMatchObject({
+      permissions: { accessibility: "denied" },
     });
 
     const installed = await launcher.install();

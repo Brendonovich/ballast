@@ -4,6 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
+import type { Json } from "effect/Schema";
 import { serveRuntimeRpc } from "@ballast/core";
 import type { RuntimeHostHandlers, SettingValue } from "@ballast/core";
 
@@ -18,6 +19,16 @@ export interface RuntimeLogLine {
   readonly message: string;
 }
 
+export interface RuntimeTimerFire {
+  readonly name: string;
+  readonly key: string;
+  readonly payload: unknown;
+  readonly scheduledAt: number;
+  readonly dueAt: number;
+  readonly firedAt: number;
+  readonly lateByMs: number;
+}
+
 export interface RuntimeSessionOptions {
   readonly bundlePath: string;
   readonly generation: number;
@@ -28,8 +39,22 @@ export interface RuntimeSessionOptions {
     slot: string,
     input: unknown,
   ) => Effect.Effect<unknown, string>;
+  /** Timer RPCs; optional so non-service hosts keep working. */
+  readonly registerTimer?: (name: string) => Effect.Effect<void>;
+  readonly scheduleTimer?: (input: RuntimeTimerSchedule) => Effect.Effect<void, string>;
+  readonly cancelTimer?: (input: { readonly name: string; readonly key: string }) => Effect.Effect<void>;
   /** Structured worker output; defaults to the process console. */
   readonly onLog?: (line: RuntimeLogLine) => void;
+}
+
+export interface RuntimeTimerSchedule {
+  readonly name: string;
+  readonly key: string;
+  readonly delayMs: number;
+  readonly payload: Json;
+  readonly payloadFingerprint: string;
+  readonly onStale: "drop" | "deliver";
+  readonly maxAgeMs: number;
 }
 
 export interface RuntimeSession {
@@ -37,6 +62,8 @@ export interface RuntimeSession {
   readonly subscriptions: ReadonlySet<string>;
   readonly ready: Effect.Effect<void, Error>;
   readonly deliver: (topicKey: string, payload: unknown) => void;
+  /** Post one durable timer fire to the worker. */
+  readonly deliverTimer: (fire: RuntimeTimerFire) => void;
   readonly close: Effect.Effect<void>;
 }
 
@@ -81,6 +108,18 @@ export const startRuntimeSession = (
         Effect.succeed<SettingValue>(options.settings.get(key) ?? null),
       request: ({ integration, request, slot, input }) =>
         options.request(integration, request, slot, input),
+      registerTimer: ({ name }) =>
+        options.registerTimer === undefined
+          ? Effect.die(new Error("Timer support is not implemented by this host"))
+          : options.registerTimer(name),
+      scheduleTimer: (input) =>
+        options.scheduleTimer === undefined
+          ? Effect.die(new Error("Timer support is not implemented by this host"))
+          : options.scheduleTimer(input),
+      cancelTimer: (input) =>
+        options.cancelTimer === undefined
+          ? Effect.die(new Error("Timer support is not implemented by this host"))
+          : options.cancelTimer(input),
     };
 
     const onLog =
@@ -102,8 +141,56 @@ export const startRuntimeSession = (
       subscriptions,
       ready: Deferred.await(ready),
       deliver: (topicKey, payload) => {
-        if (closed || worker === undefined || !subscriptions.has(topicKey)) return;
-        worker.postMessage({ kind: "event", key: topicKey, payload });
+        if (closed || worker === undefined) {
+          onLog({
+            level: "warn",
+            message: `Event ${topicKey} dropped: worker generation ${options.generation} is ${closed ? "closed" : "not started"}`,
+          });
+          return;
+        }
+        if (!subscriptions.has(topicKey)) {
+          onLog({
+            level: "warn",
+            message: `Event ${topicKey} dropped: the worker has not registered that topic`,
+          });
+          return;
+        }
+        try {
+          worker.postMessage({ kind: "event", key: topicKey, payload });
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          onLog({
+            level: "error",
+            message: `Event ${topicKey} could not be delivered to worker generation ${options.generation}: ${message}`,
+          });
+        }
+      },
+      deliverTimer: (fire) => {
+        if (closed || worker === undefined) {
+          onLog({
+            level: "warn",
+            message: `Timer "${fire.name}" dropped: worker generation ${options.generation} is ${closed ? "closed" : "not started"}`,
+          });
+          return;
+        }
+        try {
+          worker.postMessage({
+            kind: "timer",
+            name: fire.name,
+            key: fire.key,
+            payload: fire.payload,
+            scheduledAt: fire.scheduledAt,
+            dueAt: fire.dueAt,
+            firedAt: fire.firedAt,
+            lateByMs: fire.lateByMs,
+          });
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          onLog({
+            level: "error",
+            message: `Timer "${fire.name}" could not be delivered to worker generation ${options.generation}: ${message}`,
+          });
+        }
       },
       close: Effect.suspend(() => {
         if (closed) return Effect.void;

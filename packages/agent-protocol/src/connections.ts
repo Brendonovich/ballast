@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import {
+  ConnectionApproval,
   ConnectionLocation,
   ConnectionMode,
   ConnectionStatus,
@@ -75,6 +76,12 @@ export const ConnectionSummary = Schema.Struct({
   detail: Schema.optionalKey(Schema.String),
   lastError: Schema.optionalKey(Schema.String),
   lastConnectedAt: Schema.optionalKey(Schema.Number),
+  /**
+   * A pending out-of-app approval, for example VTube Studio's Allow dialog or
+   * macOS Accessibility. Not an auth failure; the connection may still be
+   * connecting or listening.
+   */
+  approval: Schema.optionalKey(ConnectionApproval),
   /** True when the connection needs a browser or device-code flow before use. */
   requiresAuth: Schema.Boolean,
 });

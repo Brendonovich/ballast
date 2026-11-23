@@ -69,6 +69,13 @@ export const paramValueLabel = (value: ParamValue | undefined): string => {
   return String(value);
 };
 
+/**
+ * The agent title-cases a filename including its extension. Keep the UI clean
+ * without changing the record: "Tick Echo Ts" is shown as "Tick Echo".
+ */
+export const scriptDisplayName = (script: ScriptSummary): string =>
+  script.name.replace(/\s+ts$/i, "").replace(/\.(?:[cm]?[jt]s)$/i, "").trim() || script.name;
+
 export const scriptStatusLabel = (script: ScriptSummary): string => {
   if (script.status === "stopped" && script.generation === 0) return "Not started";
   switch (script.status) {

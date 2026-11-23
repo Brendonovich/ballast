@@ -10,6 +10,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
 import type { LiveAgentClient } from "../src/service/client.ts";
@@ -474,6 +475,108 @@ describe("integration drivers through the service", () => {
   );
 
   it.live(
+    "reports VTube Studio approval separately from reauth",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-vts-approval-")));
+        const stateDir = join(root, "state");
+        const dataDir = join(root, "data");
+        yield* Effect.promise(() => mkdir(stateDir, { recursive: true }));
+        yield* Effect.promise(() => mkdir(dataDir, { recursive: true }));
+
+        let tokenRequest: MockVtsRequest | undefined;
+        const vts = yield* startMockVtsServer((request) => {
+          switch (request.requestType) {
+            case "APIState":
+              return {
+                type: "data",
+                data: { active: true, vTubeStudioVersion: "1.9.0", currentSessionAuthenticated: false },
+              };
+            case "AuthenticationToken":
+              tokenRequest = request;
+              return { type: "ignore" };
+            case "Authentication":
+              return {
+                type: "data",
+                data: { authenticated: request.data["authenticationToken"] === "token-1" },
+              };
+            default:
+              return { type: "data" };
+          }
+        });
+
+        const env = {
+          BALLAST_STATE_DIR: stateDir,
+          BALLAST_DATA_DIR: dataDir,
+          BALLAST_WEB_DIR: join(root, "missing-web"),
+        };
+        const service = yield* Effect.acquireRelease(spawnService(env, false), (process) => process.kill);
+        const registration = yield* waitFor(
+          "service.json",
+          Effect.promise(() => readServiceRegistration(stateDir)),
+          service.output,
+        );
+        const call = <A, E>(use: (client: LiveAgentClient) => Effect.Effect<A, E>): Effect.Effect<A, E | Error> =>
+          withAgentClient(use, { ...env }).pipe(
+            Effect.mapError((error) => {
+              if (error instanceof Error) return error;
+              if (typeof error === "object" && error !== null) {
+                const message = (error as { message?: unknown }).message;
+                if (typeof message === "string") return new Error(message);
+              }
+              return new Error(String(error));
+            }),
+          );
+        yield* waitFor(
+          "health",
+          Effect.promise(async () => ((await fetch(`${registration.url}/health`)).ok ? true : undefined)),
+          service.output,
+        );
+
+        yield* call((client) =>
+          client.ConfigureConnection({
+            connectionId: "vts/pending",
+            values: [{ key: "url", value: vts.url }],
+          }),
+        );
+        const connect = yield* Effect.forkChild(
+          call((client) => client.ConnectConnection({ connectionId: "vts/pending" })),
+        );
+        const pending = yield* waitFor(
+          "VTube Studio approval",
+          call((client) => client.GetConnection({ connectionId: "vts/pending" })).pipe(
+            Effect.map((connection) => (connection.approval === undefined ? undefined : connection)),
+          ),
+          service.output,
+        );
+        expect(pending.status).toBe("connecting");
+        expect(pending.approval?.kind).toBe("vtuber-studio");
+        expect(pending.approval?.message ?? "").toContain("Allow");
+        expect(pending.requiresAuth).toBe(false);
+
+        if (tokenRequest === undefined) {
+          return yield* Effect.fail(new Error("VTube Studio did not request a token"));
+        }
+        vts.reply(tokenRequest, { authenticationToken: "token-1" });
+        yield* Fiber.join(connect).pipe(Effect.timeout("20 seconds"));
+
+        const connected = yield* waitFor(
+          "VTube Studio connected",
+          call((client) => client.GetConnection({ connectionId: "vts/pending" })).pipe(
+            Effect.map((connection) => (connection.status === "connected" ? connection : undefined)),
+          ),
+          service.output,
+        );
+        expect(connected.approval).toBeUndefined();
+
+        yield* call((client) => client.ShutdownService({ force: false }));
+        yield* service.exit.pipe(Effect.timeout("20 seconds"));
+        yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+      }),
+    60_000,
+  );
+
+  it.live(
     "keyboard and MIDI through the fake native backends",
     () =>
       Effect.gen(function* () {
@@ -518,6 +621,9 @@ describe("integration drivers through the service", () => {
         const detail = yield* call((client) => client.AddProject({ path: project, name: "Inputs" }));
         const projectId = detail.summary.id;
         yield* call((client) =>
+          client.ReportShellPermission({ permission: "accessibility", status: "denied" }),
+        );
+        yield* call((client) =>
           client.ConfigureConnection({
             connectionId: "midi/controller",
             values: [
@@ -551,6 +657,34 @@ describe("integration drivers through the service", () => {
             Stream.runCollect,
           ),
         ).pipe(Effect.timeout("20 seconds"));
+
+        const denied = yield* waitFor(
+          "keyboard accessibility approval",
+          call((client) => client.GetConnection({ connectionId: "keyboard/main" })).pipe(
+            Effect.map((connection) =>
+              connection.approval?.kind === "accessibility" ? connection : undefined,
+            ),
+          ),
+          service.output,
+        );
+        expect(denied.status).toBe("connected");
+        expect(denied.label).toBe("Keyboard");
+        expect(denied.approval?.status).toBe("denied");
+        expect((yield* call((client) => client.GetHealth())).permissions?.accessibility).toBe("denied");
+
+        yield* call((client) =>
+          client.ReportShellPermission({ permission: "accessibility", status: "granted" }),
+        );
+        const granted = yield* waitFor(
+          "keyboard accessibility granted",
+          call((client) => client.GetConnection({ connectionId: "keyboard/main" })).pipe(
+            Effect.map((connection) => (connection.approval === undefined ? connection : undefined)),
+          ),
+          service.output,
+        );
+        expect(granted.status).toBe("connected");
+        expect((yield* call((client) => client.GetHealth())).permissions?.accessibility).toBe("granted");
+
         yield* call((client) => client.ShutdownService({ force: false }));
         yield* service.exit.pipe(Effect.timeout("20 seconds"));
         yield* Effect.promise(() => rm(root, { recursive: true, force: true }));

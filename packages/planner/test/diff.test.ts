@@ -122,6 +122,50 @@ describe("diff", () => {
     expect(result.scopes.removed).toEqual(["fake:read"]);
   });
 
+  it("diffs timers without requiring consent", () => {
+    const previous = manifest();
+    const next = manifest({
+      timers: [
+        {
+          name: "cooldown",
+          onStale: "deliver",
+          maxAgeMs: 60_000,
+          payloadSchema: {},
+          payloadFingerprint: "abc",
+        },
+      ],
+    });
+
+    const result = diff(previous, next);
+
+    expect(result.requiresConsent).toBe(false);
+    expect(result.timers.added.map((timer) => timer.name)).toEqual(["cooldown"]);
+    expect(result.timers.removed).toEqual([]);
+  });
+
+  it("diffs workflows without requiring consent", () => {
+    const previous = manifest();
+    const next = manifest({
+      workflows: [
+        {
+          name: "redeem-takeover",
+          payloadSchema: {},
+          successSchema: {},
+          errorSchema: {},
+          fingerprint: "abc",
+        },
+      ],
+    });
+
+    const result = diff(previous, next);
+
+    expect(result.requiresConsent).toBe(false);
+    expect(result.workflows.added.map((workflow) => workflow.name)).toEqual([
+      "redeem-takeover",
+    ]);
+    expect(result.workflows.removed).toEqual([]);
+  });
+
   it("diffs params without requiring consent", () => {
     const previous = manifest();
     const next = manifest({

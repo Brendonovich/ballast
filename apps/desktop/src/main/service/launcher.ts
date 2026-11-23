@@ -1,8 +1,14 @@
 import path from "node:path";
-import type { ServiceAction, ServicePhase, ServiceStatus, ServiceSupervisorKind } from "../../bridge.ts";
+import type {
+  ServiceAction,
+  ServicePermissions,
+  ServicePhase,
+  ServiceStatus,
+  ServiceSupervisorKind,
+} from "../../bridge.ts";
 import type { DesktopConfig } from "../config.ts";
 import { createLogger, type Logger } from "../logger.ts";
-import { requestServiceControl } from "./controls.ts";
+import { reportServicePermission, requestServiceControl } from "./controls.ts";
 import {
   initialHandoffState,
   transition,
@@ -36,6 +42,8 @@ export interface LauncherOptions {
   readonly runtime?: ServiceRuntime | null;
   readonly logger?: Logger;
   readonly spawn?: typeof spawnServiceProcess;
+  /** Shell permissions, owned by Electron (see permissions.ts). */
+  readonly permissions?: () => ServicePermissions;
 }
 
 export interface ServiceLauncher {
@@ -49,6 +57,8 @@ export interface ServiceLauncher {
   prepare(): Promise<void>;
   /** Quiesce the installed service before electron-updater replaces the app bundle (0003 §2). */
   prepareForAppUpdate(): Promise<void>;
+  /** Push shell permissions (macOS Accessibility) to a running service. */
+  reportPermissions(): Promise<void>;
   /** Token-bearing connection details for the main process only. */
   getConnection(): Promise<{ readonly url: string; readonly token: string } | null>;
 }
@@ -58,6 +68,11 @@ class Launcher implements ServiceLauncher {
   readonly #runtime: ServiceRuntime | null;
   readonly #logger: Logger;
   readonly #spawn: typeof spawnServiceProcess;
+  readonly #permissions: () => ServicePermissions;
+  #reportedPermission: {
+    readonly pid: number;
+    readonly accessibility: ServicePermissions["accessibility"];
+  } | null = null;
   #busy: ServicePhase | null = null;
   #lastError: string | null = null;
   #buildPromise: Promise<ServiceBuild> | null = null;
@@ -68,6 +83,7 @@ class Launcher implements ServiceLauncher {
     this.#runtime = options.runtime === undefined ? createServiceRuntime(config) : options.runtime;
     this.#logger = options.logger ?? createLogger(config.logDir);
     this.#spawn = options.spawn ?? spawnServiceProcess;
+    this.#permissions = options.permissions ?? (() => ({ accessibility: "unknown" }));
   }
 
   #enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -163,6 +179,7 @@ class Launcher implements ServiceLauncher {
       pendingConsents: running ? adopted.health.pendingConsents : null,
       updateAvailable,
       lastError: this.#lastError,
+      permissions: this.#permissions(),
       paths: {
         userDataDir: this.config.userDataDir,
         stageRoot: this.config.stageRoot,
@@ -177,6 +194,23 @@ class Launcher implements ServiceLauncher {
     const adopted = await adoptService(this.config);
     if (adopted === undefined || !adopted.compatible) return null;
     return { url: new URL(adopted.registration.url).origin, token: adopted.registration.token };
+  }
+
+  async reportPermissions(): Promise<void> {
+    const adopted = await adoptService(this.config);
+    if (adopted === undefined || !adopted.compatible) {
+      this.#reportedPermission = null;
+      return;
+    }
+    const pid = adopted.health.pid ?? adopted.registration.pid;
+    const current = this.#permissions().accessibility;
+    if (this.#reportedPermission?.pid === pid && this.#reportedPermission.accessibility === current) {
+      return;
+    }
+    const reported = await reportServicePermission(adopted.registration, current);
+    if (reported) {
+      this.#reportedPermission = { pid, accessibility: current };
+    }
   }
 
   async prepare(): Promise<void> {

@@ -19,11 +19,13 @@ import {
   fakeFields,
   obsFields,
   type AgentError,
+  type ConnectionApproval,
   type ConnectionAuth,
   type ConnectionField,
   type ConnectionMode,
   type ConnectionSummary,
   type ConnectionValue,
+  type PermissionStatus,
   type ScriptRef,
 } from "@ballast/agent-protocol";
 import type { Manifest } from "@ballast/core";
@@ -108,6 +110,8 @@ interface ConnectionRecord {
   readonly grantedScopes: ReadonlyArray<string>;
   readonly account: { readonly id: string; readonly login: string; readonly displayName?: string } | undefined;
   readonly needsReauth: boolean;
+  /** A pending out-of-app approval (VTube Studio, macOS Accessibility). */
+  readonly approval: ConnectionApproval | undefined;
   readonly cloudConnectionId: string | undefined;
   readonly owners: ReadonlySet<string>;
   readonly ownerSpecs: ReadonlyMap<string, string>;
@@ -323,6 +327,13 @@ export interface ConnectionManagerService {
     readonly scopes?: ReadonlyArray<string>;
   }) => Effect.Effect<ConnectionAuth, AgentError>;
   readonly reconcile: (input: ReconcileInput) => Effect.Effect<void>;
+  /** Shell-owned permissions, for `GetHealth.permissions`. */
+  readonly permissions: () => Effect.Effect<{ readonly accessibility: PermissionStatus }>;
+  /** Apply a shell-reported permission and reconcile keyboard drivers. */
+  readonly reportShellPermission: (input: {
+    readonly permission: "accessibility";
+    readonly status: PermissionStatus;
+  }) => Effect.Effect<void>;
   readonly ready: (connectionKeys: ReadonlyArray<string>) => Effect.Effect<void, AgentError>;
   readonly request: (input: {
     readonly integration: string;
@@ -353,7 +364,7 @@ const noneRecord = (
   mode: "auto",
   values: {},
   secrets: {},
-  label: slot,
+  label: titleOf(integration),
   manual: false,
   driver: undefined,
   status: "unconfigured",
@@ -363,6 +374,7 @@ const noneRecord = (
   grantedScopes: [],
   account: undefined,
   needsReauth: false,
+  approval: undefined,
   cloudConnectionId: undefined,
   owners: new Set(),
   ownerSpecs: new Map(),
@@ -401,11 +413,15 @@ const loadStored = async (
           entry["mode"] === "local-app" || entry["mode"] === "cloud"
             ? entry["mode"]
             : "auto";
+        const storedLabel =
+          typeof entry["label"] === "string" && entry["label"] !== entry["slot"]
+            ? entry["label"]
+            : titleOf(entry["integration"]);
         records.push({
           ...noneRecord(entry["integration"], entry["slot"]),
           mode,
           values,
-          label: typeof entry["label"] === "string" ? entry["label"] : entry["slot"],
+          label: storedLabel,
         });
       }
     }
@@ -461,6 +477,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         loaded.secrets,
       );
       const lastInput = yield* Ref.make<ReconcileInput>({ running: [], known: [] });
+      const shellPermissions = yield* Ref.make<{ accessibility: PermissionStatus }>({
+        accessibility: "unknown",
+      });
       const semaphore = yield* Semaphore.make(1);
       const webSocketContext = yield* Layer.build(webSocketLayerNode);
       const webSocketClientDriver = Context.get(webSocketContext, WebSocketClientDriver);
@@ -710,10 +729,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           ...(record.lastConnectedAt === undefined
             ? {}
             : { lastConnectedAt: record.lastConnectedAt }),
+          ...(record.approval === undefined ? {} : { approval: record.approval }),
           requiresAuth:
-            (record.integration === "twitch" &&
-              (record.account === undefined || missing.length > 0 || record.needsReauth)) ||
-            (record.integration === "vts" && status === "reauth-required"),
+            record.integration === "twitch" &&
+            (record.account === undefined || missing.length > 0 || record.needsReauth),
         };
       };
 
@@ -1379,17 +1398,23 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               const mapped: ConnectionSummary["status"] =
                 status.state === "connected"
                   ? "connected"
-                  : status.state === "waiting-for-approval"
-                    ? "reauth-required"
-                    : status.state === "error"
-                      ? "error"
-                      : status.state === "disconnected"
-                        ? "disconnected"
-                        : "connecting";
+                  : status.state === "error"
+                    ? "error"
+                    : status.state === "disconnected"
+                      ? "disconnected"
+                      : "connecting";
+              const approval: ConnectionApproval | undefined =
+                status.state === "waiting-for-approval"
+                  ? {
+                      kind: "vtuber-studio",
+                      ...(status.message === undefined ? {} : { message: status.message }),
+                    }
+                  : undefined;
               return updateRecord(record.id, (current) => ({
                 ...current,
                 status: mapped,
-                needsReauth: mapped === "reauth-required",
+                needsReauth: false,
+                approval,
                 lastError: status.message,
                 detailText:
                   status.state === "connected"
@@ -1427,7 +1452,14 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             Effect.onError(() => Scope.close(scope, Exit.void)),
           );
           const driver = Context.get(built, KeyboardDriver);
-          const permission = record.values["permission"];
+          const reported = (yield* Ref.get(shellPermissions)).accessibility;
+          const configured = record.values["permission"];
+          const permission: PermissionStatus | undefined =
+            reported === "unknown"
+              ? configured === "granted" || configured === "denied" || configured === "unknown"
+                ? configured
+                : undefined
+              : reported;
           yield* driver
             .connect({
               slot: record.slot,
@@ -1435,9 +1467,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 topic: topic.topic,
                 ...(topic.condition === undefined ? {} : { condition: topic.condition }),
               })),
-              ...(permission === "granted" || permission === "denied" || permission === "unknown"
-                ? { permission }
-                : {}),
+              ...(permission === undefined ? {} : { permission }),
             })
             .pipe(Effect.mapError((error) => agentError("upstream", error.message)));
           const state: DriverState = {
@@ -1478,11 +1508,25 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                     : status.state === "disconnected"
                       ? "disconnected"
                       : "connecting";
+              const permission = "permission" in status ? status.permission : undefined;
+              const approval: ConnectionApproval | undefined =
+                status.platform === "darwin" &&
+                permission !== undefined &&
+                permission !== "granted"
+                  ? {
+                      kind: "accessibility",
+                      status: permission,
+                      ...("hint" in status && status.hint !== undefined
+                        ? { message: status.hint }
+                        : {}),
+                    }
+                  : undefined;
               return updateRecord(record.id, (current) => ({
                 ...current,
                 status: mapped,
+                approval,
                 lastError: status.state === "listening" ? undefined : ("message" in status ? status.message : undefined),
-                detailText: status.state === "listening" ? (status.hint ?? `Keyboard ${status.platform}`) : ("message" in status ? (status.hint ?? status.message) : undefined),
+                detailText: status.state === "listening" ? (status.hint ?? `Keyboard ${status.platform}`) : ("message" in status ? ("hint" in status ? (status.hint ?? status.message) : status.message) : undefined),
                 ...(status.state === "listening" ? { lastConnectedAt: Date.now() } : {}),
               }));
             }),
@@ -2026,6 +2070,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             maxAgeMs: topic.maxAgeMs,
           }));
           const topicsKey = JSON.stringify(topicEntries);
+          const shellPermission = (yield* Ref.get(shellPermissions)).accessibility;
           const configKey = JSON.stringify({
             active,
             mode,
@@ -2033,6 +2078,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             values: record.values,
             secrets: Object.keys(record.secrets).sort(),
             cloud: cloudStatus.state,
+            ...(record.integration === "keyboard" ? { permission: shellPermission } : {}),
           });
 
           if (!active) {
@@ -2321,6 +2367,20 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             yield* reconcileTwitchOwners(input);
           }),
         );
+
+      const permissions = (): Effect.Effect<{ readonly accessibility: PermissionStatus }> =>
+        Effect.map(Ref.get(shellPermissions), (value) => ({
+          accessibility: value.accessibility,
+        }));
+
+      const reportShellPermission = (input: {
+        readonly permission: "accessibility";
+        readonly status: PermissionStatus;
+      }): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          yield* Ref.set(shellPermissions, { accessibility: input.status });
+          yield* reconcile(yield* Ref.get(lastInput));
+        });
 
       const configure = (input: {
         readonly connectionId: string;
@@ -2889,6 +2949,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         disconnect,
         startAuth,
         reconcile,
+        permissions,
+        reportShellPermission,
         ready,
         request,
         optionValues,

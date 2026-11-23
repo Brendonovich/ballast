@@ -1,19 +1,26 @@
 #!/usr/bin/env node
-// Copies the service build into build-service/ so electron-builder can put it
-// outside app.asar (extraResources: build-service -> Resources/service).
+// Copies the real agent service build into build-service/ so electron-builder
+// can put it outside app.asar (extraResources: build-service -> Resources/service).
 //
-// Point this at the real service once apps/agent produces a serve build:
-//   BALLAST_SERVICE_BUILD_DIR=../agent/dist/serve pnpm --filter @ballast/desktop pack
+// By default this builds apps/web and apps/agent/dist-service first. Point it
+// at another directory (or set BALLAST_SERVICE_SKIP_BUILD=1) to reuse a build.
 //
 // The source directory must contain main.mjs and should contain
 // plan-worker.mjs and web/index.html (see docs/decisions/0003 §2).
 import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildAgentService } from "./service-build.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
-const source = path.resolve(root, process.env.BALLAST_SERVICE_BUILD_DIR ?? "dev/stub-service");
+if (process.env.BALLAST_SERVICE_BUILD_DIR === undefined) {
+  await buildAgentService();
+}
+const source = path.resolve(
+  root,
+  process.env.BALLAST_SERVICE_BUILD_DIR ?? "../agent/dist-service",
+);
 const destination = path.join(root, "build-service");
 
 async function exists(file) {

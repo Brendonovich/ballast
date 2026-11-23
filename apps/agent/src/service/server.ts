@@ -192,6 +192,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
           const connectionList = yield* connections.summaries();
           const cloudStatus = yield* cloud.status;
           const projectList = yield* projects.projects;
+          const shellPermissions = yield* connections.permissions();
           return {
             projects: { total: projectList.length },
             scripts: counts,
@@ -205,6 +206,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
               ).length,
             },
             cloud: cloudStatus.state,
+            permissions: shellPermissions,
             lastLogSeq: yield* logs.lastSeq,
             lastEventSeq: yield* eventLog.lastSeq,
           };

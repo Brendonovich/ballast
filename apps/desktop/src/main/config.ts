@@ -101,7 +101,9 @@ export function resolveConfig(input: ConfigInput): DesktopConfig {
 
   const serviceBuildDir = p.resolve(
     envValue(env, "BALLAST_SERVICE_BUILD_DIR") ??
-      (input.isPackaged ? p.join(input.resourcesPath, "service") : p.join(input.appPath, "dev", "stub-service")),
+      (input.isPackaged
+        ? p.join(input.resourcesPath, "service")
+        : p.join(input.appPath, "..", "agent", "dist-service")),
   );
 
   const domain = input.userDomain;

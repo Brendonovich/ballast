@@ -1,8 +1,10 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import type { CloudPairingSession } from "@ballast/agent-protocol";
 
 import { useAgent } from "../state/context.tsx";
+import { getDesktopBridge } from "../bridge.ts";
+import type { ServiceAction, ServiceStatus } from "../bridge.ts";
 import {
   formatDateTime,
   formatDuration,
@@ -20,6 +22,7 @@ import {
   TextInput,
   cx,
 } from "../ui/primitives.tsx";
+import { toast } from "../ui/toast.tsx";
 import { setThemeSetting, themeSetting } from "../ui/theme.ts";
 import type { ThemeSetting } from "../ui/theme.ts";
 
@@ -50,6 +53,11 @@ const rememberMachineName = (value: string): void => {
 
 export const SettingsScreen = (): JSX.Element => {
   const store = useAgent();
+  const bridge = getDesktopBridge();
+  const [desktopStatus, setDesktopStatus] = createSignal<ServiceStatus>();
+  const [desktopBusy, setDesktopBusy] = createSignal<
+    "install" | "uninstall" | "restart" | "stop"
+  >();
   const [path, setPath] = createSignal("");
   const [name, setName] = createSignal("");
   const [projectError, setProjectError] = createSignal<string>();
@@ -59,6 +67,68 @@ export const SettingsScreen = (): JSX.Element => {
   const [machineName, setMachineName] = createSignal(readMachineName());
   const [session, setSession] = createSignal<CloudPairingSession>();
   const [code, setCode] = createSignal("");
+
+  onMount(() => {
+    if (bridge === undefined) return;
+    void bridge.service
+      .status()
+      .then(setDesktopStatus)
+      .catch(() => setDesktopStatus(undefined));
+    const unsubscribe = bridge.events.onServiceStatus(setDesktopStatus);
+    onCleanup(unsubscribe);
+  });
+
+  const desktopAction = async (
+    kind: "install" | "uninstall" | "restart" | "stop",
+    action: () => Promise<ServiceAction>,
+    failure: string,
+  ): Promise<boolean> => {
+    if (bridge === undefined) return false;
+    setDesktopBusy(kind);
+    try {
+      const result = await action();
+      setDesktopStatus(result.status);
+      if (!result.ok) {
+        toast.error(failure, result.message ?? "The desktop supervisor returned an error.");
+      }
+      return result.ok;
+    } catch (error) {
+      toast.error(failure, error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      setDesktopBusy(undefined);
+    }
+  };
+
+  const restartService = async (): Promise<void> => {
+    if (bridge !== undefined) {
+      await desktopAction("restart", () => bridge.service.restart(), "Restart failed");
+      return;
+    }
+    await store.restartService("settings");
+  };
+
+  const stopService = async (): Promise<void> => {
+    if (bridge !== undefined) {
+      const ok = await desktopAction("stop", () => bridge.service.stop(), "Stop failed");
+      if (ok) setStopOpen(false);
+      return;
+    }
+    const ok = await store.shutdownService();
+    if (ok) setStopOpen(false);
+  };
+
+  const installService = async (): Promise<void> => {
+    await desktopAction("install", () => bridge?.service.install() ?? Promise.reject(new Error("No desktop bridge")), "Install failed");
+  };
+
+  const uninstallService = async (): Promise<void> => {
+    await desktopAction(
+      "uninstall",
+      () => bridge?.service.uninstall() ?? Promise.reject(new Error("No desktop bridge")),
+      "Uninstall failed",
+    );
+  };
 
   const addProject = async (): Promise<void> => {
     const value = path().trim();
@@ -105,37 +175,83 @@ export const SettingsScreen = (): JSX.Element => {
       <PageHeader title="Settings" description="Service, projects, cloud and appearance." />
 
       <Section title="Service">
-        <div class="border-t border-edge">
-          <SettingRow label="Version">
-            <span class="font-mono">{store.info()?.version ?? "—"}</span>
-          </SettingRow>
-          <SettingRow label="API">
-            <span class="font-mono">{store.info()?.apiVersion ?? "—"}</span>
-          </SettingRow>
-          <SettingRow label="Process">
-            <span class="font-mono">
-              {store.info()?.pid ?? "—"} · {store.info()?.platform ?? "—"}/
-              {store.info()?.arch ?? "—"}
-            </span>
-          </SettingRow>
-          <SettingRow label="Uptime">
-            {store.health() === undefined ? "—" : formatDuration(store.health()?.uptimeMs ?? 0)}
-          </SettingRow>
-          <SettingRow label="Transport">
-            <span class="font-mono">
-              {store.transport.kind === "mock" ? "in-browser mock" : store.transport.label}
-            </span>
-          </SettingRow>
-          <SettingRow label="Data">
-            <span class="truncate font-mono text-[11px]">{store.info()?.dataDir ?? "—"}</span>
-          </SettingRow>
-        </div>
-        <div class="mt-3 flex items-center gap-2">
+        <Show
+          when={desktopStatus()}
+          fallback={
+            <div class="border-t border-edge">
+              <SettingRow label="Version">
+                <span class="font-mono">{store.info()?.version ?? "—"}</span>
+              </SettingRow>
+              <SettingRow label="API">
+                <span class="font-mono">{store.info()?.apiVersion ?? "—"}</span>
+              </SettingRow>
+              <SettingRow label="Process">
+                <span class="font-mono">
+                  {store.info()?.pid ?? "—"} · {store.info()?.platform ?? "—"}/
+                  {store.info()?.arch ?? "—"}
+                </span>
+              </SettingRow>
+              <SettingRow label="Uptime">
+                {store.health() === undefined ? "—" : formatDuration(store.health()?.uptimeMs ?? 0)}
+              </SettingRow>
+              <SettingRow label="Transport">
+                <span class="font-mono">
+                  {store.transport.kind === "mock" ? "in-browser mock" : store.transport.label}
+                </span>
+              </SettingRow>
+              <SettingRow label="Data">
+                <span class="truncate font-mono text-[11px]">{store.info()?.dataDir ?? "—"}</span>
+              </SettingRow>
+            </div>
+          }
+        >
+          {(status) => (
+            <div class="border-t border-edge">
+              <SettingRow label="State">
+                <Status
+                  tone={
+                    status().running
+                      ? "success"
+                      : status().phase === "error"
+                        ? "danger"
+                        : "neutral"
+                  }
+                >
+                  {status().phase}
+                </Status>
+              </SettingRow>
+              <SettingRow label="Running">
+                {status().running ? "yes" : "no"}
+              </SettingRow>
+              <SettingRow label="Version">
+                <span class="font-mono">
+                  {status().runningVersion ??
+                    status().installedVersion ??
+                    status().builtVersion ??
+                    store.info()?.version ??
+                    "—"}
+                </span>
+              </SettingRow>
+              <SettingRow label="Installed">
+                {status().installed ? `yes · ${status().supervisor}` : "no"}
+              </SettingRow>
+              <SettingRow label="Transport">
+                <span class="font-mono">
+                  {store.transport.kind === "mock" ? "in-browser mock" : store.transport.label}
+                </span>
+              </SettingRow>
+              <SettingRow label="Data">
+                <span class="truncate font-mono text-[11px]">{status().paths.dataDir}</span>
+              </SettingRow>
+            </div>
+          )}
+        </Show>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
           <Button
             variant="neutral"
             data-testid="service-restart"
-            loading={store.isPending("service:restart")}
-            onClick={() => void store.restartService("settings")}
+            loading={desktopBusy() === "restart" || store.isPending("service:restart")}
+            onClick={() => void restartService()}
           >
             Restart
           </Button>
@@ -146,8 +262,36 @@ export const SettingsScreen = (): JSX.Element => {
           >
             Stop service
           </Button>
+          <Show when={desktopStatus()?.installed === false}>
+            <Button
+              variant="outline"
+              data-testid="service-install"
+              loading={desktopBusy() === "install"}
+              onClick={() => void installService()}
+            >
+              Install service
+            </Button>
+          </Show>
         </div>
-        <Show when={store.transport.kind === "mock"}>
+        <Show when={desktopStatus()?.installed === true}>
+          <details class="mt-3 border-t border-edge pt-2">
+            <summary class="text-[11px] text-faint hover:text-body">Advanced</summary>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <Button
+                variant="ghost"
+                data-testid="service-uninstall"
+                loading={desktopBusy() === "uninstall"}
+                onClick={() => void uninstallService()}
+              >
+                Uninstall service
+              </Button>
+              <span class="text-[11px] text-faint">
+                Removes the login item. The app stays installed.
+              </span>
+            </div>
+          </details>
+        </Show>
+        <Show when={bridge === undefined && store.transport.kind === "mock"}>
           <p class="mt-2 text-[11px] text-faint">
             Mock service: restart and stop are no-ops.
           </p>
@@ -343,13 +487,9 @@ export const SettingsScreen = (): JSX.Element => {
           title="Stop the service?"
           description="Workers, connections and the cloud relay close. Scripts resume when it starts again."
           confirmLabel="Stop"
-          pending={store.isPending("service:shutdown")}
+          pending={desktopBusy() === "stop" || store.isPending("service:shutdown")}
           onCancel={() => setStopOpen(false)}
-          onConfirm={() => {
-            void store.shutdownService().then((ok) => {
-              if (ok) setStopOpen(false);
-            });
-          }}
+          onConfirm={() => void stopService()}
         />
       </Show>
 

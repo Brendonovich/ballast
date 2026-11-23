@@ -38,6 +38,8 @@ describe("plan keyboard scripts", () => {
         ],
         requests: [{ integration: "keyboard", slot: "main", request: "keyboard/tap", scopes: [] }],
         unresolved: [],
+        timers: [],
+        workflows: [],
       });
     }),
   );

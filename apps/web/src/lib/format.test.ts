@@ -6,6 +6,7 @@ import {
   connectionStatusLabel,
   paramValueLabel,
   plural,
+  scriptDisplayName,
   scriptStatusLabel,
   scriptStatusTone,
 } from "./format.ts";
@@ -43,6 +44,12 @@ describe("script presentation", () => {
   it("calls a never-started script 'Not started'", () => {
     expect(scriptStatusLabel(script())).toBe("Not started");
     expect(scriptStatusTone(script())).toBe("warning");
+  });
+
+  it("strips the title-cased extension the real service appends", () => {
+    expect(scriptDisplayName(script({ name: "Tick Echo Ts" }))).toBe("Tick Echo");
+    expect(scriptDisplayName(script({ name: "Obs Scene.ts" }))).toBe("Obs Scene");
+    expect(scriptDisplayName(script({ name: "Cheer Alert" }))).toBe("Cheer Alert");
   });
 
   it("labels the states the reduced list shows", () => {

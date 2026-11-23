@@ -5,8 +5,10 @@ import {
   type Manifest,
   type ParamManifest,
   type RequestManifest,
+  type TimerManifest,
   type TopicManifest,
   type UnresolvedManifest,
+  type WorkflowManifest,
 } from "@ballast/core";
 import type { ManifestRecorderService } from "@ballast/core";
 
@@ -104,6 +106,16 @@ export const makeManifestRecorder = (ref: Ref.Ref<Manifest>): ManifestRecorderSe
       ...manifest,
       unresolved: upsert(manifest.unresolved, unresolved, (value) => value.path),
     })),
+  timer: (timer: TimerManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      timers: upsert(manifest.timers, timer, (value) => value.name),
+    })),
+  workflow: (workflow: WorkflowManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      workflows: upsert(manifest.workflows, workflow, (value) => value.name),
+    })),
 });
 
 const byStrings = (left: string, right: string): number => left.localeCompare(right);
@@ -129,5 +141,9 @@ export const normalizeManifest = (manifest: Manifest): Manifest => ({
       byStrings(left.request, right.request),
   ),
   unresolved: [...manifest.unresolved].sort((left, right) => byStrings(left.path, right.path)),
+  timers: [...(manifest.timers ?? [])].sort((left, right) => byStrings(left.name, right.name)),
+  workflows: [...(manifest.workflows ?? [])].sort((left, right) =>
+    byStrings(left.name, right.name),
+  ),
 });
 

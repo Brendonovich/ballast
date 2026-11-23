@@ -165,6 +165,13 @@ export const registerHttpRoutes = (
             path: "/",
           }).pipe(Effect.orDie);
         }
+        // The desktop main process uses the Node global WebSocket, which cannot
+        // set an Authorization header. Scope the query-token form to the RPC
+        // upgrade; the UI exchange and CLI keep cookies/headers.
+        if (pathname === "/rpc" && queryToken !== null) {
+          if (!tokenEquals(queryToken, options.token)) return unauthorized();
+          return yield* effect;
+        }
         if (!authorized(request, options.token, options.devToken, options.dev)) {
           return unauthorized();
         }

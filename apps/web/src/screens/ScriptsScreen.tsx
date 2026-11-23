@@ -9,6 +9,7 @@ import {
   formatRelative,
   isScriptBusy,
   plural,
+  scriptDisplayName,
   scriptStatusLabel,
   scriptStatusTone,
 } from "../lib/format.ts";
@@ -99,7 +100,7 @@ export const ScriptsScreen = (): JSX.Element => {
                       onClick={() => navigate(scriptHref(script))}
                     >
                       <span class="block truncate text-[13px] font-medium text-strong group-hover:text-accent">
-                        {script.name}
+                        {scriptDisplayName(script)}
                       </span>
                       <span class="block truncate font-mono text-[11px] text-faint">
                         {script.entry}

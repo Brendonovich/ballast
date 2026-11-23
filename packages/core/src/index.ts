@@ -1,6 +1,7 @@
 export {
   Manifest,
   ManifestSchema,
+  SourceLocationSchema,
   ParamTypeSchema,
   ParamOptionSourceSchema,
   ParamManifestSchema,
@@ -10,13 +11,18 @@ export {
   TopicConditionSchema,
   TopicConditionValueSchema,
   RequestManifestSchema,
+  TimerManifestSchema,
+  WorkflowManifestSchema,
   UnresolvedManifestSchema,
   emptyManifest,
   connectionKey,
   topicManifestKey,
   requestManifestKey,
+  timerManifestKey,
+  workflowManifestKey,
 } from "./manifest.ts";
 export type {
+  SourceLocation,
   ParamType,
   ParamManifest,
   ParamOptionSource,
@@ -28,9 +34,13 @@ export type {
   TopicCondition,
   TopicConditionValue,
   RequestManifest,
+  TimerManifest,
+  WorkflowManifest,
   UnresolvedManifest,
 } from "./manifest.ts";
 export { ScriptPhase, currentPhase } from "./phase.ts";
+export { captureSource } from "./source.ts";
+export type { DeclarationSource } from "./source.ts";
 export type { Phase } from "./phase.ts";
 export {
   ManifestRecorder,
@@ -67,6 +77,40 @@ export type { RequestRef, RequestSpec, RequestClient, RequestHostService } from 
 export { Connection, toConnectionManifest } from "./connection.ts";
 export type { ConnectionRef, ConnectionSpec } from "./connection.ts";
 export * as Param from "./param.ts";
+export * as Timer from "./timer.ts";
+export type {
+  TimerFire,
+  TimerHostService,
+  TimerMetadata,
+  TimerOptions,
+  TimerRuntimeService,
+  TimerSpec,
+  UnitTimer,
+} from "./timer.ts";
+export {
+  TimerCalledDuringPlanError,
+  TimerDeclarationError,
+  DEFAULT_TIMER_MAX_AGE_MS,
+  DEFAULT_TIMER_ON_STALE,
+  toTimerManifest,
+} from "./timer.ts";
+export {
+  TimerScheduler,
+  TimerStoreSnapshotSchema,
+  ScheduledTimerSchema,
+  TimerStateSchema,
+  decodeTimerStoreSnapshot,
+  layer as timerSchedulerLayer,
+  makeTimerScheduler,
+} from "./timer-store.ts";
+export type {
+  TimerFireRecord,
+  TimerScheduleInput,
+  TimerSchedulerService,
+  TimerStoreSnapshot,
+  TimerState,
+  ScheduledTimer,
+} from "./timer-store.ts";
 export { evaluateScript, run, phase, recordScriptId } from "./script.ts";
 export { providePlan } from "./plan-host.ts";
 export type {

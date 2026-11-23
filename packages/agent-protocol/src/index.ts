@@ -9,3 +9,4 @@ export * from "./requests.ts";
 export * from "./rpc.ts";
 export * from "./scripts.ts";
 export * from "./service.ts";
+export * from "./timers.ts";

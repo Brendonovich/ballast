@@ -1,0 +1,20 @@
+{
+  "name": "@ballast/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsgo -b"
+  },
+  "dependencies": {
+    "@ballast/agent-protocol": "workspace:*",
+    "@ballast/cloud-protocol": "workspace:*",
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  }
+}

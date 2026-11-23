@@ -44,6 +44,7 @@ const resolver = (resolveDir: string | undefined): Plugin => {
 export interface BundledPlanScript {
   readonly path: string;
   readonly directory: string;
+  readonly sourceMap: string | undefined;
   readonly title: string | undefined;
 }
 
@@ -68,6 +69,7 @@ export const bundlePlanScript = async (
   ].join("\n");
   await writeFile(input, `${source}\n`, "utf8");
 
+  let sourceMapPath: string | undefined;
   const bundle = await rolldown({
     input,
     platform: "node",
@@ -88,10 +90,27 @@ export const bundlePlanScript = async (
       format: "esm",
       codeSplitting: false,
       minify: false,
+      sourcemap: true,
     });
     const chunk = result.output.find((item) => item.type === "chunk");
     if (chunk === undefined) throw new Error("Rolldown produced no plan bundle");
-    await writeFile(output, chunk.code, "utf8");
+    const sourceMap =
+      chunk.map === null || chunk.map === undefined
+        ? undefined
+        : typeof chunk.map === "string"
+          ? chunk.map
+          : JSON.stringify(chunk.map);
+    if (sourceMap !== undefined) {
+      sourceMapPath = `${output}.map`;
+      await writeFile(sourceMapPath, sourceMap, "utf8");
+      await writeFile(
+        output,
+        `${chunk.code}\n//# sourceMappingURL=script.mjs.map\n`,
+        "utf8",
+      );
+    } else {
+      await writeFile(output, chunk.code, "utf8");
+    }
   } finally {
     await bundle.close();
   }
@@ -103,6 +122,7 @@ export const bundlePlanScript = async (
   return {
     path: output,
     directory,
+    sourceMap: sourceMapPath,
     title: typeof title === "string" && title.trim().length > 0 ? title : undefined,
   };
 };

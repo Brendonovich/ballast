@@ -6,7 +6,12 @@ import typescript from "highlight.js/lib/languages/typescript";
 
 import { useAgent } from "../../state/context.tsx";
 import { formatDateTime, formatRelative } from "../../lib/format.ts";
-import { CopyIcon, RefreshIcon } from "../../ui/icons.tsx";
+import {
+  CopyIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+  RefreshIcon,
+} from "../../ui/icons.tsx";
 import { Button, IconButton, Spinner } from "../../ui/primitives.tsx";
 
 hljs.registerLanguage("typescript", typescript);
@@ -28,6 +33,9 @@ const highlight = (content: string): string => {
 export const SourcePanel = (props: {
   readonly projectId: string;
   readonly scriptId: string;
+  readonly collapsed: boolean;
+  readonly maximized: boolean;
+  readonly onToggleMaximize: () => void;
 }): JSX.Element => {
   const store = useAgent();
   const [source, setSource] = createSignal<ScriptSource>();
@@ -50,7 +58,7 @@ export const SourcePanel = (props: {
   };
 
   createEffect(() => {
-    // Re-read when the service reports a source change for this script.
+    // HOOK(source-change): refetch when the service reports a source change.
     void store.scriptSourceRevision(props.projectId, props.scriptId);
     void load();
   });
@@ -74,17 +82,21 @@ export const SourcePanel = (props: {
   };
 
   return (
-    <div class="overflow-hidden rounded-md border border-edge" data-testid="source-panel">
-      <div class="flex min-h-8 flex-wrap items-center gap-2 border-b border-edge px-2.5 py-1 text-[11px] text-faint">
-        <Show when={source()} fallback={<span>Source</span>}>
+    <section
+      class="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-edge bg-canvas"
+      data-testid="source-panel"
+    >
+      <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5 text-[11px] text-faint">
+        <span class="shrink-0 font-medium text-body">Source</span>
+        <Show when={source()}>
           {(value) => (
             <>
-              <span class="truncate font-mono text-[11px] text-body">{value().path}</span>
               <span class="text-faint">·</span>
-              <span title={formatDateTime(value().updatedAt)}>
+              <span class="min-w-0 truncate font-mono text-[11px] text-body">{value().path}</span>
+              <span class="hidden shrink-0 lg:inline" title={formatDateTime(value().updatedAt)}>
                 updated {formatRelative(value().updatedAt)}
               </span>
-              <span class="ml-auto flex items-center gap-1">
+              <span class="ml-auto flex shrink-0 items-center gap-0.5">
                 <IconButton label="Copy path" size="small" onClick={() => void copyPath()}>
                   <CopyIcon size={12} />
                 </IconButton>
@@ -99,50 +111,56 @@ export const SourcePanel = (props: {
             </>
           )}
         </Show>
+        <span class={source() ? "" : "ml-auto"} />
+        <IconButton
+          label={props.maximized ? "Restore source pane" : "Maximize source pane"}
+          size="small"
+          testId="source-maximize"
+          onClick={props.onToggleMaximize}
+        >
+          <Show when={props.maximized} fallback={<MaximizeIcon size={12} />}>
+            <MinimizeIcon size={12} />
+          </Show>
+        </IconButton>
       </div>
 
-      <Show
-        when={source()}
-        fallback={
-          <div class="flex min-h-56 items-center justify-center gap-2 text-[12px] text-muted">
-            <Show
-              when={loading()}
-              fallback={
-                <div class="px-4 text-center">
-                  <p class="text-danger">Could not load source</p>
-                  <p class="mt-1 text-faint">{error()}</p>
-                  <Button size="small" variant="outline" class="mt-3" onClick={() => void load()}>
-                    Retry
-                  </Button>
-                </div>
-              }
-            >
-              <Spinner size={12} /> Loading source…
-            </Show>
-          </div>
-        }
-      >
-        {(value) => (
-          <div class="max-h-[calc(100vh-410px)] min-h-56 overflow-auto bg-canvas">
-            <pre class="m-0 flex min-w-max text-[12px] leading-5">
-              <span class="sticky left-0 z-10 select-none border-r border-edge bg-canvas px-2 py-2 text-right font-mono text-faint">
-                {lineNumbers()}
-              </span>
-              <code
-                class="code-view block px-3 py-2 font-mono text-[12px] text-body"
-                innerHTML={highlight(value().content)}
-              />
-            </pre>
-          </div>
-        )}
+      <Show when={!props.collapsed}>
+        <Show
+          when={source()}
+          fallback={
+            <div class="flex min-h-0 flex-1 items-center justify-center gap-2 text-[12px] text-muted">
+              <Show
+                when={loading()}
+                fallback={
+                  <div class="px-4 text-center">
+                    <p class="text-danger">Could not load source</p>
+                    <p class="mt-1 text-faint">{error()}</p>
+                    <Button size="small" variant="outline" class="mt-3" onClick={() => void load()}>
+                      Retry
+                    </Button>
+                  </div>
+                }
+              >
+                <Spinner size={12} /> Loading source…
+              </Show>
+            </div>
+          }
+        >
+          {(value) => (
+            <div class="min-h-0 flex-1 overflow-auto bg-canvas">
+              <pre class="m-0 flex min-w-max text-[12px] leading-5">
+                <span class="sticky left-0 z-10 select-none border-r border-edge bg-canvas px-2 py-2 text-right font-mono text-faint">
+                  {lineNumbers()}
+                </span>
+                <code
+                  class="code-view block px-3 py-2 font-mono text-[12px] text-body"
+                  innerHTML={highlight(value().content)}
+                />
+              </pre>
+            </div>
+          )}
+        </Show>
       </Show>
-
-      <Show when={source()}>
-        <div class="flex items-center gap-3 border-t border-edge px-2.5 py-1 text-[10px] text-faint">
-          <span>{source()?.sha256.slice(0, 10)}</span>
-          <span class="ml-auto">read-only</span>
-        </div>
-      </Show>
-    </div>
+    </section>
   );
 };

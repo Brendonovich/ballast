@@ -23,6 +23,16 @@ const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderS
       ...manifest,
       unresolved: [...manifest.unresolved, unresolved],
     })),
+  timer: (timer) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      timers: [...manifest.timers, timer],
+    })),
+  workflow: (workflow) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      workflows: [...manifest.workflows, workflow],
+    })),
 });
 
 describe("@ballast/core plan phase", () => {

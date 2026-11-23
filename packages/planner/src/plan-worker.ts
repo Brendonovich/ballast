@@ -19,10 +19,15 @@ const readWorkerData = (): { readonly entry: string } & PlanOptions => {
     "resolveDir" in workerData && typeof workerData.resolveDir === "string"
       ? workerData.resolveDir
       : undefined;
+  const projectRoot =
+    "projectRoot" in workerData && typeof workerData.projectRoot === "string"
+      ? workerData.projectRoot
+      : undefined;
   return {
     entry: value,
     ...(scriptId === undefined ? {} : { scriptId }),
     ...(resolveDir === undefined ? {} : { resolveDir }),
+    ...(projectRoot === undefined ? {} : { projectRoot }),
   };
 };
 
@@ -38,6 +43,7 @@ const exit = await Effect.runPromiseExit(
   runPlanInfo(data.entry, {
     ...(data.scriptId === undefined ? {} : { scriptId: data.scriptId }),
     ...(data.resolveDir === undefined ? {} : { resolveDir: data.resolveDir }),
+    ...(data.projectRoot === undefined ? {} : { projectRoot: data.projectRoot }),
   }),
 );
 

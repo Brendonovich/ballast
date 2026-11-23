@@ -1,5 +1,6 @@
 import { MessagePort, parentPort, workerData } from "node:worker_threads";
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as Predicate from "effect/Predicate";
@@ -14,6 +15,8 @@ import type {
   RequestClientsService,
   SettingsService,
 } from "./services.ts";
+import { TimerRuntime } from "./timer.ts";
+import type { TimerFire, TimerRuntimeService } from "./timer.ts";
 
 interface RuntimeWorkerData {
   readonly rpcPort: MessagePort;
@@ -24,6 +27,23 @@ interface RuntimeEventMessage {
   readonly kind: "event";
   readonly key: string;
   readonly payload: unknown;
+}
+
+interface RuntimeTimerMessage {
+  readonly kind: "timer";
+  readonly name: string;
+  readonly key: string;
+  readonly payload: unknown;
+  readonly scheduledAt: number;
+  readonly dueAt: number;
+  readonly firedAt: number;
+  readonly lateByMs: number;
+}
+
+interface TimerRegistration {
+  readonly handler: (
+    fire: TimerFire<unknown>,
+  ) => Effect.Effect<void, never, never>;
 }
 
 const plainLogger = Logger.make<unknown, void>(({ message, cause }) => {
@@ -49,6 +69,24 @@ const isRuntimeEventMessage = (value: unknown): value is RuntimeEventMessage =>
   Predicate.hasProperty("key")(value) &&
   Predicate.isString(value.key) &&
   Predicate.hasProperty("payload")(value);
+
+const isRuntimeTimerMessage = (value: unknown): value is RuntimeTimerMessage =>
+  Predicate.isObject(value) &&
+  Predicate.hasProperty("kind")(value) &&
+  value.kind === "timer" &&
+  Predicate.hasProperty("name")(value) &&
+  Predicate.isString(value.name) &&
+  Predicate.hasProperty("key")(value) &&
+  Predicate.isString(value.key) &&
+  Predicate.hasProperty("payload")(value) &&
+  Predicate.hasProperty("scheduledAt")(value) &&
+  Predicate.isNumber(value.scheduledAt) &&
+  Predicate.hasProperty("dueAt")(value) &&
+  Predicate.isNumber(value.dueAt) &&
+  Predicate.hasProperty("firedAt")(value) &&
+  Predicate.isNumber(value.firedAt) &&
+  Predicate.hasProperty("lateByMs")(value) &&
+  Predicate.isNumber(value.lateByMs);
 
 const parseWorkerData = (value: unknown): RuntimeWorkerData => {
   if (!Predicate.isObject(value)) {
@@ -96,6 +134,45 @@ const runtimeProgram = (
         }),
     };
 
+    const timerHandlers = new Map<string, Set<TimerRegistration>>();
+
+    const timerRuntime: TimerRuntimeService = {
+      subscribe: (timer, handler) =>
+        Effect.gen(function* () {
+          const dispatch = (fire: TimerFire<unknown>): Effect.Effect<void> =>
+            Effect.suspend(() =>
+              handler({
+                ...fire,
+                payload: Schema.decodeUnknownSync(timer.codec)(fire.payload),
+              }),
+            );
+          const existing = timerHandlers.get(timer.name);
+          if (existing === undefined) {
+            timerHandlers.set(timer.name, new Set([{ handler: dispatch }]));
+          } else {
+            existing.add({ handler: dispatch });
+          }
+          yield* client.RegisterTimer({ name: timer.name }).pipe(Effect.orDie);
+        }),
+      schedule: (timer, input) =>
+        Effect.gen(function* () {
+          const payload = Schema.encodeUnknownSync(timer.codec)(input.payload);
+          yield* client
+            .ScheduleTimer({
+              name: timer.name,
+              key: input.key,
+              delayMs: Duration.toMillis(input.duration),
+              payload,
+              payloadFingerprint: timer.payloadFingerprint,
+              onStale: timer.onStale,
+              maxAgeMs: timer.maxAgeMs,
+            })
+            .pipe(Effect.orDie);
+        }),
+      cancel: (timer, key) =>
+        client.CancelTimer({ name: timer.name, key }).pipe(Effect.orDie),
+    };
+
     const settings: SettingsService = {
       get: (key) =>
         client.GetSetting({ key }).pipe(
@@ -140,14 +217,41 @@ const runtimeProgram = (
       yield* Effect.acquireRelease(
         Effect.sync(() => {
           const listener = (message: unknown) => {
-            if (!isRuntimeEventMessage(message)) return;
-            const subscribed = handlers.get(message.key);
+            if (isRuntimeEventMessage(message)) {
+              const subscribed = handlers.get(message.key);
+              if (subscribed === undefined) return;
+              for (const handler of subscribed) {
+                Effect.runForkWith(context)(
+                  handler(message.payload).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logError(`Event handler failed for ${message.key}`, cause),
+                    ),
+                  ),
+                );
+              }
+              return;
+            }
+
+            if (!isRuntimeTimerMessage(message)) return;
+            const subscribed = timerHandlers.get(message.name);
             if (subscribed === undefined) return;
-            for (const handler of subscribed) {
+            const fire: TimerFire<unknown> = {
+              timer: message.name,
+              key: message.key,
+              payload: message.payload,
+              scheduledAt: message.scheduledAt,
+              dueAt: message.dueAt,
+              firedAt: message.firedAt,
+              lateByMs: message.lateByMs,
+            };
+            for (const registration of subscribed) {
               Effect.runForkWith(context)(
-                handler(message.payload).pipe(
+                registration.handler(fire).pipe(
                   Effect.catchCause((cause) =>
-                    Effect.logError(`Event handler failed for ${message.key}`, cause),
+                    Effect.logError(
+                      `Timer handler failed for ${message.name}`,
+                      cause,
+                    ),
                   ),
                 ),
               );
@@ -180,6 +284,7 @@ const runtimeProgram = (
       Effect.provideService(EventBus, eventBus),
       Effect.provideService(Settings, settings),
       Effect.provideService(RequestClients, requestClients),
+      Effect.provideService(TimerRuntime, timerRuntime),
     );
   });
 

@@ -35,6 +35,8 @@ describe("plan VTube Studio script", () => {
         ],
         requests: [{ integration: "vts", slot: "main", request: "vts/*", scopes: [] }],
         unresolved: [],
+        timers: [],
+        workflows: [],
       });
     }),
   );

@@ -11,6 +11,14 @@ The transport-independent contract between the Ballast agent service, the deskto
   service-wide.
 - Streaming RPCs — `StreamLogs`, `StreamEvents`, `WatchService`; all begin with buffered history
   (or a snapshot) and then follow live changes.
+- Shell-owned permissions — `ReportShellPermission` sends macOS Accessibility trust from the
+  desktop; `GetHealth.permissions.accessibility` reflects it.
+- `ConnectionSummary.approval` — a pending out-of-app approval (`vtuber-studio` Allow dialog,
+  `accessibility` permission). It is separate from `reauth-required`: the connection can still be
+  `connecting` and is not broken.
+- Durable timers — `ScriptManifest.timers` carries declarations, `ListTimers` returns
+  `TimerSummary` rows, `CancelTimer` removes one instance, and `timer-fired` is a service event.
+  The worker-only `RegisterTimer`/`ScheduleTimer`/`CancelTimer` RPCs are in `RuntimeRpcs`.
 
 ## Using the mock
 

@@ -37,6 +37,8 @@ describe("plan OBS script", () => {
         ],
         requests: [{ integration: "obs", slot: "main", request: "obs/*", scopes: [] }],
         unresolved: [],
+        timers: [],
+        workflows: [],
       });
     }),
   );

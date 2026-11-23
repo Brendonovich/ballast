@@ -61,6 +61,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   };
 
   const reconnecting = (): boolean => store.watchStatus() === "reconnecting";
+  const workspace = (): boolean => location.pathname.startsWith("/scripts/");
   const attention = (): number =>
     store.connections().filter((connection) => connectionNeedsAttention(connection)).length;
 
@@ -150,8 +151,19 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
           </div>
         </Show>
 
-        <main class="min-h-0 flex-1 overflow-y-auto">
-          <div class="mx-auto w-full max-w-[880px] px-8 py-8">
+        <main
+          class={cx(
+            "min-h-0 flex-1",
+            workspace() ? "overflow-hidden" : "overflow-y-auto",
+          )}
+        >
+          <div
+            class={
+              workspace()
+                ? "h-full min-h-0"
+                : "mx-auto w-full max-w-[880px] px-8 py-8"
+            }
+          >
             <Show
               when={store.snapshot() !== undefined}
               fallback={

@@ -6,7 +6,9 @@ import {
   type Manifest,
   type ParamManifest,
   type RequestManifest,
+  type TimerManifest,
   type TopicManifest,
+  type WorkflowManifest,
 } from "@ballast/core";
 
 export interface DiffSet<A> {
@@ -24,6 +26,8 @@ export interface ManifestDiff {
   readonly connections: DiffSet<ConnectionManifest>;
   readonly topics: DiffSet<TopicManifest>;
   readonly requests: DiffSet<RequestManifest>;
+  readonly timers: DiffSet<TimerManifest>;
+  readonly workflows: DiffSet<WorkflowManifest>;
   readonly scopes: DiffSet<string>;
 }
 
@@ -73,6 +77,8 @@ export const diff = (previous: Manifest, next: Manifest): ManifestDiff => {
     connections,
     topics: diffBy(previous.topics, next.topics, topicManifestKey),
     requests: diffBy(previous.requests, next.requests, requestManifestKey),
+    timers: diffBy(previous.timers ?? [], next.timers ?? [], (timer) => timer.name),
+    workflows: diffBy(previous.workflows ?? [], next.workflows ?? [], (workflow) => workflow.name),
     scopes,
   };
 };

@@ -9,6 +9,7 @@ import { EventHostPlan, EventHostRuntime } from "./topic.ts";
 import type { EventHost } from "./topic.ts";
 import { ManifestRecorder, ScriptRunner } from "./services.ts";
 import type { EventBus, RequestClients, ScriptRunnerService, Settings } from "./services.ts";
+import { TimerHost, TimerHostPlan, TimerHostRuntime } from "./timer.ts";
 
 export interface ScriptRuntimeContext {
   readonly phase: Phase;
@@ -29,10 +30,16 @@ export type ScriptHostServices =
   | ManifestRecorder
   | Settings
   | EventBus
-  | RequestClients;
+  | RequestClients
+  | TimerHost;
 
 /** Everything the host provides around the default export. */
-type ScriptProvidedServices = EventHost | RequestHost | ScriptRunner | ScriptPhase;
+type ScriptProvidedServices =
+  | EventHost
+  | RequestHost
+  | ScriptRunner
+  | ScriptPhase
+  | TimerHost;
 
 /**
  * The optional type a script can use for checking:
@@ -77,6 +84,7 @@ const planHostServices = (
     Layer.succeed(ScriptPhase, phase),
     EventHostPlan,
     RequestHostPlan,
+    TimerHostPlan,
   );
 
 const runtimeHostServices = (
@@ -88,6 +96,7 @@ const runtimeHostServices = (
     Layer.succeed(ScriptPhase, phase),
     EventHostRuntime,
     RequestHostRuntime,
+    TimerHostRuntime,
   );
 
 export interface ScriptRuntime {
