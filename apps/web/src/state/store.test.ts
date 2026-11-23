@@ -124,6 +124,22 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.project(main)?.status).toBe("running");
   });
 
+  it("mints and renews an artifact view", async () => {
+    const { store } = await setup();
+
+    const artifacts = await store.fetchArtifacts(main, true);
+    expect(artifacts?.some((artifact) => artifact.name === "dashboard")).toBe(true);
+    const view = await store.getArtifactView(main, "dashboard");
+    expect(view?.scope).toBe("action");
+    if (view === undefined) return;
+
+    const renewed = await store.renewArtifactView(view.token);
+    expect(renewed).toBeDefined();
+    if (renewed === undefined) return;
+    expect(renewed.token).toBe(view.token);
+    expect(renewed.expiresAt).toBeGreaterThanOrEqual(view.expiresAt);
+  });
+
   it("applies project changes made by another client", async () => {
     const { runtime, store } = await setup();
 

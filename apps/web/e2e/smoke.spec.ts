@@ -336,29 +336,6 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   expect(errors).toEqual([]);
 });
 
-test("refreshes the artifact view token before it expires", async ({ page }) => {
-  await page.addInitScript(() => {
-    try {
-      localStorage.setItem("ballast.theme", "dark");
-      localStorage.setItem("ballast.mockArtifactTtlMs", "38000");
-    } catch {
-      // Sandboxed artifact frames have an opaque origin.
-    }
-  });
-  await openProjects(page);
-  await openProject(page, "Main Channel");
-  await page.getByTestId("artifact-row").getByRole("button").first().click();
-  const iframe = page.locator("iframe");
-  const first = await iframe.getAttribute("src");
-  expect(first).toContain("token=");
-  await expect
-    .poll(() => iframe.getAttribute("src"), { timeout: 15_000 })
-    .not.toBe(first);
-  await expect(
-    page.frameLocator("iframe").getByRole("heading", { name: "Stream dashboard" }),
-  ).toBeVisible();
-});
-
 const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await useTheme(page, theme);
   await openProjects(page);

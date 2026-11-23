@@ -36,8 +36,12 @@ export const ArtifactPanel = (props: {
   const [urlsOpen, setUrlsOpen] = createSignal(false);
   let menu: HTMLDivElement | undefined;
   let refreshTimer: number | undefined;
-  let request = 0;
+  let renewAt = 0;
+  let generation = 0;
+  let loading = false;
+  let renewing = false;
   let loadedKey = "";
+  let loadedRequest = "";
 
   const clearRefresh = (): void => {
     if (refreshTimer !== undefined) {
@@ -48,23 +52,52 @@ export const ArtifactPanel = (props: {
 
   const schedule = (expiresAt: number): void => {
     clearRefresh();
-    const delay = Math.max(5_000, expiresAt - Date.now() - 30_000);
-    refreshTimer = window.setTimeout(() => void load(), delay);
+    const now = Date.now();
+    const remaining = Math.max(0, expiresAt - now);
+    // Renew at half the remaining TTL: well before expiry, and the same cadence
+    // applies to every renewed expiry the service returns.
+    const delay = Math.max(50, Math.floor(remaining / 2));
+    renewAt = now + delay;
+    refreshTimer = window.setTimeout(() => void renew(), delay);
+  };
+
+  const renew = async (): Promise<void> => {
+    const current = view();
+    if (current === undefined || loading || renewing) return;
+    if (props.artifact.status !== "ready") return;
+    clearRefresh();
+    renewing = true;
+    const started = generation;
+    const next = await store.renewArtifactView(current.token);
+    renewing = false;
+    if (started !== generation) return;
+    if (next === undefined) {
+      // The service no longer recognizes the token (for example after a
+      // restart). Mint a fresh view; this is the only renewal path that
+      // reloads the iframe, and it keeps the old page visible until it does.
+      void load();
+      return;
+    }
+    schedule(next.expiresAt);
   };
 
   const load = async (): Promise<void> => {
     clearRefresh();
     if (props.artifact.status !== "ready") {
-      request += 1;
+      generation += 1;
+      loading = false;
       return;
     }
-    const current = ++request;
+    const current = ++generation;
+    loading = true;
     const next = await store.getArtifactView(props.projectId, props.artifact.name);
-    if (current !== request) return;
+    if (current !== generation) return;
+    loading = false;
     if (next === undefined) {
       if (view() === undefined) {
         setError(store.lastActionError() ?? "Could not open the artifact.");
       }
+      renewAt = Date.now() + 10_000;
       refreshTimer = window.setTimeout(() => void load(), 10_000);
       return;
     }
@@ -77,15 +110,20 @@ export const ArtifactPanel = (props: {
     const revision = store.artifactRevision(props.projectId, props.artifact.name);
     const status = props.artifact.status;
     const key = props.projectId + "\u0000" + props.artifact.name;
+    const requestKey = key + "\u0000" + status + "\u0000" + String(revision);
     if (loadedKey !== key) {
       loadedKey = key;
       setView(undefined);
       setError(undefined);
+      renewAt = 0;
     }
-    void revision;
+    if (loadedRequest === requestKey) return;
+    loadedRequest = requestKey;
     if (status !== "ready") {
       clearRefresh();
-      request += 1;
+      generation += 1;
+      loading = false;
+      renewing = false;
       setView(undefined);
       return;
     }
@@ -97,26 +135,28 @@ export const ArtifactPanel = (props: {
       if (!(event.target instanceof Node) || menu === undefined) return;
       if (!menu.contains(event.target)) setMenuOpen(false);
     };
-    // Timers are throttled in hidden windows, so catch up when the window
-    // comes back instead of waiting for an expired token's retry.
-    const refreshIfExpiring = (): void => {
-      const current = view();
-      if (current === undefined || document.visibilityState !== "visible") return;
-      if (current.expiresAt - Date.now() <= 60_000) void load();
+    // Timers are throttled in hidden windows, so catch up when the window comes
+    // back instead of waiting for an expired token's next renewal.
+    const renewIfDue = (): void => {
+      if (view() === undefined || document.visibilityState !== "visible") return;
+      if (loading || renewing) return;
+      if (Date.now() >= renewAt) void renew();
     };
     document.addEventListener("pointerdown", closeMenu);
-    document.addEventListener("visibilitychange", refreshIfExpiring);
-    window.addEventListener("focus", refreshIfExpiring);
+    document.addEventListener("visibilitychange", renewIfDue);
+    window.addEventListener("focus", renewIfDue);
     onCleanup(() => {
       document.removeEventListener("pointerdown", closeMenu);
-      document.removeEventListener("visibilitychange", refreshIfExpiring);
-      window.removeEventListener("focus", refreshIfExpiring);
+      document.removeEventListener("visibilitychange", renewIfDue);
+      window.removeEventListener("focus", renewIfDue);
     });
   });
 
   onCleanup(() => {
     clearRefresh();
-    request += 1;
+    generation += 1;
+    loading = false;
+    renewing = false;
   });
 
   const errorSource = () => artifactErrorSource(props.artifact.error);

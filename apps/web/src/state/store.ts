@@ -19,6 +19,7 @@ import type {
   ProjectDetail,
   ProjectFileContent,
   ProjectSummary,
+  RenewArtifactViewResponse,
   ServiceEvent,
   ServiceInfo,
   ServiceSnapshot,
@@ -73,6 +74,9 @@ export interface AgentStore {
     projectId: string,
     artifact: string,
   ) => Promise<ArtifactView | undefined>;
+  readonly renewArtifactView: (
+    token: string,
+  ) => Promise<RenewArtifactViewResponse | undefined>;
   readonly createArtifactUrl: (request: {
     readonly projectId: string;
     readonly artifact: string;
@@ -639,6 +643,18 @@ export const createAgentStore = (
     return outcome.ok ? outcome.value : undefined;
   };
 
+  const renewArtifactView = async (
+    token: string,
+  ): Promise<RenewArtifactViewResponse | undefined> => {
+    // A token can disappear across a service restart. The viewer falls back to
+    // a fresh view, so a failed renewal should not surface an error toast.
+    try {
+      return await runtime.run(runtime.client.RenewArtifactView({ token }));
+    } catch {
+      return undefined;
+    }
+  };
+
   const createArtifactUrl = async (request: {
     readonly projectId: string;
     readonly artifact: string;
@@ -1152,6 +1168,7 @@ export const createAgentStore = (
     artifactUrlRevision,
     fetchArtifacts,
     getArtifactView,
+    renewArtifactView,
     createArtifactUrl,
     listArtifactUrls,
     revokeArtifactUrl,

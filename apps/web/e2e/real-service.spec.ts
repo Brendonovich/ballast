@@ -81,7 +81,20 @@ const artifactEntry = `export default (root: HTMLElement) => {
   const note = document.createElement("p");
   note.textContent = "Served by the real artifact gateway.";
   note.style.color = "#8fa3c4";
-  root.replaceChildren(heading, note);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Bump counter";
+  button.style.marginTop = "16px";
+  const counter = document.createElement("output");
+  counter.setAttribute("data-testid", "artifact-counter");
+  counter.textContent = "0";
+  counter.style.marginLeft = "12px";
+  let count = 0;
+  button.addEventListener("click", () => {
+    count += 1;
+    counter.textContent = String(count);
+  });
+  root.replaceChildren(heading, note, button, counter);
 };
 `;
 
@@ -204,6 +217,17 @@ test("real service: connection instances, project bindings, workers, logs, sourc
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
+  let artifactRenewals = 0;
+  page.on("websocket", (socket) => {
+    if (!socket.url().includes("/rpc")) return;
+    socket.on("framesent", (frame) => {
+      const payload =
+        typeof frame.payload === "string"
+          ? frame.payload
+          : frame.payload.toString("utf8");
+      if (payload.includes("RenewArtifactView")) artifactRenewals += 1;
+    });
+  });
 
   try {
     await page.goto(`${info.url}/?token=${encodeURIComponent(info.token)}`);
@@ -299,6 +323,22 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.screenshot({ path: `screenshots/real-${theme}-11-artifact.png` });
 
       if (theme === "dark") {
+        // Renewals must keep the same page and its in-page state: a reload
+        // would reset this counter. The shortened service TTL makes the
+        // viewer renew three times while this waits.
+        const artifactFrame = page.frameLocator("iframe");
+        const bump = artifactFrame.getByRole("button", { name: "Bump counter" });
+        await bump.click();
+        await bump.click();
+        await bump.click();
+        await expect(artifactFrame.getByTestId("artifact-counter")).toHaveText("3");
+        const firstSrc = await page.locator("iframe").getAttribute("src");
+        await expect
+          .poll(() => artifactRenewals, { timeout: 15_000 })
+          .toBeGreaterThanOrEqual(3);
+        expect(await page.locator("iframe").getAttribute("src")).toBe(firstSrc);
+        await expect(artifactFrame.getByTestId("artifact-counter")).toHaveText("3");
+
         await page.getByTestId("artifact-menu").click();
         await page.getByTestId("artifact-urls").click();
         await page.getByTestId("artifact-url-create").click();

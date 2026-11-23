@@ -161,6 +161,9 @@ export default async function globalSetup(): Promise<void> {
           BALLAST_PROJECTS_DIR: projectsDir,
           BALLAST_TWITCH_CALLBACK_PORT: "43123",
           BALLAST_WEB_DIR: distDir,
+          // Keep the in-app view token short so the artifact viewer must renew
+          // several times during the real-service spec.
+          BALLAST_ARTIFACT_EMBED_TTL_MS: "4000",
         },
         stdio: ["ignore", log, log],
       },
