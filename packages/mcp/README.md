@@ -47,6 +47,21 @@ The URL must be loopback. Every candidate is verified through the
 unauthenticated `/health` endpoint before use, so a crash leaves a stale
 `service.json` but produces a useful error instead of a dead socket.
 
+## Service compatibility
+
+The MCP is a client of a long-running service that may be older than the MCP
+build. It detects unsupported RPCs per call (a service without a request
+answers `Unknown request tag: <Rpc>`) and reads the service version from
+`GetServiceInfo` or `service.json`. Other tools return a structured
+`unsupported-service` error naming the version and the missing feature, with
+the restart action: `Restart the Ballast app (or pnpm --filter
+@ballast/desktop dev)`.
+
+`ballast_check` and `ballast_status` degrade instead of failing: when the
+service lacks `ListArtifacts`, they report the worker, API and store
+declarations the old service supports, omit artifact declarations, and add an
+`artifacts: unavailable — ...` note.
+
 ## OpenCode configuration (V2)
 
 Dev, from a checkout:
@@ -128,11 +143,23 @@ interface ProjectAdapter {
   listProjects(): Effect<ProjectSummary[], ToolError>;
   resolveProject(ref: string): Effect<ProjectSummary, ToolError>;
   getProject(projectId: string): Effect<ProjectDetail, ToolError>;
-  createProject(name: string, directory?: string): Effect<ProjectDetail, ToolError>;
+  createProject(
+    name: string,
+    directory?: string,
+    artifact?: boolean,
+  ): Effect<ProjectDetail, ToolError>;
   checkProject(projectId: string): Effect<ProjectCheckResult, ToolError>;
+  listProjectFiles(projectId: string): Effect<ListProjectFilesResponse, ToolError>;
+  listArtifacts(projectId: string): Effect<ArtifactSummary[], ToolError>;
   restartProject(projectId: string): Effect<ProjectDetail, ToolError>;
   listConnections(): Effect<ConnectionSummary[], ToolError>;
   health(): Effect<HealthStatus, ToolError>;
+  queryEventHistory(
+    request: QueryEventHistoryRequest,
+  ): Effect<QueryEventHistoryResponse, ToolError>;
+  listEventHistorySubscriptions(
+    request: ListEventHistorySubscriptionsRequest,
+  ): Effect<ListEventHistorySubscriptionsResponse, ToolError>;
   logs(request: StreamLogsRequest, take: number): Effect<LogEntry[], ToolError>;
   events(request: StreamEventsRequest, take: number): Effect<EventRecord[], ToolError>;
 }
@@ -180,4 +207,7 @@ The E2E test starts the real `ballast serve` with throwaway state/data
 directories, spawns `apps/agent/src/bin.ts mcp` over stdio, and calls
 `ballast_catalog`, `ballast_project_init`, `ballast_check` (including a
 deliberate `ballast.ts:3:7 TS2322`), `ballast_apply`, `ballast_status`,
-logs and events.
+logs and events. The guide test extracts every complete sample, plans and
+typechecks it (including the DOM artifact sample and the typed action error).
+A WebSocket test server with a deliberately smaller RPC group verifies the
+stale-service `Unknown request tag` path and version message.

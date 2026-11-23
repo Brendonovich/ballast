@@ -20,8 +20,13 @@ import {
 } from "../src/adapter.ts";
 import type { CheckResult, ProjectAdapter } from "../src/adapter.ts";
 import { formatCatalog, selectCatalog } from "../src/catalog.ts";
+import {
+  missingFeatureOf,
+  toolError,
+  unsupportedServiceError,
+} from "../src/errors.ts";
 import { GUIDE } from "../src/guide.ts";
-import { statusState } from "../src/tools.ts";
+import { formatStatus, loadArtifacts, statusState } from "../src/tools.ts";
 
 const summary: ProjectSummary = {
   id: "proj_test",
@@ -329,6 +334,83 @@ describe("artifact check output", () => {
       requiresWorkerRestart: true,
     });
     expect(text).toContain("reload: restarts worker");
+  });
+});
+
+describe("stale service capabilities", () => {
+  const cause = {
+    _id: "Cause",
+    defect: "Unknown request tag: ListArtifacts",
+  };
+
+  it("recognises an unknown RPC tag nested in a Cause", () => {
+    expect(missingFeatureOf(cause)).toBe("ListArtifacts");
+    expect(
+      missingFeatureOf({
+        _id: "Cause",
+        failures: [],
+        defects: [{ _id: "RpcClientDefect", message: "Unknown request tag: ListArtifacts" }],
+        interrupts: [],
+      }),
+    ).toBe("ListArtifacts");
+    expect(missingFeatureOf(new Error("Unknown request tag: QueryEventHistory"))).toBe(
+      "QueryEventHistory",
+    );
+    expect(missingFeatureOf(new Error("socket closed"))).toBeUndefined();
+  });
+
+  it("explains the version mismatch and tells the user how to restart", () => {
+    const error = unsupportedServiceError(cause, "0.1.0");
+    expect(error?.kind).toBe("unsupported-service");
+    expect(error?.feature).toBe("ListArtifacts");
+    expect(error?.serviceVersion).toBe("0.1.0");
+    expect(error?.message).toContain(
+      "The running Ballast service (version 0.1.0) is older than this MCP and lacks project artifact support (ListArtifacts).",
+    );
+    expect(error?.message).toContain("Restart the Ballast app");
+    expect(error?.message).toContain("pnpm --filter @ballast/desktop dev");
+    expect(unsupportedServiceError(new Error("socket closed"), undefined)).toBeUndefined();
+  });
+
+  it("turns an unsupported artifact listing into an empty list with a note", async () => {
+    const error = unsupportedServiceError(cause, "0.1.0");
+    if (error === undefined) throw new Error("expected an unsupported-service error");
+    const stale: ProjectAdapter = {
+      ...adapter({ check: baseCheck(), project: detail(), restarts: 0 }),
+      listArtifacts: () => Effect.fail(error),
+    };
+    const listing = await Effect.runPromise(loadArtifacts(stale, summary.id));
+    expect(listing.artifacts).toEqual([]);
+    expect(listing.note).toBe(error.message);
+
+    const broken: ProjectAdapter = {
+      ...adapter({ check: baseCheck(), project: detail(), restarts: 0 }),
+      listArtifacts: () => Effect.fail(toolError("socket closed")),
+    };
+    const other = await Effect.runPromise(loadArtifacts(broken, summary.id));
+    expect(other.artifacts).toEqual([]);
+    expect(other.note).toBeUndefined();
+  });
+
+  it("omits artifacts from check with a note", () => {
+    const message = unsupportedServiceError(cause, "0.1.0")?.message ?? "";
+    const text = checkText(baseCheck(), {
+      artifacts: [],
+      declarations: [],
+      artifactOnly: false,
+      requiresWorkerRestart: false,
+      artifactNote: message,
+    });
+    expect(text).toContain("artifacts: unavailable — The running Ballast service");
+    expect(text).toContain("lacks project artifact support (ListArtifacts)");
+  });
+
+  it("omits artifacts from status with a note", () => {
+    const message = unsupportedServiceError(cause, "0.1.0")?.message ?? "";
+    const output = formatStatus(detail(), [], [], message);
+    expect(output.text).toContain("artifacts: unavailable — The running Ballast service");
+    expect(output.text).toContain("lacks project artifact support (ListArtifacts)");
+    expect(output.text).not.toContain("dashboard");
   });
 });
 

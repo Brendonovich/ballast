@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
@@ -29,7 +30,13 @@ import type {
 
 import type { McpConfig } from "./config.ts";
 import { discoverService, DiscoveryError } from "./discovery.ts";
-import { formatUnknown, ToolError, toolError } from "./errors.ts";
+import {
+  formatUnknown,
+  missingFeatureOf,
+  ToolError,
+  toolError,
+  unsupportedServiceError,
+} from "./errors.ts";
 
 export type LiveAgentClient = AgentClient<RpcClientError>;
 
@@ -73,11 +80,33 @@ export const withAgentClient = <A, E>(
         const client = yield* RpcClient.make(AgentRpcs).pipe(
           Effect.provideContext(protocolContext),
         );
-        return yield* use(client);
+        return yield* use(client).pipe(
+          // A service from before an RPC existed answers with a defect such as
+          // "Unknown request tag: ListArtifacts". Probe the version on the
+          // same live client and report the mismatch instead of a raw Cause.
+          Effect.catchCause((cause) => {
+            if (missingFeatureOf(cause) === undefined) return Effect.failCause(cause);
+            return Effect.gen(function* () {
+              const infoVersion = yield* client.GetServiceInfo().pipe(
+                Effect.map((info) => info.version),
+                Effect.timeoutOption("2 seconds"),
+                Effect.map(Option.getOrUndefined),
+                Effect.catchCause(() => Effect.succeed(undefined)),
+              );
+              const version = infoVersion ?? connection.registration?.version;
+              const error = unsupportedServiceError(cause, version);
+              return error === undefined
+                ? yield* Effect.failCause(cause)
+                : yield* Effect.fail(error);
+            });
+          }),
+        );
       }),
     );
   }).pipe(
-    Effect.catch((cause) => Effect.fail(toolError(formatUnknown(cause)))),
+    Effect.catch((cause) =>
+      Effect.fail(cause instanceof ToolError ? cause : toolError(formatUnknown(cause))),
+    ),
   );
 
 /**
@@ -140,19 +169,13 @@ const snapshot = <A>(
   });
 
 export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
-  health: () =>
-    withAgentClient(options, (client) => client.GetHealth()).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+  health: () => withAgentClient(options, (client) => client.GetHealth()),
   listProjects: () =>
     withAgentClient(options, (client) => client.ListProjects()).pipe(
       Effect.map((response) => response.projects),
-      Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
   getProject: (projectId) =>
-    withAgentClient(options, (client) => client.GetProject({ projectId })).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => client.GetProject({ projectId })),
   createProject: (name, directory, artifact) =>
     withAgentClient(options, (client) =>
       client.CreateProject({
@@ -160,43 +183,29 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
         ...(directory === undefined ? {} : { directory }),
         ...(artifact === undefined ? {} : { artifact }),
       }),
-    ).pipe(Effect.mapError((error) => toolError(formatUnknown(error)))),
+    ),
   checkProject: (projectId) =>
-    withAgentClient(options, (client) => client.CheckProject({ projectId })).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => client.CheckProject({ projectId })),
   listProjectFiles: (projectId) =>
-    withAgentClient(options, (client) => client.ListProjectFiles({ projectId })).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => client.ListProjectFiles({ projectId })),
   listArtifacts: (projectId) =>
     withAgentClient(options, (client) => client.ListArtifacts({ projectId })).pipe(
       Effect.map((response) => response.artifacts),
-      Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
   restartProject: (projectId) =>
-    withAgentClient(options, (client) => client.RestartProject({ projectId })).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => client.RestartProject({ projectId })),
   listConnections: () =>
     withAgentClient(options, (client) => client.ListConnections()).pipe(
       Effect.map((response) => response.connections),
-      Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
   queryEventHistory: (request) =>
-    withAgentClient(options, (client) => client.QueryEventHistory(request)).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => client.QueryEventHistory(request)),
   listEventHistorySubscriptions: (request) =>
     withAgentClient(options, (client) =>
       client.ListEventHistorySubscriptions(request),
-    ).pipe(Effect.mapError((error) => toolError(formatUnknown(error)))),
+    ),
   logs: (request, take) =>
-    withAgentClient(options, (client) => snapshot(client.StreamLogs(request), take)).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => snapshot(client.StreamLogs(request), take)),
   events: (request, take) =>
-    withAgentClient(options, (client) => snapshot(client.StreamEvents(request), take)).pipe(
-      Effect.mapError((error) => toolError(formatUnknown(error))),
-    ),
+    withAgentClient(options, (client) => snapshot(client.StreamEvents(request), take)),
 });

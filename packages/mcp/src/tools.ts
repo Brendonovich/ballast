@@ -79,7 +79,25 @@ const defineTool = <S extends Schema.Top & { readonly DecodingServices: never }>
 const result = (text: string, data?: unknown): ToolOutput =>
   data === undefined ? { text } : { text, data };
 
-const failed = (message: string): ToolOutput => ({ text: message, isError: true });
+const failed = (message: string, data?: unknown): ToolOutput =>
+  data === undefined
+    ? { text: message, isError: true }
+    : { text: message, data, isError: true };
+
+const errorOutput = (error: ToolError): ToolOutput =>
+  failed(
+    error.message,
+    error.kind === undefined
+      ? undefined
+      : {
+          error: error.kind,
+          ...(error.feature === undefined ? {} : { feature: error.feature }),
+          ...(error.serviceVersion === undefined
+            ? {}
+            : { serviceVersion: error.serviceVersion }),
+          message: error.message,
+        },
+  );
 
 const callResult = (output: ToolOutput): McpSchema.CallToolResult => {
   // The MCP result schema encodes JSON values; a JSON round-trip drops
@@ -248,10 +266,35 @@ export const statusState = (
   return { state: "stopped" };
 };
 
-const formatStatus = (
+interface ArtifactListing {
+  readonly artifacts: ReadonlyArray<ArtifactSummary>;
+  readonly note?: string | undefined;
+}
+
+/**
+ * Old services do not know ListArtifacts. Check and status still have the
+ * manifest, so report everything else and omit artifacts with a note.
+ */
+export const loadArtifacts = (
+  adapter: ProjectAdapter,
+  projectId: string,
+): Effect.Effect<ArtifactListing> =>
+  adapter.listArtifacts(projectId).pipe(
+    Effect.map((artifacts) => ({ artifacts })),
+    Effect.catch((error) =>
+      Effect.succeed<ArtifactListing>(
+        error.kind === "unsupported-service"
+          ? { artifacts: [], note: error.message }
+          : { artifacts: [] },
+      ),
+    ),
+  );
+
+export const formatStatus = (
   detail: ProjectDetail,
   connections: ReadonlyArray<ConnectionSummary>,
   artifacts: ReadonlyArray<ArtifactSummary>,
+  artifactNote?: string,
 ): ToolOutput => {
   const project = detail.summary;
   const requirements = requirementViews(
@@ -324,7 +367,9 @@ const formatStatus = (
   if (extraScopes.length > 0) {
     lines.push("missing scopes: " + extraScopes.join(", "));
   }
-  if (artifacts.length > 0) {
+  if (artifactNote !== undefined) {
+    lines.push("artifacts: unavailable — " + artifactNote);
+  } else if (artifacts.length > 0) {
     lines.push("artifacts:");
     for (const artifact of artifacts) {
       lines.push(
@@ -378,6 +423,7 @@ const formatStatus = (
     units: detail.units,
     requirements,
     artifacts,
+    ...(artifactNote === undefined ? {} : { artifactNote }),
     declarations,
     missingConnections: (detail.requirements ?? []).filter(
       (requirement) => requirement.boundInstanceId === undefined,
@@ -472,17 +518,19 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
         const check = yield* context.adapter.checkProject(project.id);
-        const artifacts = yield* context.adapter
-          .listArtifacts(project.id)
-          .pipe(Effect.catch(() => Effect.succeed([])));
+        const listing = yield* loadArtifacts(context.adapter, project.id);
         const declarations = declarationUnits(
           check.manifest ?? check.appliedManifest,
-          artifacts,
+          listing.artifacts,
           check.summary.root,
           check.summary.status === "running",
+        ).filter(
+          (declaration) =>
+            listing.note === undefined || declaration.kind !== "artifact",
         );
         const extras = {
-          artifacts,
+          artifacts: listing.artifacts,
+          ...(listing.note === undefined ? {} : { artifactNote: listing.note }),
           declarations,
           artifactOnly:
             check.changes.length > 0 &&
@@ -531,10 +579,13 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
           const project = yield* context.adapter.resolveProject(input.project);
           const detail = yield* context.adapter.getProject(project.id);
           const connections = yield* context.adapter.listConnections();
-          const artifacts = yield* context.adapter
-            .listArtifacts(project.id)
-            .pipe(Effect.catch(() => Effect.succeed([])));
-          return formatStatus(detail, connections, artifacts);
+          const listing = yield* loadArtifacts(context.adapter, project.id);
+          return formatStatus(
+            detail,
+            connections,
+            listing.artifacts,
+            listing.note,
+          );
         }
         const [projects, health] = yield* Effect.all([
           context.adapter.listProjects(),
@@ -752,7 +803,9 @@ export const registerTools = (
         handle: (args: unknown) =>
           tool.call(args).pipe(
             Effect.map(callResult),
-            Effect.catch((error) => Effect.succeed(callResult(failed(error.message)))),
+            Effect.catch((error) =>
+              Effect.succeed(callResult(errorOutput(error))),
+            ),
             Effect.catchCause((cause) =>
               Effect.succeed(callResult(failed("Internal tool error: " + formatUnknown(cause)))),
             ),

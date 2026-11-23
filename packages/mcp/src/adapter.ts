@@ -509,6 +509,8 @@ export interface CheckExtras {
   readonly declarations: ReadonlyArray<DeclarationUnitView>;
   readonly artifactOnly: boolean;
   readonly requiresWorkerRestart: boolean;
+  /** Set when the service predates artifact listing; artifacts are omitted. */
+  readonly artifactNote?: string | undefined;
 }
 
 const changeSummary = (check: CheckResult, extras: CheckExtras | undefined): string => {
@@ -599,8 +601,15 @@ export const checkText = (
     }
     if (check.units.length > 40) lines.push("  … " + (check.units.length - 40) + " more");
   }
+  if (extras?.artifactNote !== undefined) {
+    lines.push("artifacts: unavailable — " + extras.artifactNote);
+  }
   if (extras !== undefined && extras.declarations.length > 0) {
-    lines.push("artifacts, api and stores:");
+    lines.push(
+      extras.declarations.some((declaration) => declaration.kind === "artifact")
+        ? "artifacts, api and stores:"
+        : "api and stores:",
+    );
     for (const declaration of extras.declarations) {
       lines.push(
         "  " +
