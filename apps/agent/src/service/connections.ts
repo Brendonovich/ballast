@@ -726,7 +726,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535
             ? parsed
             : DEFAULT_TWITCH_CALLBACK_PORT;
-        const redirectUrl = "http://127.0.0.1:" + port + "/callback";
+        const redirectUrl = "http://localhost:" + port + "/callback";
         return connectionIntegrations.map((entry) =>
           entry.integration === "twitch" ? { ...entry, redirectUrl } : entry,
         );

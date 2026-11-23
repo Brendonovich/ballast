@@ -207,7 +207,7 @@ ListIntegrations(): {
     requiresAuth: boolean;
     fields: ConnectionField[];
     description?: string;
-    redirectUrl?: string; // Twitch; always present, default port 17345
+    redirectUrl?: string; // Twitch; always present: http://localhost:17345/callback
   }>;
 }
 

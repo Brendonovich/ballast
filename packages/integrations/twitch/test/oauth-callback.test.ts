@@ -18,6 +18,20 @@ describe("OAuth localhost callback server", () => {
     }),
   );
 
+  it.effect("serves localhost over both IPv4 and IPv6", () =>
+    Effect.gen(function* () {
+      const server = yield* makeCallbackServer({ port: 0 });
+      const port = new URL(server.redirectUri).port;
+      const responses = yield* Effect.promise(() =>
+        Promise.all([
+          fetch(`http://127.0.0.1:${port}/callback?code=v4`),
+          fetch(`http://[::1]:${port}/callback?code=v6`),
+        ]),
+      );
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    }),
+  );
+
   it.effect("reports a busy fixed callback port", () =>
     Effect.gen(function* () {
       const first = yield* makeCallbackServer({ port: 0 });

@@ -359,7 +359,7 @@ export const connectionIntegrations: ReadonlyArray<ConnectionIntegration> = [
     fields: twitchFields,
     description:
       "A Twitch account through the Ballast cloud relay or your own Twitch application.",
-    redirectUrl: `http://127.0.0.1:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
+    redirectUrl: `http://localhost:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
   },
   {
     integration: "fake",

@@ -1,5 +1,7 @@
+import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import { createServer } from "node:http";
@@ -84,64 +86,65 @@ export const makeCallbackServer = (
   options: CallbackServerOptions = {},
 ): Effect.Effect<OAuthCallbackServer, OAuthCallbackError, import("effect/Scope").Scope> =>
   Effect.gen(function* () {
-    const host = options.host ?? "127.0.0.1";
-    const port = options.port ?? 0;
+    const host = options.host ?? "localhost";
+    const requestedPort = options.port ?? 0;
     const path = options.path ?? "/callback";
     const results = yield* Queue.unbounded<CallbackMessage>();
     let redirectUri = "";
 
-    const server = yield* Effect.acquireRelease(
-      Effect.callback<Server, OAuthCallbackError>((resume) => {
-        const started = createServer((request, response) => {
-          const url = new URL(request.url ?? "/", "http://" + host + (port === 0 ? "" : ":" + port));
-          if (url.pathname !== path) {
-            respond(response, 404, "<!doctype html><p>Not found</p>");
-            return;
-          }
+    const handleRequest = (request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse) => {
+      const url = new URL(request.url ?? "/", "http://localhost");
+      if (url.pathname !== path) {
+        respond(response, 404, "<!doctype html><p>Not found</p>");
+        return;
+      }
 
-          const error = url.searchParams.get("error");
-          if (error !== null) {
-            respond(response, 400, options.failureHtml ?? defaultFailureHtml);
-            Queue.offerUnsafe(results, {
-              _tag: "failed",
-              reason: url.searchParams.get("error_description") ?? error,
-            });
-            return;
-          }
-
-          const code = url.searchParams.get("code");
-          const state = url.searchParams.get("state") ?? undefined;
-          if (code === null || code.length === 0) {
-            respond(response, 400, options.failureHtml ?? defaultFailureHtml);
-            Queue.offerUnsafe(results, { _tag: "failed", reason: "Callback did not include a code" });
-            return;
-          }
-          if (options.state !== undefined && state !== options.state) {
-            respond(response, 400, options.failureHtml ?? defaultFailureHtml);
-            Queue.offerUnsafe(results, {
-              _tag: "failed",
-              reason: "Callback state did not match the authorization request",
-            });
-            return;
-          }
-
-          respond(response, 200, options.successHtml ?? defaultSuccessHtml);
-          Queue.offerUnsafe(results, { _tag: "authorized", code, state });
+      const error = url.searchParams.get("error");
+      if (error !== null) {
+        respond(response, 400, options.failureHtml ?? defaultFailureHtml);
+        Queue.offerUnsafe(results, {
+          _tag: "failed",
+          reason: url.searchParams.get("error_description") ?? error,
         });
+        return;
+      }
 
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state") ?? undefined;
+      if (code === null || code.length === 0) {
+        respond(response, 400, options.failureHtml ?? defaultFailureHtml);
+        Queue.offerUnsafe(results, { _tag: "failed", reason: "Callback did not include a code" });
+        return;
+      }
+      if (options.state !== undefined && state !== options.state) {
+        respond(response, 400, options.failureHtml ?? defaultFailureHtml);
+        Queue.offerUnsafe(results, {
+          _tag: "failed",
+          reason: "Callback state did not match the authorization request",
+        });
+        return;
+      }
+
+      respond(response, 200, options.successHtml ?? defaultSuccessHtml);
+      Queue.offerUnsafe(results, { _tag: "authorized", code, state });
+    };
+
+    const startListener = (address: string, listenPort: number) =>
+      Effect.callback<Server, OAuthCallbackError>((resume) => {
+        const started = createServer(handleRequest);
         const onError = (cause: Error) =>
           resume(
             Effect.fail(
               new OAuthCallbackError({
                 reason: cause.message.includes("EADDRINUSE")
-                  ? `Twitch callback port ${port} is already in use. Stop the process using it, or set BALLAST_TWITCH_CALLBACK_PORT to a free port and register that redirect URL in the Twitch developer console.`
+                  ? `Twitch callback port ${requestedPort === 0 ? listenPort : requestedPort} is already in use. Stop the process using it, or set BALLAST_TWITCH_CALLBACK_PORT to a free port and register that redirect URL in the Twitch developer console.`
                   : "Could not start the Twitch callback server: " + cause.message,
               }),
             ),
           );
 
         started.once("error", onError);
-        started.listen(port, host, () => {
+        started.listen(listenPort, address, () => {
           started.off("error", onError);
           resume(Effect.succeed(started));
         });
@@ -150,17 +153,35 @@ export const makeCallbackServer = (
           started.off("error", onError);
           started.close();
         });
-      }),
-      (started) => Effect.sync(() => started.close()),
-    );
+      });
 
-    const address = server.address();
-    if (address === null || typeof address === "string") {
+    // Twitch requires an exact redirect URI and recommends localhost. Bind
+    // both loopback families so `localhost` reaches us whether it resolves to
+    // 127.0.0.1 or ::1.
+    const addresses = host === "localhost" ? ["127.0.0.1", "::1"] : [host];
+    const first = yield* Effect.acquireRelease(
+      startListener(addresses[0] ?? "127.0.0.1", requestedPort),
+      (server) => Effect.sync(() => server.close()),
+    );
+    const firstAddress = first.address();
+    if (firstAddress === null || typeof firstAddress === "string") {
       return yield* new OAuthCallbackError({
         reason: "The Twitch callback server did not report a TCP port",
       });
     }
-    redirectUri = "http://" + host + ":" + address.port + path;
+    const boundPort = firstAddress.port;
+    for (const address of addresses.slice(1)) {
+      const started = yield* startListener(address, boundPort).pipe(Effect.exit);
+      if (Exit.isFailure(started)) {
+        first.close();
+        const failure = Cause.squash(started.cause);
+        return yield* new OAuthCallbackError({
+          reason: failure instanceof Error ? failure.message : String(failure),
+        });
+      }
+      yield* Effect.addFinalizer(() => Effect.sync(() => started.value.close()));
+    }
+    redirectUri = "http://" + host + ":" + boundPort + path;
 
     const wait = Queue.take(results).pipe(
       Effect.timeoutOrElse({

@@ -228,7 +228,7 @@ describe("connection instances", () => {
       const twitch = integrations.find((entry) => entry.integration === "twitch");
       expect(twitch?.modes).toContain("cloud");
       expect(twitch?.redirectUrl).toBe(
-        `http://127.0.0.1:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
+        `http://localhost:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
       );
 
       const projectA = yield* makeProject(root, "project-a");

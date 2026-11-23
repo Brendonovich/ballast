@@ -118,7 +118,7 @@ ballast auth twitch broadcaster \
 - With a client secret, the command uses the authorization-code flow with a
   localhost callback. Register the exact redirect URI in the Twitch developer
   console. The stable default is
-  `http://127.0.0.1:17345/callback`; pass `--callback-port <port>` or set
+  `http://localhost:17345/callback`; pass `--callback-port <port>` or set
   `BALLAST_TWITCH_CALLBACK_PORT` to use another fixed port. Twitch requires an
   exact match. If the fixed port is busy, authorization fails with a clear
   "port is already in use" error instead of silently changing ports.
