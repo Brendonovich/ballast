@@ -214,11 +214,73 @@ describe("project scaffolding and checks", () => {
         (yield* Effect.promise(() => stat(join(projectRoot, "src", "api.ts")))).isFile(),
       ).toBe(true);
 
+      const artifactsConfig = yield* Effect.promise(() =>
+        readFile(join(projectRoot, "artifacts", "tsconfig.json"), "utf8"),
+      );
+      expect(artifactsConfig).toContain('"jsx": "preserve"');
+      expect(artifactsConfig).toContain('"jsxImportSource": "solid-js"');
+      expect(artifactsConfig).toContain('"DOM"');
+      expect(artifactsConfig).toContain('"../src/**/*.ts"');
+      expect(artifactsConfig).toContain("@ballast/artifact/protocol");
+      expect(artifactsConfig).toContain("@ballast/artifact/solid");
+      expect(artifactsConfig).toContain("solid-js/web");
+      const rootConfig = yield* Effect.promise(() =>
+        readFile(join(projectRoot, "tsconfig.json"), "utf8"),
+      );
+      expect(rootConfig).toContain('"artifacts"');
+
       const check = yield* call(root, (client) =>
         client.CheckProject({ projectId: created.summary.id }),
       );
       expect(check.ok).toBe(true);
       expect((check.manifest?.artifacts ?? []).some((artifact) => artifact.name === "dashboard")).toBe(true);
+
+      const artifactFile = join(projectRoot, "artifacts", "dashboard", "main.tsx");
+      const artifactSource = yield* Effect.promise(() => readFile(artifactFile, "utf8"));
+      yield* Effect.promise(() =>
+        writeFile(artifactFile, artifactSource + '\nconst brokenArtifact: number = "nope";\n', "utf8"),
+      );
+      const broken = yield* call(root, (client) =>
+        client.CheckProject({ projectId: created.summary.id }),
+      );
+      expect(broken.ok).toBe(false);
+      expect(
+        broken.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.file === "artifacts/dashboard/main.tsx" &&
+            diagnostic.code === "TS2322",
+        ),
+      ).toBe(true);
+
+      yield* Effect.promise(() =>
+        writeFile(artifactFile, artifactSource, "utf8"),
+      );
+      const userEdited = artifactsConfig + "// user edit\n";
+      yield* Effect.promise(() =>
+        writeFile(join(projectRoot, "artifacts", "tsconfig.json"), userEdited, "utf8"),
+      );
+      const afterEdit = yield* call(root, (client) =>
+        client.CheckProject({ projectId: created.summary.id }),
+      );
+      expect(afterEdit.ok).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          readFile(join(projectRoot, "artifacts", "tsconfig.json"), "utf8"),
+        ),
+      ).toBe(userEdited);
+
+      yield* Effect.promise(() =>
+        rm(join(projectRoot, "artifacts", "tsconfig.json"), { force: true }),
+      );
+      const afterDelete = yield* call(root, (client) =>
+        client.CheckProject({ projectId: created.summary.id }),
+      );
+      expect(afterDelete.ok).toBe(true);
+      const recreated = yield* Effect.promise(() =>
+        readFile(join(projectRoot, "artifacts", "tsconfig.json"), "utf8"),
+      );
+      expect(recreated).toContain('"extends": "../tsconfig.json"');
+      expect(recreated).toContain('"../src/**/*.ts"');
     }),
     120_000,
   );

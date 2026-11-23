@@ -269,9 +269,9 @@ describe("plan", () => {
       );
 
       const error = yield* planProject(root).pipe(Effect.flip);
-      expect(error.message).toContain("ballast.ts:1:1");
-      expect(error.message).toContain("This reads a runtime value");
-      expect(error.message).toContain("inside a subscribe handler, Ballast.run");
+      expect(error.message).toContain("ballast.ts:5:");
+      expect(error.message).toContain('Param "greeting" was read during init');
+      expect(error.message).toContain("inside handlers/runs");
     }),
   );
 
@@ -299,12 +299,13 @@ describe("plan", () => {
       );
 
       const error = yield* planProject(root).pipe(Effect.flip);
-      expect(error.message).toContain("ballast.ts:1:1");
-      expect(error.message).toContain("This reads a runtime value");
+      expect(error.message).toContain("DatabaseCalledDuringPlanError");
+      expect(error.message).toContain('Database "main" was read during plan');
+      expect(error.message).not.toContain("TS_INIT_RUNTIME");
     }),
   );
 
-  it.effect("uses the user's Project satisfies location for an init read", () =>
+  it.effect("prefers the declaration location over the Project satisfies location", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-init-project-")));
       yield* Effect.addFinalizer(() =>
@@ -328,8 +329,8 @@ describe("plan", () => {
       );
 
       const error = yield* planProject(root).pipe(Effect.flip);
-      expect(error.message).toContain("ballast.ts:7:");
-      expect(error.message).toContain("This reads a runtime value");
+      expect(error.message).toContain("ballast.ts:5:");
+      expect(error.message).toContain('Param "greeting" was read during init');
     }),
   );
 
@@ -402,6 +403,43 @@ describe("plan", () => {
       );
       expect(javascript).toContain("reset");
       expect(built.htmlPath.endsWith("index.html")).toBe(true);
+    }),
+  );
+
+  it.effect("bundles a copied artifact project with the CLI stage resolveDir", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), "ballast-artifact-resolve-")),
+      );
+      const source = fileURLToPath(
+        new URL("../../../examples/stream-dashboard", import.meta.url),
+      );
+      const resolveDir = fileURLToPath(new URL("../../../apps/agent", import.meta.url));
+      yield* Effect.promise(() => cp(source, root, { recursive: true }));
+      try {
+        const project = yield* planProject(root, { resolveDir });
+        expect(project.artifacts[0]?.bytes).toBeGreaterThan(0);
+        const html = yield* Effect.promise(() =>
+          readFile(join(root, ".ballast", "artifacts", "dashboard", "index.html"), "utf8"),
+        );
+        expect(html).toContain("bootstrap.js");
+      } finally {
+        yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+      }
+    }),
+  );
+
+  it.effect("locates a runtime read introduced by an init helper", () =>
+    Effect.gen(function* () {
+      const error = yield* planProject(
+        fileURLToPath(new URL("./fixtures/runtime-helper", import.meta.url)),
+      ).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ProjectPlanError);
+      if (!(error instanceof ProjectPlanError)) return;
+      expect(error.message).toContain('Param "prefix" was read during init');
+      expect(error.message).toContain("helper.ts:6");
+      expect(error.message).not.toContain("ballast.ts:");
     }),
   );
 

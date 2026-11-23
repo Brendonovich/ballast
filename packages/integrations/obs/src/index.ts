@@ -8,6 +8,12 @@ export { INTEGRATION } from "./constants.ts";
 export * from "./generated/protocol.ts";
 
 /**
+ * Driver lifecycle for this slot. Published on connect and reconnect, and on
+ * disconnect; history is off by default.
+ */
+export const ConnectionState = Ballast.ConnectionState.topic(INTEGRATION);
+
+/**
  * Declare an OBS connection slot and acquire its typed client. Every
  * obs-websocket request is a method on the client; OBS has no scopes, so the
  * connection grants the whole `obs/*` request namespace in the manifest.

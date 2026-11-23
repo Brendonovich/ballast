@@ -1,6 +1,8 @@
 import { basename } from "node:path";
+import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import { emptyManifest, type Manifest } from "@ballast/core";
 import { bundleArtifacts } from "./artifacts.ts";
 import type { BuiltArtifact } from "./artifacts.ts";
@@ -44,19 +46,7 @@ export const planProject = (
       ),
     );
     const checked = yield* typecheckProject(entry.root, { entry: entry.entryFile });
-    if (!checked.ok) {
-      const first = checked.diagnostics[0];
-      return yield* Effect.fail(
-        new ProjectPlanError({
-          message:
-            first === undefined
-              ? "Typecheck failed: " + checked.raw.trim()
-              : first.file + ":" + first.line + ":" + first.column + " — " + first.message,
-          diagnostics: checked.diagnostics,
-        }),
-      );
-    }
-    const planned = yield* planDetails(entry.entryFile, {
+    const plannedEffect = planDetails(entry.entryFile, {
       ...options,
       scriptId: entry.entry,
       projectId: options.projectId ?? basename(entry.root),
@@ -71,6 +61,43 @@ export const planProject = (
           }),
       ),
     );
+    if (!checked.ok) {
+      const runtimeOnly =
+        checked.diagnostics.length > 0 &&
+        checked.diagnostics.every((diagnostic) =>
+          diagnostic.message.startsWith("TS_INIT_RUNTIME:"),
+        );
+      if (runtimeOnly) {
+        // The type gate only knows that the entry requires Runtime. Evaluate
+        // init once more without the gate so a param/timer/request read can
+        // report the declaration or call site that introduced it.
+        const attempted = yield* plannedEffect.pipe(Effect.exit);
+        if (Exit.isFailure(attempted)) {
+          const failure = Cause.squash(attempted.cause);
+          const message =
+            failure instanceof Error ? failure.message : String(failure);
+          if (/during (?:init|plan)/.test(message)) {
+            return yield* Effect.fail(
+              new ProjectPlanError({
+                message,
+                diagnostics: checked.diagnostics,
+              }),
+            );
+          }
+        }
+      }
+      const first = checked.diagnostics[0];
+      return yield* Effect.fail(
+        new ProjectPlanError({
+          message:
+            first === undefined
+              ? "Typecheck failed: " + checked.raw.trim()
+              : first.file + ":" + first.line + ":" + first.column + " — " + first.message,
+          diagnostics: checked.diagnostics,
+        }),
+      );
+    }
+    const planned = yield* plannedEffect;
     const artifacts = yield* Effect.tryPromise({
       try: () =>
         bundleArtifacts(entry.root, planned.manifest.artifacts, options.resolveDir),

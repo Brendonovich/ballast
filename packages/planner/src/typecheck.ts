@@ -429,6 +429,49 @@ const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
     ) + "\n",
     "utf8",
   );
+  // Prefer the editor's artifacts/tsconfig.json. Create it on plan when the
+  // project has a root tsconfig, without overwriting user edits.
+  const artifactsDirectory = join(projectRoot, "artifacts");
+  const projectArtifact = join(artifactsDirectory, "tsconfig.json");
+  if (existsSync(projectArtifact)) {
+    return { worker, artifact: projectArtifact };
+  }
+  if (existsSync(join(projectRoot, "tsconfig.json"))) {
+    const artifactsExtends = relative(artifactsDirectory, base).split("\\").join("/");
+    const artifactsExtendsValue = artifactsExtends.startsWith(".")
+      ? artifactsExtends
+      : "./" + artifactsExtends;
+    await writeFile(
+      projectArtifact,
+      JSON.stringify(
+        {
+          extends: artifactsExtendsValue,
+          compilerOptions: {
+            lib: ["ES2024", "DOM", "DOM.Iterable"],
+            jsx: "preserve",
+            jsxImportSource: "solid-js",
+            types: [],
+            noEmit: true,
+            composite: false,
+            declaration: false,
+            declarationMap: false,
+            emitDeclarationOnly: false,
+            sourceMap: false,
+            incremental: false,
+          },
+          include: ["**/*.ts", "**/*.tsx", "../src/**/*.ts"],
+          exclude: ["../node_modules", "../dist", "../.ballast"],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+    return { worker, artifact: projectArtifact };
+  }
+
+  // Projects without a root config (tests, ad-hoc folders) keep the generated
+  // hidden artifact config.
   const artifact = join(directory, "tsconfig.artifacts.json");
   await writeFile(
     artifact,

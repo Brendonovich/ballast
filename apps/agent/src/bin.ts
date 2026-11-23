@@ -340,7 +340,7 @@ const planCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, Cl
       Effect.mapError((cause) => new Error(cause.message)),
     );
     const manifest = yield* (info.type === "Directory"
-      ? planProject(options.entry).pipe(
+      ? planProject(options.entry, { resolveDir: yield* resolveDir(path) }).pipe(
           Effect.map((project) => project.manifest),
           Effect.mapError((error) => new Error(error.message)),
         )

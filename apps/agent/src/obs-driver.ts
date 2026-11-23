@@ -50,7 +50,25 @@ export const startObsDriver = (
       import("./obs-protocol.ts").ObsSocketClient | undefined
     >(undefined);
     const ready = yield* Deferred.make<void>();
+    const connected = yield* Ref.make(false);
+    const everConnected = yield* Ref.make(false);
     const subscriptionMask = subscriptionMaskForTopics(options.topics);
+    const stateTopic = topicKey(options.slot, "ConnectionState");
+    const stateSubscribed = options.topics.some((topic) => {
+      const name = topic.startsWith(INTEGRATION + "/")
+        ? topic.slice(INTEGRATION.length + 1)
+        : topic;
+      return name === "ConnectionState" || name.endsWith("/ConnectionState");
+    });
+    const publishState = (state: "connected" | "disconnected", reconnected: boolean) => {
+      if (stateSubscribed) {
+        options.publish(stateTopic, {
+          state,
+          reconnected,
+          at: Date.now(),
+        });
+      }
+    };
 
     const loop = Effect.gen(function* () {
       let attempt = 0;
@@ -68,6 +86,9 @@ export const startObsDriver = (
             yield* Ref.set(current, client);
             attempt = 0;
             console.log("[obs:" + options.slot + "] connected (" + options.url + ")");
+            yield* Ref.set(connected, true);
+            const reconnected = yield* Ref.getAndSet(everConnected, true);
+            publishState("connected", reconnected);
             yield* Deferred.succeed(ready, undefined);
 
             yield* Effect.forkScoped(
@@ -84,6 +105,9 @@ export const startObsDriver = (
         ).pipe(Effect.exit);
 
         yield* Ref.set(current, undefined);
+        if (yield* Ref.getAndSet(connected, false)) {
+          publishState("disconnected", false);
+        }
         const reason = Exit.isFailure(result)
           ? errorMessage(Cause.squash(result.cause))
           : "connection closed";

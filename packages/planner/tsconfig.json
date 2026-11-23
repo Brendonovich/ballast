@@ -11,7 +11,8 @@
     "test/fixtures/project",
     "test/fixtures/duplicate",
     "test/fixtures/artifact-type-error",
-    "test/fixtures/duplicate-api"
+    "test/fixtures/duplicate-api",
+    "test/fixtures/runtime-helper"
   ],
   "references": [
     {

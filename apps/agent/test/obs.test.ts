@@ -133,24 +133,70 @@ describe("obs-websocket protocol", () => {
 
 describe("obs driver", () => {
   it.live(
+    "publishes connection state for a service-relative topic name",
+    () =>
+      withServer({}, (server) =>
+        Effect.gen(function* () {
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const states = yield* Queue.unbounded<{
+            readonly key: string;
+            readonly payload: unknown;
+          }>();
+
+          const driver = yield* startObsDriver({
+            slot: "main",
+            url: server.url,
+            topics: ["ConnectionState"],
+            publish: (key, payload) => Queue.offerUnsafe(states, { key, payload }),
+          }).pipe(Scope.provide(scope));
+
+          yield* driver.ready.pipe(Effect.timeout("5 seconds"));
+          const state = yield* Queue.take(states);
+          expect(state).toMatchObject({
+            key: "obs/main/obs/ConnectionState",
+            payload: { state: "connected", reconnected: false },
+          });
+        }),
+      ),
+    10_000,
+  );
+
+  it.live(
     "reconnects with backoff after the server restarts",
     () =>
       withServer({}, (server) =>
         Effect.gen(function* () {
           const scope = yield* Scope.make();
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const states = yield* Queue.unbounded<{
+            readonly key: string;
+            readonly payload: unknown;
+          }>();
 
           const driver = yield* startObsDriver({
             slot: "main",
             url: server.url,
-            topics: [],
-            publish: () => undefined,
+            topics: ["obs/ConnectionState"],
+            publish: (key, payload) => Queue.offerUnsafe(states, { key, payload }),
           }).pipe(Scope.provide(scope));
 
           yield* driver.ready.pipe(Effect.timeout("5 seconds"));
 
+          const first = yield* Queue.take(states);
+          expect(first).toMatchObject({
+            key: "obs/main/obs/ConnectionState",
+            payload: { state: "connected", reconnected: false },
+          });
+
           yield* Effect.promise(() => server.close());
           yield* Effect.sleep("300 millis");
+          const disconnected = yield* Queue.take(states);
+          expect(disconnected).toMatchObject({
+            key: "obs/main/obs/ConnectionState",
+            payload: { state: "disconnected", reconnected: false },
+          });
+
           const restarted = yield* Effect.promise(() =>
             startMockObsServer({ port: server.port }),
           );
@@ -165,6 +211,12 @@ describe("obs driver", () => {
           }).pipe(Effect.timeout("10 seconds"));
 
           expect(response).toMatchObject({ obsWebSocketVersion: "5.7.0" });
+
+          const reconnected = yield* Queue.take(states);
+          expect(reconnected).toMatchObject({
+            key: "obs/main/obs/ConnectionState",
+            payload: { state: "connected", reconnected: true },
+          });
         }),
       ),
     20_000,

@@ -69,6 +69,9 @@ export type {
   ApiStart,
 } from "./api.ts";
 export { ApiAction, ApiDeclarationError, ApiHost } from "./api.ts";
+export * as ConnectionState from "./connection-state.ts";
+export type { ConnectionStatePayload } from "./connection-state.ts";
+export { ConnectionStatePayloadSchema } from "./connection-state.ts";
 export * as Store from "./store.ts";
 export type {
   Counter,
