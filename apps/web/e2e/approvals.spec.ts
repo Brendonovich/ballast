@@ -9,7 +9,15 @@ const installPermissionBridge = async (page: Page): Promise<void> => {
       localStorage.setItem("ballast.theme", "dark");
     }
     Reflect.set(window, "ballast", {
-      version: 1,
+      version: 2,
+      windows: {
+        context: async () => ({ kind: "home", route: "connections" }),
+        openProjectWindow: async () => {},
+        openHome: async () => {},
+      },
+      projects: {
+        setMenu: async () => {},
+      },
       permissions: {
         status: async () => ({ accessibility: "denied" }),
         requestAccessibility: async () => {

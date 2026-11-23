@@ -1,4 +1,4 @@
-import type { BallastBridge, ServiceAction, ServiceStatus } from "@ballast/desktop/bridge";
+import type { BallastBridge } from "@ballast/desktop/bridge";
 
 /**
  * The Electron preload injects `window.ballast`. The web build only needs the
@@ -15,4 +15,11 @@ export const getDesktopBridge = (): BallastBridge | undefined => {
   return window.ballast;
 };
 
-export type { BallastBridge, ServiceAction, ServiceStatus };
+export type {
+  BallastBridge,
+  HomeRoute,
+  ProjectMenuItem,
+  ServiceAction,
+  ServiceStatus,
+  WindowContext,
+} from "@ballast/desktop/bridge";

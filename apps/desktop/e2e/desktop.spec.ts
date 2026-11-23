@@ -128,6 +128,40 @@ const waitFor = async <A>(
   throw new Error("timed out waiting for " + label);
 };
 
+const bridgeOpenProject = async (
+  page: Page,
+  projectId: string,
+  newWindow: boolean,
+): Promise<void> => {
+  await page.evaluate(
+    async ({ id, separate }) => {
+      const bridge: unknown = Reflect.get(globalThis, "ballast");
+      if (typeof bridge !== "object" || bridge === null) {
+        throw new Error("window.ballast is missing");
+      }
+      const windows: unknown = Reflect.get(bridge, "windows");
+      if (typeof windows !== "object" || windows === null) {
+        throw new Error("window.ballast.windows is missing");
+      }
+      const open = Reflect.get(windows, "openProjectWindow");
+      if (typeof open !== "function") {
+        throw new Error("openProjectWindow is missing");
+      }
+      await open.call(windows, id, { newWindow: separate });
+    },
+    { id: projectId, separate: newWindow },
+  );
+};
+
+const projectPage = async (
+  ui: ElectronApplication,
+  projectId: string,
+): Promise<Page> =>
+  waitFor("project window " + projectId, async () => {
+    const encoded = encodeURIComponent(projectId);
+    return ui.windows().find((candidate) => candidate.url().includes("/projects/" + encoded));
+  });
+
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -161,7 +195,7 @@ export default Effect.gen(function* () {
       yield* Effect.log(text);
     }),
   );
-});
+}) satisfies Ballast.Project;
 `;
 
 test("real service + Electron UI survives quitting the window", async ({}, testInfo) => {
@@ -176,6 +210,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
   const userDataDir = path.join(root, "userData");
   const serviceLog = path.join(logDir, "service.log");
   const project = path.join(root, "project");
+  const secondProject = path.join(root, "project-two");
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -218,23 +253,27 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
   };
 
   try {
-    await mkdir(project, { recursive: true });
-    await mkdir(path.join(project, "node_modules", "@ballast"), { recursive: true });
     await mkdir(stateDir, { recursive: true });
     await mkdir(dataDir, { recursive: true });
-    for (const pkg of ["core", "fake"]) {
+    for (const [directory, script] of [
+      [project, tickScript],
+      [secondProject, tickScript.replace("E2E Tick", "E2E Second")],
+    ] as const) {
+      await mkdir(path.join(directory, "node_modules", "@ballast"), { recursive: true });
+      for (const pkg of ["core", "fake"]) {
+        await symlink(
+          path.join(agentRoot, "node_modules", "@ballast", pkg),
+          path.join(directory, "node_modules", "@ballast", pkg),
+          "dir",
+        );
+      }
       await symlink(
-        path.join(agentRoot, "node_modules", "@ballast", pkg),
-        path.join(project, "node_modules", "@ballast", pkg),
+        path.join(agentRoot, "node_modules", "effect"),
+        path.join(directory, "node_modules", "effect"),
         "dir",
       );
+      await writeFile(path.join(directory, "ballast.ts"), script, "utf8");
     }
-    await symlink(
-      path.join(agentRoot, "node_modules", "effect"),
-      path.join(project, "node_modules", "effect"),
-      "dir",
-    );
-    await writeFile(path.join(project, "ballast.ts"), tickScript, "utf8");
     await stat(path.join(agentRoot, "dist-service", "main.mjs"));
 
     // 1. Start the real service as a detached background process via the
@@ -254,6 +293,16 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       added.stdout,
     ).summary.id;
     expect(projectId.length).toBeGreaterThan(0);
+
+    const addedSecond = await runCli(
+      ["projects", "add", secondProject, "--name", "E2E Second"],
+      env,
+    );
+    expect(addedSecond.code, addedSecond.stderr).toBe(0);
+    const secondProjectId = parseCliJson<{ readonly summary: { readonly id: string } }>(
+      addedSecond.stdout,
+    ).summary.id;
+    expect(secondProjectId.length).toBeGreaterThan(0);
 
     const configured = await runCli(["connections", "configure", "fake/main"], env);
     expect(configured.code, configured.stderr).toBe(0);
@@ -345,14 +394,62 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     });
     expect(health.ok).toBe(true);
 
-    await page.evaluate(
-      (hash) => {
-        globalThis.location.hash = hash;
-      },
-      "#/projects/" + encodeURIComponent(projectId),
+    await expect(page).toHaveTitle("Ballast");
+    const homeRow = page.getByTestId("project-row").filter({ hasText: "E2E Tick" });
+    await expect(homeRow).toBeVisible({ timeout: 30_000 });
+    await homeRow.getByTestId("project-open").click();
+    await page.waitForURL(
+      new RegExp("#/projects/" + encodeURIComponent(projectId) + "$"),
+      { timeout: 30_000 },
     );
-    await expect(page.locator("body")).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("ballast-e2e-ui.png"), fullPage: true });
+    await expect.poll(() => page.title()).toBe("E2E Tick — Ballast");
+    await expect(page.getByTestId("project-nav-projects")).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("ballast-window-1.png"), fullPage: true });
+
+    await bridgeOpenProject(page, secondProjectId, true);
+    const secondPage = await projectPage(ui, secondProjectId);
+    await expect.poll(() => secondPage.title()).toBe("E2E Second — Ballast");
+    await expect.poll(() => ui.windows().length).toBe(2);
+
+    // Opening an already-open project focuses its window instead of duplicating it.
+    await bridgeOpenProject(secondPage, secondProjectId, true);
+    const focusedSecond = await ui.evaluate(
+      ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
+    );
+    expect(focusedSecond).toContain(encodeURIComponent(secondProjectId));
+    await bridgeOpenProject(secondPage, projectId, true);
+    const focusedFirst = await ui.evaluate(
+      ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
+    );
+    expect(focusedFirst).toContain(encodeURIComponent(projectId));
+    await expect.poll(() => ui.windows().length).toBe(2);
+    await secondPage.screenshot({
+      path: testInfo.outputPath("ballast-window-2.png"),
+      fullPage: true,
+    });
+
+    const firstBounds = { x: 20, y: 40, width: 900, height: 620 };
+    const secondBounds = { x: 700, y: 40, width: 900, height: 620 };
+    await ui.evaluate(
+      ({ BrowserWindow }, bounds) => {
+        for (const window of BrowserWindow.getAllWindows()) {
+          const url = window.webContents.getURL();
+          if (url.includes("/projects/" + encodeURIComponent(bounds.firstId))) {
+            window.setBounds(bounds.first);
+          }
+          if (url.includes("/projects/" + encodeURIComponent(bounds.secondId))) {
+            window.setBounds(bounds.second);
+          }
+        }
+      },
+      {
+        firstId: projectId,
+        secondId: secondProjectId,
+        first: firstBounds,
+        second: secondBounds,
+      },
+    );
+    await sleep(500);
 
     const beforeQuit = await readFile(serviceLog, "utf8").catch(() => "");
     const ticksBeforeQuit = (beforeQuit.match(/tick \d+/g) ?? []).length;
@@ -367,13 +464,46 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     );
     expect(afterQuitHealth.ok).toBe(true);
     expect(afterQuitHealth.pid).toBe(servicePid);
+
+    // 5. Relaunch restores the two project windows and their bounds.
+    ui = await electron.launch({
+      executablePath: electronPath,
+      args: ["."],
+      cwd: desktopRoot,
+      env,
+      timeout: 60_000,
+    });
+    await waitFor("restored windows", async () =>
+      ui !== undefined && ui.windows().length >= 2 ? true : undefined,
+    );
+    const restoredFirst = await projectPage(ui, projectId);
+    const restoredSecond = await projectPage(ui, secondProjectId);
+    await expect.poll(() => restoredFirst.title()).toBe("E2E Tick — Ballast");
+    await expect.poll(() => restoredSecond.title()).toBe("E2E Second — Ballast");
+    const restoredBounds = await ui.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().map((window) => ({
+        url: window.webContents.getURL(),
+        bounds: window.getBounds(),
+      })),
+    );
+    const firstRestored = restoredBounds.find((entry) =>
+      entry.url.includes("/projects/" + encodeURIComponent(projectId)),
+    );
+    const secondRestored = restoredBounds.find((entry) =>
+      entry.url.includes("/projects/" + encodeURIComponent(secondProjectId)),
+    );
+    expect(firstRestored?.bounds).toEqual(firstBounds);
+    expect(secondRestored?.bounds).toEqual(secondBounds);
+
+    await ui.close();
+    ui = undefined;
     const afterQuit = await waitFor("ticks after UI quit", async () => {
       const content = await readFile(serviceLog, "utf8").catch(() => "");
       return (content.match(/tick \d+/g) ?? []).length > ticksBeforeQuit ? content : undefined;
     });
     expect(afterQuit.length).toBeGreaterThan(beforeQuit.length);
 
-    // 5. Stop through the launcher and prove nothing is left.
+    // 6. Stop through the launcher and prove nothing is left.
     const stopped = await runDemo("stop", env);
     expect(stopped.ok, stopped.message).toBe(true);
     expect(stopped.status).toMatchObject({ phase: "stopped", running: false });

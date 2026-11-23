@@ -92,8 +92,28 @@ const applyTheme = async (page: Page, theme: "dark" | "light"): Promise<void> =>
     .toBe(theme);
 };
 
+const goHome = async (page: Page): Promise<void> => {
+  const compact = page.getByTestId("project-nav-projects");
+  if (await compact.isVisible().catch(() => false)) {
+    await compact.click();
+  } else {
+    await page.getByTestId("nav-projects").click();
+  }
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+};
+
+const goConnections = async (page: Page): Promise<void> => {
+  const compact = page.getByTestId("project-nav-connections");
+  if (await compact.isVisible().catch(() => false)) {
+    await compact.click();
+  } else {
+    await page.getByTestId("nav-connections").click();
+  }
+  await expect(page.getByTestId("connection-row").first()).toBeVisible();
+};
+
 const createProject = async (page: Page, name: string): Promise<void> => {
-  await page.getByTestId("nav-projects").click();
+  await goHome(page);
   await page.getByTestId("new-project").click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByTestId("create-project-name").fill(name);
@@ -102,7 +122,7 @@ const createProject = async (page: Page, name: string): Promise<void> => {
 };
 
 const openProject = async (page: Page, name: string): Promise<void> => {
-  await page.getByTestId("nav-projects").click();
+  await goHome(page);
   const row = page.getByTestId("project-row").filter({ hasText: name });
   await expect(row).toBeVisible();
   await row.getByRole("button").first().click();
@@ -125,7 +145,7 @@ const fillObsForm = async (
   label: string,
   url: string,
 ): Promise<void> => {
-  await page.getByTestId("nav-connections").click();
+  await goConnections(page);
   await page.getByTestId("add-connection").click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByTestId("connection-integration").selectOption("obs");
@@ -171,7 +191,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 
     // ListIntegrations drives the catalog; the fixed callback port supplies Twitch's redirect URL.
-    await page.getByTestId("nav-connections").click();
+    await goConnections(page);
     await page.getByTestId("add-connection").click();
     const catalogDialog = page.getByRole("dialog");
     await expect(catalogDialog.getByTestId("connection-integration")).toContainText("OBS Studio");
@@ -290,7 +310,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     });
 
     // The UI explains the bound instance cannot be deleted; the service refuses it.
-    await page.getByTestId("nav-connections").click();
+    await goConnections(page);
     const backupRow = page
       .getByTestId("connection-row")
       .filter({ hasText: "Backup OBS" });
@@ -324,7 +344,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     const needsName = "E2E Needs";
     await createProject(page, needsName);
     await writeBundle(info.projectsDir, needsName, projectBundle(needsName));
-    await page.getByTestId("nav-projects").click();
+    await goHome(page);
     const needsRow = page.getByTestId("project-row").filter({ hasText: needsName });
     await expect(needsRow).toHaveAttribute("data-status", "needs-connections", {
       timeout: 20_000,
@@ -333,7 +353,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
 
     for (const theme of ["dark", "light"] as const) {
       await applyTheme(page, theme);
-      await page.getByTestId("nav-projects").click();
+      await goHome(page);
       await expect(page.getByTestId("project-row").first()).toBeVisible();
       await page.waitForTimeout(150);
       await page.screenshot({ path: `screenshots/real-${theme}-01-projects.png` });
@@ -344,7 +364,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.screenshot({ path: `screenshots/real-${theme}-02-new-project.png` });
       await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
-      await page.getByTestId("nav-connections").click();
+      await goConnections(page);
       await expect(page.getByTestId("connection-row").first()).toBeVisible();
       await page.waitForTimeout(150);
       await page.screenshot({ path: `screenshots/real-${theme}-08-connections.png` });
@@ -392,10 +412,12 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     const brbScene = page.locator(
       '[data-testid="project-param-option-scenes"][data-option="BRB"]',
     );
+    await expect(brbScene).toBeChecked({ timeout: 20_000 });
     await brbScene.uncheck();
-    await expect(brbScene).not.toBeChecked();
-    await brbScene.check();
-    await expect(brbScene).toBeChecked();
+    await expect(brbScene).toHaveCount(0, { timeout: 20_000 });
+    await expect(
+      page.locator('[data-testid="project-param-option-scenes"][data-option="Game"]'),
+    ).toBeChecked();
 
     expect(errors).toEqual([]);
   } finally {

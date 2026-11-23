@@ -10,7 +10,7 @@
 // not yet a workspace dependency of @ballast/desktop). No service token is ever
 // part of this contract.
 
-export const BRIDGE_VERSION = 1 as const;
+export const BRIDGE_VERSION = 2 as const;
 
 export const BRIDGE_CHANNELS = {
   serviceStatus: "ballast:service:status",
@@ -27,6 +27,10 @@ export const BRIDGE_CHANNELS = {
   appShowLogs: "ballast:app:show-logs",
   appOpenExternal: "ballast:app:open-external",
   appPickDirectory: "ballast:app:pick-directory",
+  windowsContext: "ballast:windows:context",
+  windowsOpenProject: "ballast:windows:open-project",
+  windowsOpenHome: "ballast:windows:open-home",
+  projectsSetMenu: "ballast:projects:set-menu",
   serviceStatusEvent: "ballast:event:service-status",
   updateStatusEvent: "ballast:event:update-status",
 } as const;
@@ -116,6 +120,24 @@ export interface AppInfo {
   readonly packaged: boolean;
 }
 
+export type HomeRoute = "projects" | "connections" | "settings";
+
+/** What the current Electron window is showing. */
+export type WindowContext =
+  | { readonly kind: "home"; readonly route: HomeRoute }
+  | { readonly kind: "project"; readonly projectId: string };
+
+export interface OpenProjectWindowOptions {
+  /** Open a separate window; without it a home window is reused. */
+  readonly newWindow?: boolean;
+}
+
+/** A project name for the File and tray menus. */
+export interface ProjectMenuItem {
+  readonly id: string;
+  readonly name: string;
+}
+
 /** The object exposed as `window.ballast` in every Ballast window. */
 export interface BallastBridge {
   readonly version: typeof BRIDGE_VERSION;
@@ -139,6 +161,21 @@ export interface BallastBridge {
   readonly update: {
     status(): Promise<UpdateState>;
     install(): Promise<UpdateAction>;
+  };
+  readonly windows: {
+    /** What this window is currently showing. */
+    context(): Promise<WindowContext>;
+    /** Focus an existing project window, or reuse this home window / open one. */
+    openProjectWindow(
+      projectId: string,
+      options?: OpenProjectWindowOptions,
+    ): Promise<void>;
+    /** Focus a home window at a service-wide route, opening it when needed. */
+    openHome(route?: HomeRoute): Promise<void>;
+  };
+  readonly projects: {
+    /** Feed the File and tray menus the current project list. */
+    setMenu(projects: ReadonlyArray<ProjectMenuItem>): Promise<void>;
   };
   readonly app: {
     info(): Promise<AppInfo>;

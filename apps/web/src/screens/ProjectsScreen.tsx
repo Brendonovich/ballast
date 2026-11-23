@@ -34,6 +34,7 @@ const statusLabelFor = (project: ProjectSummary): string => {
 export const ProjectsScreen = (): JSX.Element => {
   const store = useAgent();
   const navigate = useNavigate();
+  const bridge = getDesktopBridge();
   const [newOpen, setNewOpen] = createSignal(false);
   const [addOpen, setAddOpen] = createSignal(false);
   const requested = new Map<string, number>();
@@ -48,7 +49,19 @@ export const ProjectsScreen = (): JSX.Element => {
     }
   });
 
-  const open = (projectId: string): void => {
+  const open = (projectId: string, options?: { readonly newWindow?: boolean }): void => {
+    if (bridge !== undefined) {
+      void bridge.windows.openProjectWindow(projectId, {
+        newWindow: options?.newWindow === true,
+      });
+      return;
+    }
+    if (options?.newWindow === true) {
+      const url = new URL(window.location.href);
+      url.hash = projectHref(projectId);
+      window.open(url.toString(), "_blank", "noopener");
+      return;
+    }
     navigate(projectHref(projectId));
   };
 
@@ -144,8 +157,13 @@ export const ProjectsScreen = (): JSX.Element => {
                 <StatusDot tone={statusTone(project)} class="ml-1" />
                 <button
                   type="button"
+                  data-testid="project-open"
                   class="min-w-0 flex-1 rounded-sm py-1 text-left"
-                  onClick={() => open(project.id)}
+                  onClick={(event) =>
+                    open(project.id, {
+                      newWindow: event.metaKey || event.ctrlKey,
+                    })
+                  }
                 >
                   <span class="block truncate text-[13px] font-medium text-strong group-hover:text-accent">
                     {project.name}

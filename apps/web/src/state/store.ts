@@ -32,6 +32,8 @@ export type StreamStatus = "connecting" | "live" | "reconnecting";
 
 export interface CreateAgentStoreOptions {
   readonly onError?: (message: string) => void;
+  /** Project whose logs this window subscribes to; absent for home windows. */
+  readonly logProjectId?: string;
 }
 
 export interface AgentStore {
@@ -44,6 +46,7 @@ export interface AgentStore {
   readonly lastActionError: Accessor<string | undefined>;
   readonly logs: Accessor<ReadonlyArray<LogEntry>>;
   readonly pending: Accessor<ReadonlyArray<string>>;
+  readonly setLogProject: (projectId: string | undefined) => void;
   readonly projects: () => ReadonlyArray<ProjectSummary>;
   readonly project: (projectId: string) => ProjectSummary | undefined;
   readonly projectDetail: (projectId: string) => ProjectDetail | undefined;
@@ -187,6 +190,9 @@ export const createAgentStore = (
   const [logStatus, setLogStatus] = createSignal<StreamStatus>("connecting");
   const [lastActionError, setLastActionError] = createSignal<string>();
   const [logs, setLogs] = createSignal<ReadonlyArray<LogEntry>>([]);
+  const [logProjectId, setLogProjectId] = createSignal<string | undefined>(
+    options.logProjectId,
+  );
   const [projectDetails, setProjectDetails] = createSignal<
     Readonly<Record<string, ProjectDetail>>
   >({});
@@ -204,6 +210,7 @@ export const createAgentStore = (
   const [pending, setPending] = createSignal<ReadonlyArray<string>>([]);
 
   const handles: Array<() => void> = [];
+  let logHandle: (() => void) | undefined;
   const inFlightProjects = new Map<string, Promise<ProjectDetail | undefined>>();
   let started = false;
   let disposed = false;
@@ -440,6 +447,53 @@ export const createAgentStore = (
     }
   };
 
+  const stopLogs = (): void => {
+    logHandle?.();
+    logHandle = undefined;
+  };
+
+  const startLogs = (): void => {
+    stopLogs();
+    setLogs([]);
+    lastLogSeq = 0;
+    const projectId = logProjectId();
+    if (projectId === undefined) {
+      setLogStatus("live");
+      return;
+    }
+    setLogStatus("connecting");
+    logHandle = runtime.start(
+      runResilient(
+        Effect.gen(function* () {
+          while (snapshot() === undefined) {
+            yield* Effect.sleep("50 millis");
+          }
+          const request = {
+            projectId,
+            ...(lastLogSeq === 0 ? {} : { afterSeq: lastLogSeq }),
+          };
+          yield* runtime.client.StreamLogs(request).pipe(
+            Stream.onStart(Effect.sync(() => setLogStatus("live"))),
+            Stream.runForEach((entry) =>
+              Effect.sync(() => {
+                if (entry.seq <= lastLogSeq) return;
+                lastLogSeq = entry.seq;
+                setLogStatus("live");
+                setLogs((current) => {
+                  const next = [...current, entry];
+                  return next.length > 2_000 ? next.slice(next.length - 2_000) : next;
+                });
+              }),
+            ),
+          );
+        }),
+        () => {
+          setLogStatus("reconnecting");
+        },
+      ),
+    );
+  };
+
   const start = (): void => {
     if (started || disposed) return;
     started = true;
@@ -462,35 +516,13 @@ export const createAgentStore = (
       ),
     );
 
-    handles.push(
-      runtime.start(
-        runResilient(
-          Effect.gen(function* () {
-            while (snapshot() === undefined) {
-              yield* Effect.sleep("50 millis");
-            }
-            const request = lastLogSeq === 0 ? {} : { afterSeq: lastLogSeq };
-            yield* runtime.client.StreamLogs(request).pipe(
-              Stream.onStart(Effect.sync(() => setLogStatus("live"))),
-              Stream.runForEach((entry) =>
-                Effect.sync(() => {
-                  if (entry.seq <= lastLogSeq) return;
-                  lastLogSeq = entry.seq;
-                  setLogStatus("live");
-                  setLogs((current) => {
-                    const next = [...current, entry];
-                    return next.length > 2_000 ? next.slice(next.length - 2_000) : next;
-                  });
-                }),
-              ),
-            );
-          }),
-          () => {
-            setLogStatus("reconnecting");
-          },
-        ),
-      ),
-    );
+    startLogs();
+  };
+
+  const setLogProject = (projectId: string | undefined): void => {
+    if (logProjectId() === projectId) return;
+    setLogProjectId(projectId);
+    if (started && !disposed) startLogs();
   };
 
   const whenReady = (): Promise<void> => ready;
@@ -498,6 +530,7 @@ export const createAgentStore = (
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
+    stopLogs();
     for (const interrupt of handles.splice(0)) interrupt();
     await runtime.dispose();
   };
@@ -939,6 +972,7 @@ export const createAgentStore = (
     lastActionError,
     logs,
     pending,
+    setLogProject,
     projects,
     project,
     projectDetail,

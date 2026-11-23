@@ -36,10 +36,31 @@ tabs, options, switches, labels, selects, summaries and anchors use `cursor: def
 `target="_blank"`, absolute `http(s)` links and `[data-external-link]` use `pointer`. The
 splitter uses `row-resize`, which is a resize cursor, not a pointer.
 
+## Windows and routes
+
+The app follows a VS Code-like window model.
+
+- **Home** (`/`, `/projects`, `/connections`, `/settings`) has no project. It shows the
+  project list with status, **New project** and **Add folder**, plus the service-wide Connections
+  and Settings pages. The 204px sidebar has only those service-wide destinations.
+- **Project** (`/projects/:id`) shows one project workspace and nothing about the other
+  projects. A 44px icon rail reaches home, Connections and Settings; those service-wide pages open
+  in a home window. Project logs are subscribed with the project id, so a project window only
+  streams what it shows. Closing a window never stops the project or the service.
+- Opening a project from home uses the current window. Cmd/Ctrl+click or **Open in new window**
+  opens a separate window; an already-open project focuses its existing window instead of making a
+  duplicate.
+- Electron has Cmd/Ctrl+N (**File → New Window**), **File → Open Project ▸**, and a tray project
+  list with **Show Ballast**. Window titles are `<Project> — Ballast` or `Ballast`.
+- Open project windows and their bounds are stored in `<userData>/windows.json` and restored on
+  relaunch; with no saved project windows the app opens one home window.
+- A plain browser is route-scoped: `/` is home, `/projects/:id` is the project, and
+  “open in new window” becomes a new tab.
+
 ## Screens
 
-- **Projects** (`/`, `/projects`) — the sidebar lists every project with its status, and the
-  page has the same list with **New project** and **Add folder**. New project asks for a name and
+- **Projects** (`/`, `/projects`) — the home window lists every project with status, units and
+  **New project** / **Add folder**. New project asks for a name and
   an optional folder; with the desktop bridge the folder comes from the native picker, while a
   plain browser shows a path field. The optional folder defaults to
   `~/ballast-projects/<slug>`. A newly created project is stopped and has a Start action.
@@ -62,7 +83,7 @@ splitter uses `row-resize`, which is a resize cursor, not a pointer.
   **Add connection…** action that pre-filters the add flow and binds on creation, and a hint for
   proposed vs unbound slots. Rebinding a live project asks before restarting it; unbound slots
   disable Start.
-- **Connections** — service-level instances grouped by integration. Each row shows its label,
+- **Connections** — service-wide; open from any window's compact rail in a home window. Instances are grouped by integration. Each row shows its label,
   status, account login/avatar, project slots that use it, and Manage/Delete. A bound instance
   cannot be deleted and explains that it must be unbound first. **Add connection** is driven by
   `ListIntegrations`: integration, description, allowed modes, auth requirement and field set,
@@ -85,13 +106,17 @@ are always visible together; there are no tabs.
 ## Desktop bridge
 
 When `window.ballast` exists, Settings uses the desktop launcher through the type-only contract
-`@ballast/desktop/bridge`:
+`@ballast/desktop/bridge` (version 2):
 
 - initial `service.status()` plus `events.onServiceStatus`;
 - service phase, running state and running/built version;
 - Restart/Stop call `service.restart()` / `service.stop()`, not the RPCs (restart is stop + spawn,
   which only the desktop can do);
 - `app.pickDirectory()` opens the native folder picker for **New project** and **Add folder**.
+- `windows.context()`, `windows.openProjectWindow(projectId, { newWindow })` and
+  `windows.openHome(route)` drive the multi-window registry; `projects.setMenu(projects)` feeds
+  the File and tray menus. Every window authenticates by loading the service with a fresh token,
+  which becomes the HttpOnly cookie for that window.
 
 Outside Electron the same rows fall back to `GetServiceInfo`/`GetHealth`, and only Stop is shown
 (`ShutdownService`): a browser cannot respawn the service. There is no install/uninstall; the
@@ -180,10 +205,12 @@ against Vite.
   start/stop, watch changes, project files, connections/auth, cloud, lifecycle.
 - `src/agent/client.test.ts` — mock default, query/env precedence, ws/wss, token handling.
 - `src/lib/format.test.ts` — project, unit and connection presentation.
-- `e2e/smoke.spec.ts` — mock: project list, new/add project, start/stop, project workspace,
+- `e2e/smoke.spec.ts` — mock: home → project route scope, compact project rail, project
+  workspace,
   units, source, logs+source split, sidebar parameter area, splitter drag + persistence,
   maximize/restore both panes, sidebar collapse/expand, narrow auto-collapse, connection dialog,
-  cursor rule, no page errors, `#boot` gone and viewport filled.
+  cursor rule, no page errors, `#boot` gone and viewport filled. Two-window screenshots are
+  composed from two mock project pages when ffmpeg is available.
 - `e2e/bridge.spec.ts` — fake `window.ballast`: running state, restart/stop through the bridge,
   native folder picker.
 - `e2e/approvals.spec.ts` — real service VTube Studio and macOS Accessibility approval rows,
@@ -202,11 +229,19 @@ Screenshots (1440×1000):
 screenshots/dark-01-projects.png
 screenshots/dark-02-new-project.png
 screenshots/dark-03-project.png
+screenshots/dark-home.png
+screenshots/dark-project-window.png
+screenshots/dark-project-second.png
+screenshots/dark-two-windows.png
 screenshots/dark-04-source.png
 screenshots/dark-05-logs.png
 screenshots/dark-06-connections.png
 screenshots/dark-07-settings.png
 screenshots/light-01-projects.png … light-07-settings.png
+screenshots/light-home.png
+screenshots/light-project-window.png
+screenshots/light-project-second.png
+screenshots/light-two-windows.png
 
 screenshots/real-dark-01-projects.png
 screenshots/real-dark-02-new-project.png
@@ -227,7 +262,7 @@ screenshots/approvals-accessibility-light.png
 ```
 
 Bundle before the redesign: **408.98 kB JS / 48.57 kB CSS** (118.54 / 8.68 kB gzip).
-Bundle now: **370.88 kB JS / 30.94 kB CSS** (117.77 / 6.73 kB gzip).
+Bundle now: **371.75 kB JS / 31.06 kB CSS** (118.17 / 6.76 kB gzip).
 
 ## Known protocol gaps / notes
 

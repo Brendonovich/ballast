@@ -8,7 +8,7 @@ import {
   onMount,
 } from "solid-js";
 import type { JSX } from "solid-js";
-import { A, useParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
 import type {
   ProjectRequirement,
   TimerSummary,
@@ -16,6 +16,7 @@ import type {
 } from "@ballast/agent-protocol";
 
 import { useAgent } from "../state/context.tsx";
+import { getDesktopBridge } from "../bridge.ts";
 import { useAccessibilityPermission } from "../permissions.ts";
 import {
   blockingRequirements,
@@ -95,6 +96,8 @@ const writeSidebar = (collapsed: boolean): void => {
 
 export const ProjectScreen = (): JSX.Element => {
   const store = useAgent();
+  const navigate = useNavigate();
+  const bridge = getDesktopBridge();
   const params = useParams<{ projectId?: string }>();
 
   const projectId = createMemo(() => safeDecode(params.projectId ?? ""));
@@ -221,6 +224,14 @@ export const ProjectScreen = (): JSX.Element => {
     setMaximized((current) => (current === pane ? undefined : pane));
   };
 
+  const openHome = (): void => {
+    if (bridge !== undefined) {
+      void bridge.windows.openHome("projects");
+      return;
+    }
+    navigate("/projects");
+  };
+
   const openSource = (file: string, line: number): void => {
     jumpToken += 1;
     setJump({ file, line, token: jumpToken });
@@ -324,9 +335,13 @@ export const ProjectScreen = (): JSX.Element => {
               title="Project not found"
               description="It may have been removed, or the folder is no longer registered."
               action={
-                <A href="/projects" class="text-[13px] text-accent hover:underline">
+                <button
+                  type="button"
+                  class="text-[13px] text-accent hover:underline"
+                  onClick={openHome}
+                >
                   Back to Projects
-                </A>
+                </button>
               }
             />
           }
@@ -340,13 +355,14 @@ export const ProjectScreen = (): JSX.Element => {
       {(project) => (
         <div class="flex h-full min-h-0 flex-col gap-2 overflow-hidden px-5 pb-4 pt-3">
           <div class="flex shrink-0 items-center gap-3">
-            <A
-              href="/projects"
+            <button
+              type="button"
               aria-label="Back to Projects"
               class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-body"
+              onClick={openHome}
             >
               <ArrowLeftIcon size={14} />
-            </A>
+            </button>
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2">
                 <h1 class="truncate text-[16px] font-medium leading-6 tracking-[-0.02em] text-strong">

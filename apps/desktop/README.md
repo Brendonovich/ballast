@@ -1,10 +1,12 @@
 # @ballast/desktop
 
-The Ballast desktop shell: one Electron window, a tray item, and the launcher/updater for the
-background agent service. It implements decision 0003 tasks **A1**, **A5** and **C1–C4**:
+The Ballast desktop shell: a registry of home and project windows, a tray item, and the
+launcher/updater for the background agent service. It implements decision 0003 tasks **A1**,
+**A5** and **C1–C4**:
 
-- A1: single instance, `--background`, window loads the discovered service URL (token → HttpOnly
-  cookie exchange) or `BALLAST_UI_URL` in development, "Starting Ballast…" fallback, tray menu.
+- A1: single instance, `--background`, each window loads the discovered service URL (token →
+  HttpOnly cookie exchange) or `BALLAST_UI_URL` in development, "Starting Ballast…" fallback,
+  tray menu.
 - A5: quit-UI vs stop-service are separate; service status comes from IPC; pending-consent count
   from `/health`; update state is an IPC event.
 - C1: versioned service staging and a detached `ballast serve` spawn (no OS supervisor).
@@ -166,7 +168,7 @@ Preload exposes `window.ballast`:
 
 ```ts
 interface BallastBridge {
-  version: 1;
+  version: 2;
   service: {
     status(): Promise<ServiceStatus>;
     start(): Promise<ServiceAction>;    // adopt, replace another version, or spawn; verify
@@ -180,6 +182,14 @@ interface BallastBridge {
   update: {
     status(): Promise<UpdateState>;
     install(): Promise<UpdateAction>;
+  };
+  windows: {
+    context(): Promise<WindowContext>; // home route or project id for this window
+    openProjectWindow(projectId: string, options?: { newWindow?: boolean }): Promise<void>;
+    openHome(route?: "projects" | "connections" | "settings"): Promise<void>;
+  };
+  projects: {
+    setMenu(projects: ReadonlyArray<{ id: string; name: string }>): Promise<void>;
   };
   app: {
     info(): Promise<AppInfo>;
@@ -200,7 +210,21 @@ interface BallastBridge {
 error`), the running flag, running and built versions, apiVersion, pid, loopback URL,
 pending-consent count, `updateAvailable` (a service of another version is running),
 `lastError`, `permissions.accessibility`, and the state/data/stage/log paths.
-The service **token is never part of the bridge**; only main reads it and navigates the window.
+The service **token is never part of the bridge**; only main reads it. Every window separately
+loads the token URL, which the service turns into an HttpOnly cookie for that window.
+
+## Windows
+
+- A home window has no project and shows the project list, Connections and Settings.
+- A project window has one project id. The registry reuses/focuses an existing project window
+  instead of opening a duplicate; opening from home reuses that home window.
+- `File → New Window` (Cmd/Ctrl+N), `File → Open Project ▸` and the tray project list drive the
+  registry. Titles are `<Project> — Ballast` from the renderer or `Ballast` for home.
+- Open project windows and bounds live in `<userData>/windows.json`; relaunch restores them, or
+  opens one home window when none were saved. Normal window close updates the session; quit writes
+  it synchronously before Electron exits.
+- The renderer subscribes logs only for its project; a project window has no stream for other
+  projects. Closing the UI never stops the detached service or its workers.
 
 Renderer security: `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`, no remote
 content in the app session, permission requests denied, new windows/navigation to foreign origins

@@ -1,4 +1,10 @@
-import { dialog, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import {
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  shell,
+  type IpcMainInvokeEvent,
+} from "electron";
 import {
   BRIDGE_CHANNELS,
   type AppInfo,
@@ -20,6 +26,9 @@ export interface BridgeIpcOptions {
   readonly permissions: PermissionController;
   readonly showLogs: () => Promise<void>;
   readonly afterServiceChange: (status: ServiceStatus) => Promise<void>;
+  readonly setProjects: (
+    projects: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+  ) => void;
 }
 
 const isHttpUrl = (raw: string): boolean => {
@@ -69,8 +78,41 @@ export function registerBridgeIpc(options: BridgeIpcOptions): void {
     }
     await shell.openExternal(url);
   });
-  ipcMain.handle(BRIDGE_CHANNELS.appPickDirectory, async () => {
-    const current = options.windows.current();
+  ipcMain.handle(BRIDGE_CHANNELS.windowsContext, (event) =>
+    options.windows.contextFor(event.sender),
+  );
+  ipcMain.handle(
+    BRIDGE_CHANNELS.windowsOpenProject,
+    async (
+      event,
+      projectId: unknown,
+      settings: { readonly newWindow?: boolean } | undefined,
+    ) => {
+      if (typeof projectId !== "string" || projectId === "") {
+        throw new Error("a project id is required");
+      }
+      await options.windows.openProjectWindow(projectId, settings, event.sender);
+    },
+  );
+  ipcMain.handle(BRIDGE_CHANNELS.windowsOpenHome, async (_event, route: unknown) => {
+    await options.windows.openHome(
+      route === "connections" || route === "settings" ? route : "projects",
+    );
+  });
+  ipcMain.handle(BRIDGE_CHANNELS.projectsSetMenu, (_event, projects: unknown) => {
+    if (!Array.isArray(projects)) return;
+    options.setProjects(
+      projects.flatMap((value: unknown) => {
+        if (typeof value !== "object" || value === null) return [];
+        const id = Reflect.get(value, "id");
+        const name = Reflect.get(value, "name");
+        return typeof id === "string" && typeof name === "string" ? [{ id, name }] : [];
+      }),
+    );
+  });
+
+  ipcMain.handle(BRIDGE_CHANNELS.appPickDirectory, async (event) => {
+    const current = BrowserWindow.fromWebContents(event.sender);
     const picked =
       current === null
         ? await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] })

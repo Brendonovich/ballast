@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
@@ -38,6 +39,31 @@ const openProjects = async (page: Page): Promise<void> => {
 const cursorOf = async (locator: Locator): Promise<string> =>
   locator.evaluate((element) => getComputedStyle(element).cursor);
 
+const composeSideBySide = async (
+  left: string,
+  right: string,
+  output: string,
+): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    execFile(
+      "ffmpeg",
+      [
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        left,
+        "-i",
+        right,
+        "-filter_complex",
+        "[0:v]scale=720:-1[a];[1:v]scale=720:-1[b];[a][b]hstack=inputs=2",
+        output,
+      ],
+      (error) => resolve(error === null ? undefined : undefined),
+    );
+  });
+};
+
 const boxOf = async (locator: Locator): Promise<{ x: number; y: number; width: number; height: number }> => {
   const box = await locator.boundingBox();
   if (box === null) throw new Error("Expected a visible element");
@@ -51,6 +77,26 @@ const openProject = async (page: Page, name: string): Promise<void> => {
   await expect(page.getByTestId("units-panel")).toBeVisible();
 };
 
+const goHome = async (page: Page): Promise<void> => {
+  const compact = page.getByTestId("project-nav-projects");
+  if (await compact.isVisible().catch(() => false)) {
+    await compact.click();
+  } else {
+    await page.getByTestId("nav-projects").click();
+  }
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+};
+
+const goConnections = async (page: Page): Promise<void> => {
+  const compact = page.getByTestId("project-nav-connections");
+  if (await compact.isVisible().catch(() => false)) {
+    await compact.click();
+  } else {
+    await page.getByTestId("nav-connections").click();
+  }
+  await expect(page.getByTestId("connection-row").first()).toBeVisible();
+};
+
 test("reduced mock workspace: projects, units, source, logs and a connection dialog", async ({
   page,
 }) => {
@@ -61,9 +107,12 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   expect(await cursorOf(page.getByTestId("project-row").first())).toBe("default");
   expect(await cursorOf(page.getByTestId("nav-projects"))).toBe("default");
-  await expect(page.getByTestId("sidebar-project")).toHaveCount(2);
+  await expect(page.getByTestId("sidebar-project")).toHaveCount(0);
 
   await openProject(page, "Main Channel");
+  await expect(page).toHaveTitle("Main Channel — Ballast");
+  await expect(page.getByTestId("project-nav-projects")).toBeVisible();
+  await expect(page.getByTestId("sidebar-project")).toHaveCount(0);
   const layout = await page.evaluate(() => ({
     documentHeight: document.documentElement.scrollHeight,
     viewportHeight: window.innerHeight,
@@ -121,7 +170,7 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   expect(expandedSource.width).toBeLessThan(collapsedSource.width);
 
   // Create a project in a plain browser: no native picker, just the path field.
-  await page.getByTestId("nav-projects").click();
+  await goHome(page);
   await page.getByTestId("new-project").click();
   await expect(page.getByTestId("create-project-directory-pick")).toHaveCount(0);
   await page.getByTestId("create-project-name").fill("Guest Channel");
@@ -134,13 +183,13 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   await expect(page.getByTestId("toggle-project")).toHaveText("Stop");
 
   // Add an existing folder and open it.
-  await page.getByTestId("nav-projects").click();
+  await goHome(page);
   await page.getByTestId("add-project").click();
   await page.getByTestId("add-project-path").fill("/Users/streamer/Ballast/extra");
   await page.getByTestId("add-project-submit").click();
   await expect(page.getByRole("heading", { name: "extra" })).toBeVisible();
 
-  await page.getByTestId("nav-connections").click();
+  await goConnections(page);
   await page
     .locator('[data-testid="connection-row"][data-connection-id="obs/main"]')
     .getByRole("button", { name: "Manage" })
@@ -196,6 +245,7 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await openProjects(page);
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-01-projects.png` });
+  await page.screenshot({ path: `screenshots/${theme}-home.png` });
 
   await page.getByTestId("new-project").click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -207,6 +257,21 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await expect(page.getByTestId("unit-row").first()).toBeVisible();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-03-project.png` });
+  await page.screenshot({ path: `screenshots/${theme}-project-window.png` });
+
+  const secondWindow = await page.context().newPage();
+  await secondWindow.goto("/#/projects/proj_alt");
+  await expect(secondWindow.getByTestId("units-panel")).toBeVisible();
+  await secondWindow.waitForTimeout(150);
+  await secondWindow.screenshot({
+    path: `screenshots/${theme}-project-second.png`,
+  });
+  await secondWindow.close();
+  await composeSideBySide(
+    `screenshots/${theme}-03-project.png`,
+    `screenshots/${theme}-project-second.png`,
+    `screenshots/${theme}-two-windows.png`,
+  );
 
   await page.getByTestId("source-maximize").click();
   await page.waitForTimeout(150);
@@ -218,7 +283,7 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.screenshot({ path: `screenshots/${theme}-05-logs.png` });
   await page.keyboard.press("Escape");
 
-  await page.getByTestId("nav-connections").click();
+  await goConnections(page);
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-06-connections.png` });
 

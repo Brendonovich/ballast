@@ -1,7 +1,10 @@
 import { Menu, app, shell, type MenuItemConstructorOptions } from "electron";
+import type { ProjectMenuItem } from "../bridge.ts";
 
 export interface MenuActions {
   readonly show: () => void;
+  readonly newWindow: () => void;
+  readonly openProject: (projectId: string) => void;
   readonly showLogs: () => void;
   readonly restartService: () => void;
   readonly stopService: () => void;
@@ -10,8 +13,18 @@ export interface MenuActions {
   readonly installUpdate: () => void;
 }
 
-export function installApplicationMenu(actions: MenuActions): void {
+export function installApplicationMenu(
+  actions: MenuActions,
+  projects: ReadonlyArray<ProjectMenuItem>,
+): void {
   const isMac = process.platform === "darwin";
+  const projectItems: MenuItemConstructorOptions[] =
+    projects.length === 0
+      ? [{ label: "No Projects", enabled: false }]
+      : projects.map((project) => ({
+          label: project.name,
+          click: () => actions.openProject(project.id),
+        }));
   const template: MenuItemConstructorOptions[] = [
     ...(isMac
       ? [
@@ -29,6 +42,20 @@ export function installApplicationMenu(actions: MenuActions): void {
           },
         ]
       : []),
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "New Window",
+          accelerator: "CmdOrCtrl+N",
+          click: () => actions.newWindow(),
+        },
+        { type: "separator" },
+        { label: "Open Project", submenu: projectItems },
+        { type: "separator" },
+        ...(isMac ? [] : [{ role: "close" as const }]),
+      ],
+    },
     {
       label: "Ballast",
       submenu: [

@@ -17,6 +17,19 @@ const bridge: BallastBridge = {
     status: () => ipcRenderer.invoke(BRIDGE_CHANNELS.updateStatus),
     install: () => ipcRenderer.invoke(BRIDGE_CHANNELS.updateInstall),
   },
+  windows: {
+    context: () => ipcRenderer.invoke(BRIDGE_CHANNELS.windowsContext),
+    openProjectWindow: (
+      projectId: string,
+      options?: { readonly newWindow?: boolean },
+    ) => ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenProject, projectId, options),
+    openHome: (route?: string) =>
+      ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenHome, route),
+  },
+  projects: {
+    setMenu: (projects: ReadonlyArray<{ readonly id: string; readonly name: string }>) =>
+      ipcRenderer.invoke(BRIDGE_CHANNELS.projectsSetMenu, projects),
+  },
   app: {
     info: () => ipcRenderer.invoke(BRIDGE_CHANNELS.appInfo),
     openUi: () => ipcRenderer.invoke(BRIDGE_CHANNELS.appOpenUi),

@@ -17,6 +17,16 @@ if (rootElement === null) {
 
 initialiseTheme();
 
+const projectIdFromHash = (): string | undefined => {
+  const match = /^#\/projects\/([^/?#]+)/.exec(window.location.hash);
+  if (match?.[1] === undefined) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+};
+
 const mount = (view: () => JSX.Element): void => {
   rootElement.replaceChildren();
   render(view, rootElement);
@@ -26,8 +36,10 @@ const boot = async (): Promise<void> => {
   const transport = await resolvePageTransport();
   try {
     const runtime = await createAgentRuntime(transport);
+    const logProjectId = projectIdFromHash();
     const store = createAgentStore(runtime, {
       onError: (message) => toast.error("Request failed", message),
+      ...(logProjectId === undefined ? {} : { logProjectId }),
     });
     store.start();
     mount(() => <App store={store} />);

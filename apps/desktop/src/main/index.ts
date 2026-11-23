@@ -1,7 +1,13 @@
 import { app, dialog, shell } from "electron";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { AppInfo, ServiceAction, ServiceStatus, UpdateState } from "../bridge.ts";
+import type {
+  AppInfo,
+  ProjectMenuItem,
+  ServiceAction,
+  ServiceStatus,
+  UpdateState,
+} from "../bridge.ts";
 import { resolveConfig } from "./config.ts";
 import { registerBridgeIpc } from "./ipc.ts";
 import { runLifecycleDemo, type DemoAction } from "./lifecycle-demo.ts";
@@ -12,6 +18,7 @@ import { createServiceLauncher } from "./service/launcher.ts";
 import { createTray, type TrayController } from "./tray.ts";
 import { createUpdateManager } from "./update.ts";
 import { createWindowController, type WindowController } from "./window.ts";
+import { readWindowSession } from "./window-state.ts";
 
 const demoActions: ReadonlyArray<DemoAction> = ["status", "start", "restart", "stop"];
 
@@ -78,6 +85,7 @@ async function start(): Promise<void> {
     stateDir: config.stateDir,
   });
 
+  const restoredWindows = await readWindowSession(config.userDataDir);
   const permissions = createPermissionController(process.platform);
   const launcher = createServiceLauncher(config, {
     logger,
@@ -94,6 +102,7 @@ async function start(): Promise<void> {
   let lastSerialized = "";
   let tray: TrayController | null = null;
   let update: ReturnType<typeof createUpdateManager> | null = null;
+  let knownProjects: ReadonlyArray<ProjectMenuItem> = [];
 
   const showLogs = async (): Promise<void> => {
     await mkdir(config.logDir, { recursive: true, mode: 0o700 });
@@ -157,6 +166,7 @@ async function start(): Promise<void> {
     getStatus: () => launcher.status(),
     getConnection: () => launcher.getConnection(),
     showLogs,
+    restoredProjects: restoredWindows,
   });
   windows = windowsController;
 
@@ -171,8 +181,22 @@ async function start(): Promise<void> {
     });
   };
 
+  const setProjects = (projects: ReadonlyArray<ProjectMenuItem>): void => {
+    const seen = new Set<string>();
+    knownProjects = projects.filter((project) => {
+      if (seen.has(project.id)) return false;
+      seen.add(project.id);
+      return true;
+    });
+    tray?.setProjects(knownProjects);
+    installApplicationMenu(menuActions, knownProjects);
+  };
+
   tray = createTray({
     show: () => windowsController.show(),
+    openProject: (projectId) => {
+      void windowsController.focusOrOpen(projectId);
+    },
     showLogs: () => {
       void showLogs();
     },
@@ -190,8 +214,12 @@ async function start(): Promise<void> {
     quit: () => app.quit(),
   });
 
-  installApplicationMenu({
+  const menuActions = {
     show: () => windowsController.show(),
+    newWindow: () => windowsController.newHomeWindow(),
+    openProject: (projectId: string) => {
+      void windowsController.openProjectWindow(projectId, { newWindow: false });
+    },
     showLogs: () => {
       void showLogs();
     },
@@ -206,7 +234,8 @@ async function start(): Promise<void> {
     },
     checkForUpdates,
     installUpdate,
-  });
+  };
+  installApplicationMenu(menuActions, knownProjects);
 
   const appInfo: AppInfo = {
     name: "Ballast",
@@ -225,6 +254,7 @@ async function start(): Promise<void> {
     permissions,
     showLogs,
     afterServiceChange,
+    setProjects,
   });
 
   app.on("activate", () => windowsController.show());
@@ -233,11 +263,12 @@ async function start(): Promise<void> {
     // detached background service keeps running (0003 §2).
   });
   app.on("before-quit", () => {
+    windowsController.beforeQuit();
     logger.info("desktop quitting; background service is not stopped");
   });
 
   const initialStatus = await refreshStatus();
-  if (!background) windowsController.show();
+  if (!background) windowsController.showInitial();
 
   // Like the OpenCode background service: adopt a running service of the
   // shipped version, replace one of another version, or spawn a new one.

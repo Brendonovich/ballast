@@ -1,20 +1,18 @@
-import { For, Show, onMount } from "solid-js";
+import { For, Show, createEffect, onMount } from "solid-js";
 import type { JSX } from "solid-js";
-import { A, useLocation } from "@solidjs/router";
+import { A, useLocation, useNavigate } from "@solidjs/router";
 import type { RouteSectionProps } from "@solidjs/router";
 
+import { getDesktopBridge } from "../bridge.ts";
+import type { HomeRoute } from "../bridge.ts";
 import { useAgent } from "../state/context.tsx";
-import {
-  blockingRequirements,
-  connectionNeedsAttention,
-  projectStatusLabel,
-  projectStatusTone,
-} from "../lib/format.ts";
+import { connectionNeedsAttention } from "../lib/format.ts";
 import { ConnectionsIcon, ProjectsIcon, SettingsIcon } from "../ui/icons.tsx";
 import type { IconProps } from "../ui/icons.tsx";
 import { Button, Spinner, StatusDot, cx } from "../ui/primitives.tsx";
 
 interface NavItem {
+  readonly route: HomeRoute;
   readonly href: string;
   readonly label: string;
   readonly icon: (props: IconProps) => JSX.Element;
@@ -23,18 +21,21 @@ interface NavItem {
 
 const nav: ReadonlyArray<NavItem> = [
   {
+    route: "projects",
     href: "/projects",
     label: "Projects",
     icon: ProjectsIcon,
     active: (path) => path === "/" || path.startsWith("/projects"),
   },
   {
+    route: "connections",
     href: "/connections",
     label: "Connections",
     icon: ConnectionsIcon,
     active: (path) => path.startsWith("/connections"),
   },
   {
+    route: "settings",
     href: "/settings",
     label: "Settings",
     icon: SettingsIcon,
@@ -42,12 +43,24 @@ const nav: ReadonlyArray<NavItem> = [
   },
 ];
 
-const projectHref = (projectId: string): string =>
-  `/projects/${encodeURIComponent(projectId)}`;
+const safeDecode = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const projectIdFromPath = (path: string): string | undefined => {
+  const match = /^\/projects\/([^/?#]+)/.exec(path);
+  return match?.[1] === undefined ? undefined : safeDecode(match[1]);
+};
 
 export const AppShell = (props: RouteSectionProps): JSX.Element => {
   const store = useAgent();
   const location = useLocation();
+  const navigate = useNavigate();
+  const bridge = getDesktopBridge();
 
   onMount(() => {
     store.start();
@@ -57,125 +70,143 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
     });
   });
 
-  const reconnecting = (): boolean => store.watchStatus() === "reconnecting";
-  const workspace = (): boolean => {
-    const path = location.pathname;
-    return path.startsWith("/projects/") && path !== "/projects/";
+  const projectId = (): string | undefined => projectIdFromPath(location.pathname);
+  const projectWindow = (): boolean => projectId() !== undefined;
+
+  createEffect(() => {
+    store.setLogProject(projectId());
+  });
+
+  createEffect(() => {
+    const id = projectId();
+    if (id === undefined) {
+      document.title = "Ballast";
+      return;
+    }
+    const project = store.project(id);
+    document.title = project === undefined ? "Ballast" : `${project.name} — Ballast`;
+  });
+
+  createEffect(() => {
+    if (bridge === undefined) return;
+    const projects = store.projects().map((project) => ({
+      id: project.id,
+      name: project.name,
+    }));
+    void bridge.projects.setMenu(projects);
+  });
+
+  const openHome = (route: HomeRoute): void => {
+    if (bridge !== undefined) {
+      void bridge.windows.openHome(route);
+      return;
+    }
+    navigate(route === "projects" ? "/projects" : `/${route}`);
   };
+
+  const reconnecting = (): boolean => store.watchStatus() === "reconnecting";
   const attention = (): number =>
     store.connections().filter((connection) => connectionNeedsAttention(connection)).length;
-  const needsConnections = (projectId: string): boolean => {
-    const detail = store.projectDetail(projectId);
-    return detail !== undefined && blockingRequirements(detail.requirements).length > 0;
-  };
-
   return (
     <div class="flex h-full min-h-0 bg-canvas text-body" data-testid="app-shell">
-      <aside class="flex w-[204px] shrink-0 flex-col border-r border-edge bg-rail">
-        <div class="px-4 pb-4 pt-5">
-          <div class="flex items-baseline gap-2">
-            <span class="text-[15px] font-medium tracking-[-0.03em] text-strong">ballast</span>
-            <span class="text-[10px] text-faint">agent</span>
-          </div>
-        </div>
+      <Show
+        when={projectWindow()}
+        fallback={
+          <aside class="flex w-[204px] shrink-0 flex-col border-r border-edge bg-rail">
+            <div class="px-4 pb-4 pt-5">
+              <div class="flex items-baseline gap-2">
+                <span class="text-[15px] font-medium tracking-[-0.03em] text-strong">
+                  ballast
+                </span>
+                <span class="text-[10px] text-faint">agent</span>
+              </div>
+            </div>
 
-        <nav class="space-y-0.5 px-2">
-          <For each={nav}>
-            {(item) => {
-              const active = (): boolean => item.active(location.pathname);
-              return (
-                <A
-                  href={item.href}
-                  data-testid={`nav-${item.label.toLowerCase()}`}
-                  class={cx(
-                    "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors",
-                    active()
-                      ? "bg-[var(--v2-background-bg-layer-02)] text-strong"
-                      : "text-muted hover:bg-hover hover:text-body",
-                  )}
-                >
-                  <item.icon size={14} class={active() ? "text-body" : "text-faint"} />
-                  <span class="flex-1">{item.label}</span>
-                  <Show when={item.href === "/connections" && attention() > 0}>
-                    <span class="size-1.5 rounded-full bg-warning" aria-label="needs attention" />
-                  </Show>
-                </A>
-              );
-            }}
-          </For>
-        </nav>
+            <nav class="space-y-0.5 px-2">
+              <For each={nav}>
+                {(item) => {
+                  const active = (): boolean => item.active(location.pathname);
+                  return (
+                    <A
+                      href={item.href}
+                      data-testid={`nav-${item.label.toLowerCase()}`}
+                      class={cx(
+                        "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors",
+                        active()
+                          ? "bg-[var(--v2-background-bg-layer-02)] text-strong"
+                          : "text-muted hover:bg-hover hover:text-body",
+                      )}
+                    >
+                      <item.icon size={14} class={active() ? "text-body" : "text-faint"} />
+                      <span class="flex-1">{item.label}</span>
+                      <Show when={item.route === "connections" && attention() > 0}>
+                        <span
+                          class="size-1.5 rounded-full bg-warning"
+                          aria-label="needs attention"
+                        />
+                      </Show>
+                    </A>
+                  );
+                }}
+              </For>
+            </nav>
 
-        <div class="mt-5 min-h-0 flex-1 overflow-y-auto px-2">
-          <p class="px-2 pb-1 text-[10px] text-faint">Projects</p>
-          <Show
-            when={store.projects().length > 0}
-            fallback={<p class="px-2 py-1 text-[11px] text-faint">No projects</p>}
-          >
-            <For each={store.projects()}>
-              {(project) => (
-                <A
-                  href={projectHref(project.id)}
-                  data-testid="sidebar-project"
-                  data-project-id={project.id}
-                  data-status={
-                    needsConnections(project.id)
-                      ? "needs-connections"
-                      : store.projectConsent(project.id) !== undefined
-                        ? "needs-consent"
-                        : project.status
+            <div class="mt-auto px-4 py-3">
+              <div class="flex items-center gap-2 text-[11px] text-faint">
+                <StatusDot
+                  tone={
+                    reconnecting()
+                      ? "warning"
+                      : store.watchStatus() === "live"
+                        ? "success"
+                        : "info"
                   }
-                  class={cx(
-                    "flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors",
-                    location.pathname === projectHref(project.id)
-                      ? "bg-[var(--v2-background-bg-layer-02)]"
-                      : "hover:bg-hover",
-                  )}
-                >
-                  <StatusDot
-                    tone={
-                      store.projectConsent(project.id) !== undefined ||
-                      needsConnections(project.id)
-                        ? "warning"
-                        : projectStatusTone(project)
-                    }
-                    class="mt-1.5"
-                  />
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate text-[12px] text-body">{project.name}</span>
-                    <span class="block truncate text-[10px] text-faint">
-                      {needsConnections(project.id)
-                        ? "Needs connections"
-                        : store.projectConsent(project.id) !== undefined
-                          ? "Needs consent"
-                          : project.status === "error" && project.enabled
-                            ? "Running previous version"
-                            : projectStatusLabel(project)}
-                    </span>
-                  </span>
-                </A>
-              )}
-            </For>
-          </Show>
-        </div>
-
-        <div class="px-4 py-3">
-          <div class="flex items-center gap-2 text-[11px] text-faint">
+                  pulse={reconnecting()}
+                />
+                <span>{reconnecting() ? "Reconnecting" : "Connected"}</span>
+                <span class="ml-auto truncate font-mono" title={store.transport.note}>
+                  {store.transport.kind === "mock" ? "mock" : store.transport.label}
+                </span>
+              </div>
+              <Show when={store.info()}>
+                {(info) => (
+                  <p class="mt-1 truncate font-mono text-[10px] text-faint">
+                    {info().version}
+                  </p>
+                )}
+              </Show>
+            </div>
+          </aside>
+        }
+      >
+        <aside class="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-edge bg-rail py-3">
+          <For each={nav}>
+            {(item) => (
+              <button
+                type="button"
+                data-testid={`project-nav-${item.label.toLowerCase()}`}
+                aria-label={item.label}
+                title={item.label}
+                class="relative grid size-7 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-body"
+                onClick={() => openHome(item.route)}
+              >
+                <item.icon size={15} />
+                <Show when={item.route === "connections" && attention() > 0}>
+                  <span class="absolute right-1 top-1 size-1.5 rounded-full bg-warning" />
+                </Show>
+              </button>
+            )}
+          </For>
+          <div class="mt-auto pb-1">
             <StatusDot
-              tone={reconnecting() ? "warning" : store.watchStatus() === "live" ? "success" : "info"}
+              tone={
+                reconnecting() ? "warning" : store.watchStatus() === "live" ? "success" : "info"
+              }
               pulse={reconnecting()}
             />
-            <span>{reconnecting() ? "Reconnecting" : "Connected"}</span>
-            <span class="ml-auto truncate font-mono" title={store.transport.note}>
-              {store.transport.kind === "mock" ? "mock" : store.transport.label}
-            </span>
           </div>
-          <Show when={store.info()}>
-            {(info) => (
-              <p class="mt-1 truncate font-mono text-[10px] text-faint">{info().version}</p>
-            )}
-          </Show>
-        </div>
-      </aside>
+        </aside>
+      </Show>
 
       <div class="flex min-w-0 flex-1 flex-col">
         <Show when={reconnecting() && store.snapshot() !== undefined}>
@@ -188,12 +219,12 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
         <main
           class={cx(
             "min-h-0 flex-1",
-            workspace() ? "overflow-hidden" : "overflow-y-auto",
+            projectWindow() ? "overflow-hidden" : "overflow-y-auto",
           )}
         >
           <div
             class={
-              workspace()
+              projectWindow()
                 ? "h-full min-h-0"
                 : "mx-auto w-full max-w-[880px] px-8 py-8"
             }

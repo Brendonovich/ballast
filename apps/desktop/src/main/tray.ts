@@ -1,8 +1,9 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
-import type { ServiceStatus, UpdateState } from "../bridge.ts";
+import type { ProjectMenuItem, ServiceStatus, UpdateState } from "../bridge.ts";
 
 export interface TrayActions {
   readonly show: () => void;
+  readonly openProject: (projectId: string) => void;
   readonly showLogs: () => void;
   readonly startService: () => void;
   readonly restartService: () => void;
@@ -14,6 +15,7 @@ export interface TrayActions {
 
 export interface TrayController {
   update(status: ServiceStatus, update: UpdateState): void;
+  setProjects(projects: ReadonlyArray<ProjectMenuItem>): void;
   destroy(): void;
 }
 
@@ -60,6 +62,9 @@ const statusLine = (status: ServiceStatus): string => {
 
 export function createTray(actions: TrayActions): TrayController {
   const tray = new Tray(trayIcon());
+  let projects: ReadonlyArray<ProjectMenuItem> = [];
+  let latestStatus: ServiceStatus | undefined;
+  let latestUpdate: UpdateState | undefined;
   tray.setToolTip("Ballast");
   const updateItem = (update: UpdateState): MenuItemConstructorOptions | null => {
     if (update.phase === "ready") {
@@ -73,8 +78,16 @@ export function createTray(actions: TrayActions): TrayController {
 
   const render = (status: ServiceStatus, update: UpdateState): void => {
     const updateEntry = updateItem(update);
+    const projectItems: MenuItemConstructorOptions[] = projects.map((project) => ({
+      label: project.name,
+      click: () => actions.openProject(project.id),
+    }));
     const template: MenuItemConstructorOptions[] = [
-      { label: "Open Ballast", click: actions.show },
+      { label: "Show Ballast", click: actions.show },
+      ...(projectItems.length === 0
+        ? [{ label: "No Projects", enabled: false }]
+        : projectItems),
+      { type: "separator" },
       { label: statusLine(status), enabled: false },
       ...(status.pendingConsents !== null && status.pendingConsents > 0
         ? [{ label: "Pending consent: " + status.pendingConsents, click: actions.show }]
@@ -108,7 +121,15 @@ export function createTray(actions: TrayActions): TrayController {
 
   return {
     update: (status, update) => {
+      latestStatus = status;
+      latestUpdate = update;
       render(status, update);
+    },
+    setProjects: (next) => {
+      projects = next;
+      if (latestStatus !== undefined && latestUpdate !== undefined) {
+        render(latestStatus, latestUpdate);
+      }
     },
     destroy: () => {
       tray.destroy();
