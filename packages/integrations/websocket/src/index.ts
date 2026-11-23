@@ -97,10 +97,40 @@ export interface ClientOptions {
   readonly url?: string;
 }
 
-export interface WebSocketClient extends Ballast.ConnectionRef<Integration> {
+export interface WebSocketSender {
+  readonly send: (message: WebSocketOutboundMessage) => Effect.Effect<void>;
+  readonly text: (text: string) => Effect.Effect<void>;
+  readonly binary: (bytes: Uint8Array) => Effect.Effect<void>;
+  readonly json: (value: unknown) => Effect.Effect<void>;
+}
+
+export interface WebSocketClient
+  extends Ballast.ConnectionRef<Integration>, WebSocketSender {
   /** The URL declared in the script, if any. */
   readonly url: string | undefined;
 }
+
+const sendClient = (
+  host: Ballast.RequestHostService,
+  connection: Ballast.ConnectionRef<Integration>,
+): WebSocketSender => {
+  const send = host.granted<WebSocketOutboundMessage, Record<string, never>>({
+    integration: INTEGRATION,
+    slot: connection.slot,
+    request: "websocket/send",
+    scopes: [],
+    key: INTEGRATION + "/" + connection.slot + "/websocket/send",
+    inputSchema: OutboundSchema,
+    outputSchema: AckSchema,
+  });
+  return {
+    send: (message) => send(message).pipe(Effect.asVoid),
+    text: (text) => send({ type: "text", text }).pipe(Effect.asVoid),
+    binary: (bytes) =>
+      send({ type: "binary", base64: encodeBase64(bytes) }).pipe(Effect.asVoid),
+    json: (value) => send({ type: "json", value }).pipe(Effect.asVoid),
+  };
+};
 
 export const Client = (
   slot: string,
@@ -111,7 +141,9 @@ export const Client = (
       integration: INTEGRATION,
       slot,
       location: "local",
+      requests: ["*"],
     });
+    const host = yield* Ballast.RequestHost;
 
     // A request-shaped capability keeps the consent UI honest: it shows the
     // host this slot may connect to even though the driver reads config.
@@ -124,37 +156,8 @@ export const Client = (
       outputSchema: AckSchema,
     });
 
-    return { ...connection, url: options.url };
+    return { ...connection, url: options.url, ...sendClient(host, connection) };
   });
-
-export interface WebSocketSender {
-  readonly send: (message: WebSocketOutboundMessage) => Effect.Effect<void>;
-  readonly text: (text: string) => Effect.Effect<void>;
-  readonly binary: (bytes: Uint8Array) => Effect.Effect<void>;
-  readonly json: (value: unknown) => Effect.Effect<void>;
-}
-
-const sendMessage = (message: WebSocketOutboundMessage): WebSocketOutboundMessage => message;
-
-/** Declare permission to send frames on a client slot. */
-export const Send = (
-  connection: Ballast.ConnectionRef<Integration>,
-): Effect.Effect<WebSocketSender, never, Ballast.RequestHost> =>
-  Ballast.Request<WebSocketOutboundMessage, Record<string, never>>({
-    integration: INTEGRATION,
-    slot: connection.slot,
-    request: "websocket/send",
-    inputSchema: OutboundSchema,
-    outputSchema: AckSchema,
-  }).pipe(
-    Effect.map((client) => ({
-      send: (message) => client(sendMessage(message)).pipe(Effect.asVoid),
-      text: (text) => client({ type: "text", text }).pipe(Effect.asVoid),
-      binary: (bytes) =>
-        client({ type: "binary", base64: encodeBase64(bytes) }).pipe(Effect.asVoid),
-      json: (value) => client({ type: "json", value }).pipe(Effect.asVoid),
-    })),
-  );
 
 export interface ServerOptions {
   readonly host?: string;
@@ -163,12 +166,74 @@ export interface ServerOptions {
   readonly path?: string;
 }
 
-export interface WebSocketServer extends Ballast.ConnectionRef<Integration> {
+export interface WebSocketServerSender {
+  readonly send: (clientId: string, message: WebSocketOutboundMessage) => Effect.Effect<void>;
+  readonly broadcast: (message: WebSocketOutboundMessage) => Effect.Effect<WebSocketBroadcastResult>;
+  readonly text: (clientId: string, text: string) => Effect.Effect<void>;
+  readonly binary: (clientId: string, bytes: Uint8Array) => Effect.Effect<void>;
+  readonly json: (clientId: string, value: unknown) => Effect.Effect<void>;
+  readonly broadcastText: (text: string) => Effect.Effect<WebSocketBroadcastResult>;
+  readonly broadcastBinary: (bytes: Uint8Array) => Effect.Effect<WebSocketBroadcastResult>;
+  readonly broadcastJson: (value: unknown) => Effect.Effect<WebSocketBroadcastResult>;
+}
+
+export interface WebSocketServer
+  extends Ballast.ConnectionRef<Integration>, WebSocketServerSender {
   readonly port: number | undefined;
   readonly path: string | undefined;
 }
 
-/** Declare a local WebSocket server slot. */
+const sendServer = (
+  host: Ballast.RequestHostService,
+  connection: Ballast.ConnectionRef<Integration>,
+): WebSocketServerSender => {
+  const toClientSchema = Schema.Struct({
+    clientId: Schema.String,
+    message: OutboundSchema,
+  });
+  const toClient = host.granted<
+    { readonly clientId: string; readonly message: WebSocketOutboundMessage },
+    Record<string, never>
+  >({
+    integration: INTEGRATION,
+    slot: connection.slot,
+    request: "websocket/sendToClient",
+    scopes: [],
+    key: INTEGRATION + "/" + connection.slot + "/websocket/sendToClient",
+    inputSchema: toClientSchema,
+    outputSchema: AckSchema,
+  });
+  const broadcast = host.granted<WebSocketOutboundMessage, WebSocketBroadcastResult>({
+    integration: INTEGRATION,
+    slot: connection.slot,
+    request: "websocket/broadcast",
+    scopes: [],
+    key: INTEGRATION + "/" + connection.slot + "/websocket/broadcast",
+    inputSchema: OutboundSchema,
+    outputSchema: BroadcastResultSchema,
+  });
+
+  const send = (clientId: string, message: WebSocketOutboundMessage) =>
+    toClient({ clientId, message }).pipe(Effect.asVoid);
+
+  return {
+    send,
+    broadcast,
+    text: (clientId, text) => send(clientId, { type: "text", text }),
+    binary: (clientId, bytes) =>
+      send(clientId, { type: "binary", base64: encodeBase64(bytes) }),
+    json: (clientId, value) => send(clientId, { type: "json", value }),
+    broadcastText: (text) => broadcast({ type: "text", text }),
+    broadcastBinary: (bytes) => broadcast({ type: "binary", base64: encodeBase64(bytes) }),
+    broadcastJson: (value) => broadcast({ type: "json", value }),
+  };
+};
+
+/**
+ * Declare a local WebSocket server slot. The connection grants the whole
+ * `websocket/*` request namespace; sending and broadcasting are methods on the
+ * returned handle.
+ */
 export const Server = (
   slot: string,
   options: ServerOptions = {},
@@ -178,7 +243,9 @@ export const Server = (
       integration: INTEGRATION,
       slot,
       location: "local",
+      requests: ["*"],
     });
+    const host = yield* Ballast.RequestHost;
 
     yield* Ballast.Request<Record<string, never>, Record<string, never>>({
       integration: INTEGRATION,
@@ -189,65 +256,11 @@ export const Server = (
       outputSchema: AckSchema,
     });
 
-    return { ...connection, port: options.port, path: options.path };
-  });
-
-export interface WebSocketServerSender {
-  readonly toClient: (clientId: string, message: WebSocketOutboundMessage) => Effect.Effect<void>;
-  readonly sendToClient: (clientId: string, message: WebSocketOutboundMessage) => Effect.Effect<void>;
-  readonly broadcast: (message: WebSocketOutboundMessage) => Effect.Effect<WebSocketBroadcastResult>;
-  readonly text: (clientId: string, text: string) => Effect.Effect<void>;
-  readonly binary: (clientId: string, bytes: Uint8Array) => Effect.Effect<void>;
-  readonly json: (clientId: string, value: unknown) => Effect.Effect<void>;
-  readonly broadcastText: (text: string) => Effect.Effect<WebSocketBroadcastResult>;
-  readonly broadcastBinary: (bytes: Uint8Array) => Effect.Effect<WebSocketBroadcastResult>;
-  readonly broadcastJson: (value: unknown) => Effect.Effect<WebSocketBroadcastResult>;
-}
-
-/** Declare permission to send to one client or every client on a server slot. */
-export const ServerSend = (
-  connection: Ballast.ConnectionRef<Integration>,
-): Effect.Effect<WebSocketServerSender, never, Ballast.RequestHost> =>
-  Effect.gen(function* () {
-    const toClientSchema = Schema.Struct({
-      clientId: Schema.String,
-      message: OutboundSchema,
-    });
-    const toClient = yield* Ballast.Request<
-      { readonly clientId: string; readonly message: WebSocketOutboundMessage },
-      Record<string, never>
-    >({
-      integration: INTEGRATION,
-      slot: connection.slot,
-      request: "websocket/sendToClient",
-      inputSchema: toClientSchema,
-      outputSchema: AckSchema,
-    });
-    const broadcast = yield* Ballast.Request<
-      WebSocketOutboundMessage,
-      WebSocketBroadcastResult
-    >({
-      integration: INTEGRATION,
-      slot: connection.slot,
-      request: "websocket/broadcast",
-      inputSchema: OutboundSchema,
-      outputSchema: BroadcastResultSchema,
-    });
-
-    const toClientMessage = (clientId: string, message: WebSocketOutboundMessage) =>
-      toClient({ clientId, message }).pipe(Effect.asVoid);
-
     return {
-      toClient: toClientMessage,
-      sendToClient: toClientMessage,
-      broadcast,
-      text: (clientId, text) => toClientMessage(clientId, { type: "text", text }),
-      binary: (clientId, bytes) =>
-        toClientMessage(clientId, { type: "binary", base64: encodeBase64(bytes) }),
-      json: (clientId, value) => toClientMessage(clientId, { type: "json", value }),
-      broadcastText: (text) => broadcast({ type: "text", text }),
-      broadcastBinary: (bytes) => broadcast({ type: "binary", base64: encodeBase64(bytes) }),
-      broadcastJson: (value) => broadcast({ type: "json", value }),
+      ...connection,
+      port: options.port,
+      path: options.path,
+      ...sendServer(host, connection),
     };
   });
 

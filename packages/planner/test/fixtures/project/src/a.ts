@@ -14,6 +14,7 @@ export const subscribeTicks = (
   Effect.gen(function* () {
     const greeting = yield* Ballast.Param.string("greeting", {
       title: "Greeting",
+      description: "Shown in the fixture",
       default: "hi",
     });
 

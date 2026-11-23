@@ -118,6 +118,41 @@ describe("@ballast/agent-protocol RPC group", () => {
     }),
   );
 
+  it.effect("lists integration descriptors before any instance exists", () =>
+    Effect.gen(function* () {
+      const agent = yield* client;
+
+      const listed = yield* agent.ListIntegrations();
+      expect(listed.integrations.map((entry) => entry.integration)).toEqual([
+        "obs",
+        "twitch",
+        "fake",
+        "vts",
+        "keyboard",
+        "midi",
+        "websocket",
+        "http",
+      ]);
+      const obs = listed.integrations.find((entry) => entry.integration === "obs");
+      expect(obs?.location).toBe("local");
+      expect(obs?.fields.map((field) => field.key)).toEqual(["url", "password"]);
+      expect(obs?.fields.find((field) => field.key === "password")?.description).toContain(
+        "0600",
+      );
+      const twitch = listed.integrations.find((entry) => entry.integration === "twitch");
+      expect(twitch?.requiresAuth).toBe(true);
+      expect(twitch?.modes).toEqual(["auto", "local-app", "cloud"]);
+      expect(twitch?.fields.map((field) => field.key)).toEqual([
+        "clientId",
+        "clientSecret",
+        "connection",
+      ]);
+      expect(listed.integrations.find((entry) => entry.integration === "http")?.modes).toContain(
+        "cloud",
+      );
+    }),
+  );
+
   it.effect("removing a project drops its scripts and connection usage", () =>
     Effect.gen(function* () {
       const agent = yield* client;
@@ -133,7 +168,7 @@ describe("@ballast/agent-protocol RPC group", () => {
       expect(Exit.isFailure(removedScript)).toBe(true);
 
       const obs = yield* agent.GetConnection({ connectionId: "obs/main" });
-      expect(obs.usedBy).toEqual([{ projectId: main, scriptId: redeem }]);
+      expect(obs.boundBy).toEqual([{ projectId: main, slot: "main" }]);
     }),
   );
 
@@ -287,9 +322,8 @@ describe("@ballast/agent-protocol RPC group", () => {
       const broadcaster = listed.connections.find(
         (connection) => connection.id === "twitch/broadcaster",
       );
-      expect(broadcaster?.usedBy).toEqual([
-        { projectId: main, scriptId: redeem },
-        { projectId: main, scriptId: cheer },
+      expect(broadcaster?.boundBy).toEqual([
+        { projectId: main, slot: "broadcaster" },
       ]);
 
       const configured = yield* agent.ConfigureConnection({
@@ -331,11 +365,9 @@ describe("@ballast/agent-protocol RPC group", () => {
     }),
   );
 
-  it.effect("pairs and unpairs the cloud, and accepts a service restart", () =>
+  it.effect("pairs and unpairs the cloud", () =>
     Effect.gen(function* () {
       const agent = yield* client;
-
-      yield* agent.RestartService({ reason: "test" });
 
       expect((yield* agent.GetCloudStatus()).state).toBe("linked");
 

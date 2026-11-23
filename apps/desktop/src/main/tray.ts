@@ -4,7 +4,7 @@ import type { ServiceStatus, UpdateState } from "../bridge.ts";
 export interface TrayActions {
   readonly show: () => void;
   readonly showLogs: () => void;
-  readonly installService: () => void;
+  readonly startService: () => void;
   readonly restartService: () => void;
   readonly stopService: () => void;
   readonly checkForUpdates: () => void;
@@ -47,30 +47,20 @@ const statusLine = (status: ServiceStatus): string => {
     return "Running " + version + pid;
   }
   if (
-    status.phase === "installing" ||
     status.phase === "updating" ||
     status.phase === "starting" ||
     status.phase === "restarting" ||
-    status.phase === "stopping" ||
-    status.phase === "uninstalling"
+    status.phase === "stopping"
   ) {
     return status.phase.charAt(0).toUpperCase() + status.phase.slice(1) + "…";
   }
-  if (status.installed) return "Installed, not running";
-  return "Not installed";
+  if (status.phase === "error") return "Not running (failed to start)";
+  return "Not running";
 };
 
 export function createTray(actions: TrayActions): TrayController {
   const tray = new Tray(trayIcon());
   tray.setToolTip("Ballast");
-  const installItem = (status: ServiceStatus): MenuItemConstructorOptions | null =>
-    status.installed
-      ? null
-      : {
-          label: "Install background service…",
-          click: () => actions.installService(),
-        };
-
   const updateItem = (update: UpdateState): MenuItemConstructorOptions | null => {
     if (update.phase === "ready") {
       return { label: "Install update" + (update.version ? " " + update.version : "") + "…", click: actions.installUpdate };
@@ -82,7 +72,6 @@ export function createTray(actions: TrayActions): TrayController {
   };
 
   const render = (status: ServiceStatus, update: UpdateState): void => {
-    const installation = installItem(status);
     const updateEntry = updateItem(update);
     const template: MenuItemConstructorOptions[] = [
       { label: "Open Ballast", click: actions.show },
@@ -91,6 +80,9 @@ export function createTray(actions: TrayActions): TrayController {
         ? [{ label: "Pending consent: " + status.pendingConsents, click: actions.show }]
         : []),
       { type: "separator" },
+      ...(status.running
+        ? []
+        : [{ label: "Start Ballast", click: () => actions.startService() }]),
       {
         label: "Restart Ballast",
         enabled: status.running,
@@ -101,7 +93,6 @@ export function createTray(actions: TrayActions): TrayController {
         enabled: status.running,
         click: () => actions.stopService(),
       },
-      ...(installation ? [installation] : []),
       ...(updateEntry ? [updateEntry] : []),
       { label: "Show logs", click: actions.showLogs },
       { type: "separator" },

@@ -98,13 +98,16 @@ describe("@ballast/core timers", () => {
     Effect.gen(function* () {
       const ref = yield* Ref.make(Ballast.emptyManifest("timers"));
       const script = Effect.gen(function* () {
-        const cooldown = yield* Ballast.Timer.make("cooldown", {
-          title: "Cooldown",
-          payload: cooldownPayload,
-          onStale: "deliver",
-          maxAgeMs: 60_000,
-        });
-        yield* cooldown.subscribe(() => Effect.void);
+        yield* Ballast.Timer.subscribe(
+          "cooldown",
+          cooldownPayload,
+          () => Effect.void,
+          {
+            title: "Cooldown",
+            onStale: "deliver",
+            maxAgeMs: 60_000,
+          },
+        );
       });
 
       yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), makeRecorder(ref));
@@ -124,9 +127,11 @@ describe("@ballast/core timers", () => {
     Effect.gen(function* () {
       const ref = yield* Ref.make(Ballast.emptyManifest("timer-after-plan"));
       const script = Effect.gen(function* () {
-        const cooldown = yield* Ballast.Timer.make("cooldown", {
-          payload: cooldownPayload,
-        });
+        const cooldown = yield* Ballast.Timer.subscribe(
+          "cooldown",
+          cooldownPayload,
+          () => Effect.void,
+        );
         yield* cooldown.after("user:1", "1 minute", { user: "1" });
       });
 
@@ -267,10 +272,11 @@ describe("@ballast/core timers", () => {
       };
 
       const script = Effect.gen(function* () {
-        const cooldown = yield* Ballast.Timer.make("cooldown", {
-          payload: cooldownPayload,
-        });
-        yield* cooldown.subscribe(() => Effect.void);
+        const cooldown = yield* Ballast.Timer.subscribe(
+          "cooldown",
+          cooldownPayload,
+          () => Effect.void,
+        );
         yield* cooldown.after("user:1", "1 minute", { user: "1" });
       });
 

@@ -1,7 +1,7 @@
 # `@ballast/web`
 
-The Ballast desktop UI: SolidJS + Vite + TypeScript, served by the agent service at
-`/`. It is a pure client of `@ballast/agent-protocol` and `@ballast/desktop/bridge`
+The Ballast desktop UI: SolidJS + Vite + TypeScript, served by the agent service at `/`.
+It is a pure client of `@ballast/agent-protocol` and `@ballast/desktop/bridge`
 (type-only for the Electron bridge); it does not import the agent or Alchemy.
 
 ## Stack
@@ -12,13 +12,12 @@ The Ballast desktop UI: SolidJS + Vite + TypeScript, served by the agent service
 | `@solidjs/router` | `1.0.0` | `HashRouter`, so `dist/` works on a plain static server without SPA fallback. |
 | Vite | `8.3.8` | Dev server + small build, `base: "./"`. |
 | Tailwind CSS | `4.3.5` | Layout utilities only; colour, type and elevation come from OpenCode tokens. |
-| highlight.js | `11.12.0` | Core + TypeScript grammar only, for the Source pane. |
+| highlight.js | `11.12.0` | Core + TypeScript/JSON grammars for the Source pane. |
 | Vitest / Playwright | workspace / `1.65.1` | Store/client tests, mock UI smoke, real-service smoke, screenshots. |
 
 ## Theme
 
-Custom Ballast colours, icons, cards and dark-class theming were removed. The stylesheet
-vendors a reduced subset of OpenCode's design tokens from
+The stylesheet vendors a reduced subset of OpenCode's design tokens from
 `anomalyco/opencode` **`766379ee81a9ee5496e1f96ab573c250a5907d9f`** (the 2.3.2 line):
 
 - `packages/ui/src/styles/tokens/colors.css`
@@ -27,13 +26,10 @@ vendors a reduced subset of OpenCode's design tokens from
 - `packages/ui/src/actions/button/button.css`
 - `packages/ui/src/forms/text-input/text-input.css`
 
-The published `@opencode/ui@2.3.2` package was evaluated but not used: it is ~8 MB unpacked,
-pulls a large component dependency tree and `@opencode/util` workspace references, and its token
-CSS follows `prefers-color-scheme` instead of the in-app System/Light/Dark setting. The vendored
-subset keeps the OpenCode token names (`--v2-background-bg-*`, `--v2-text-text-*`,
-`--v2-border-border-*`, `--v2-state-*`, `--v2-elevation-*`, `--syntax-*`) and writes the values
-per scheme under `data-color-scheme="light|dark"`. Typography follows OpenCode (Inter/system,
-440/530/670 weights, IBM Plex Mono/SF Mono), as do 28px controls, 6px radii and alpha borders.
+Values are written per scheme under `data-color-scheme="light|dark"`, using the OpenCode token
+names (`--v2-background-bg-*`, `--v2-text-text-*`, `--v2-border-border-*`, `--v2-state-*`,
+`--v2-elevation-*`, `--syntax-*`). Typography follows OpenCode: Inter/system at 440/530/670,
+IBM Plex Mono/SF Mono, 28px controls, 6px radii and alpha borders.
 
 **Cursor rule:** nothing shows a hand cursor except links that leave the app. Body, buttons,
 tabs, options, switches, labels, selects, summaries and anchors use `cursor: default`; only
@@ -42,47 +38,70 @@ splitter uses `row-resize`, which is a resize cursor, not a pointer.
 
 ## Screens
 
-- **Scripts** — project selector in the sidebar; a plain list of name, path, status dot and
-  Start/Stop.
-- **Script detail** — a full-height workspace with no page scroll:
-  compact header (back, name, status, Start/Stop), inline consent banner, and a **Source** pane on
-  top plus **Logs** below. The horizontal splitter is draggable, persisted in localStorage
-  (`ballast.scriptSplit`), resettable by double click, and clamped so both panes stay usable. Each
-  pane has a maximize/restore control; maximizing keeps the other pane's header bar, and Escape
-  restores. Source keeps highlighting, line numbers, copy-path and refresh-on-change; Logs keeps
-  autoscroll with a “Latest” button after scrolling up, clear, and live status.
-  A fixed-width right **Parameters** sidebar (300px, persisted collapse, auto-collapsed below
-  1100px) holds the short form and a collapsible Manifest (connections, topics, scopes).
-- **Connections** — one list of integration · slot, status and one action per row. The action opens
-  a small dialog with fields, Twitch mode, scopes and browser/device auth. No dashboard.
-- **Settings** — service/desktop state, restart/stop, projects add/remove, cloud pair/unpair and
+- **Projects** (`/`, `/projects`) — the sidebar lists every project with its status, and the
+  page has the same list with **New project** and **Add folder**. New project asks for a name and
+  an optional folder; with the desktop bridge the folder comes from the native picker, while a
+  plain browser shows a path field. The optional folder defaults to
+  `~/ballast-projects/<slug>`. A newly created project is stopped and has a Start action.
+- **Project** (`/projects/:id`) — a full-height workspace with no page scroll. Units are grouped
+  by kind (topics, timers, workflows, params, runs) with status, last activity and a
+  `file:line` source link. The header shows running / stopped / needs consent /
+  “Running previous version” and Start, Stop and Restart based on whether a worker is live, so a
+  failed reload offers Stop/Restart instead of Start. The consent banner carries the summary,
+  Reject and Approve. A failed reload keeps the old worker and shows the message once, with the
+  declaration as a source link.
+  The center is a **Source** pane over a **Logs** pane with a draggable splitter
+  (`ballast.projectSplit`), double-click reset, per-pane maximize and Escape restore. Source
+  browses `ListProjectFiles` in a file tree, reads files, jumps to and highlights a line, and
+  refetches on `project-file-changed` (and project changes). Logs accept a unit filter or a click
+  on a unit row. The right **Project** sidebar (300px, persisted collapse, auto-collapsed below
+  1200px) holds project parameters, connection bindings and pending timers with Cancel.
+  Parameters show their title and description (not the raw key), support string, number, boolean,
+  enum and `strings` (multi-select) values, and use `ParamView.options` when the service resolves
+  an `optionsSource`. Each connection requirement has a compatible-instance picker, an inline
+  **Add connection…** action that pre-filters the add flow and binds on creation, and a hint for
+  proposed vs unbound slots. Rebinding a live project asks before restarting it; unbound slots
+  disable Start.
+- **Connections** — service-level instances grouped by integration. Each row shows its label,
+  status, account login/avatar, project slots that use it, and Manage/Delete. A bound instance
+  cannot be deleted and explains that it must be unbound first. **Add connection** picks an
+  integration, label and field set, then connects and starts auth where needed. Twitch own-app
+  mode shows the client id/secret fields, the generated redirect URL and the sign-in link. The
+  dialog also edits, connects/disconnects, re-authorizes and keeps the approval/permission states
+  keyed by instance. Keyboard dialogs hide the redundant editable macOS permission field; the
+  accessibility status line plus **Open System Settings** is the only control.
+- **Projects** also show **Needs connections** when an explicit binding or sole-instance proposal
+  is missing; Review opens the project's connection picker.
+- **Settings** — service/desktop state, stop (restart in the desktop app), cloud pair/unpair and
   appearance.
 
-There are no tabs any more; Logs and Source are always visible together. Event inspection, graph
-view, stat cards and success/info toasts remain removed. Hooks for upcoming VTS/keyboard
-needs-action states are marked in `src/screens/ConnectionsScreen.tsx` and `src/bridge.ts`.
+Event inspection, graph view, stat cards and success/info toasts remain removed. Logs and Source
+are always visible together; there are no tabs.
 
 ## Desktop bridge
 
-When `window.ballast` exists, Settings uses the Electron supervisor through the type-only contract
+When `window.ballast` exists, Settings uses the desktop launcher through the type-only contract
 `@ballast/desktop/bridge`:
 
 - initial `service.status()` plus `events.onServiceStatus`;
-- service phase, installed/running state, running/installed version and supervisor;
-- Restart/Stop call `service.restart()` / `service.stop()` (supervisor-aware), not the RPCs;
-- Install is shown only when `status.installed === false`; Uninstall lives in an explicit
-  **Advanced** disclosure once installed.
+- service phase, running state and running/built version;
+- Restart/Stop call `service.restart()` / `service.stop()`, not the RPCs (restart is stop + spawn,
+  which only the desktop can do);
+- `app.pickDirectory()` opens the native folder picker for **New project** and **Add folder**.
 
-Outside Electron the same rows/buttons fall back to `GetServiceInfo`/`GetHealth` and
-`RestartService`/`ShutdownService` RPCs. The bridge is type-checked but not bundled at runtime.
+Outside Electron the same rows fall back to `GetServiceInfo`/`GetHealth`, and only Stop is shown
+(`ShutdownService`): a browser cannot respawn the service. There is no install/uninstall; the
+service is a background process the desktop app or CLI starts. The bridge is type-checked but not
+bundled at runtime.
 
 ### Permissions and connection approvals
 
 - The bridge's `permissions.status()` is queried when Connections opens. A non-granted startup
   state is reported with `ReportShellPermission` only when no keyboard connection exists to
   reconcile; the shell owns reporting after an actual request.
-- **Accessibility** approval rows/buttons only render when `window.ballast` exists. The connection
-  dialog shows `Accessibility permission: denied|unknown|granted` and one action:
+- **Accessibility** approval rows/buttons only render when `window.ballast` exists. A keyboard
+  connection with a non-granted permission shows **Needs permission** instead of **Connected**.
+  The dialog shows `Accessibility permission: denied|unknown|granted` and one action:
   `Open System Settings` (or `Check again` when granted). The request goes through
   `bridge.permissions.requestAccessibility()`; the main process reports the result through
   `ReportShellPermission`.
@@ -105,9 +124,18 @@ then the mock. When the service itself serves a **production build**, there is n
 the UI probes same-origin `/health` and uses a same-origin WebSocket with the session cookie. Vite
 dev never probes, so mock mode stays quiet.
 
-`src/state/store.ts` keeps one `WatchService` subscription, one `StreamLogs` subscription (started
-after the snapshot), per-script details and source revisions, and writes mutation results straight
-into the store. It keeps the last snapshot while reconnecting and resumes logs with `afterSeq`.
+`src/state/store.ts` keeps one `WatchService` subscription and one `StreamLogs` subscription
+(started after the snapshot). Project details are cached per id and refreshed on
+`project`/`project-changed`/`reload-failed`/`project-consent` revisions; file panes wake on
+`project-file-changed`; pending project consents are seeded with `ListProjectConsents` and kept
+current by events. Connection CRUD writes its returned `ConnectionSummary` back; bindings update
+the local `boundBy` lists immediately and write the returned `ProjectDetail` back. The store
+keeps the last snapshot while reconnecting and resumes logs with `afterSeq`.
+
+The web app uses **no legacy script RPC**. `ListScripts`, `GetScript`, `GetScriptSource`,
+`PlanScript`, `StartScript`, `StopScript`, `RestartScript`, `SetScriptParam`,
+`SetScriptEnabled`, `ListConsents`, `ApproveConsent` and `RejectConsent` are absent from
+`apps/web`.
 
 ## Development and build
 
@@ -123,14 +151,13 @@ Point dev at a live agent with `VITE_SERVICE_URL`/`VITE_SERVICE_TOKEN`, or open
 `?service=http://127.0.0.1:PORT&token=...`. The service must allow the Vite origin only with
 `--dev`.
 
-`test:e2e` uses `e2e/global-setup.ts` to spawn the real service with temp state/data dirs and
-`BALLAST_WEB_DIR=apps/web/dist`, plus a VTube Studio fixture (`e2e/vts-fixture-server.ts`) that
-leaves AuthenticationToken pending. It adds a temp project under `examples/` with
-`tick-echo.ts`, `obs-scene.ts`, `vts-hotkey.ts` and `keyboard-hotkey.ts`, connects
-`vts/main` and `keyboard/main` to produce both approval states, and writes the URL/token/project
-id to `test-results/real-service.json`. If spawning or either approval fixture fails, the
-real-service specs are skipped. Teardown calls `/shutdown`, stops the VTS fixture, and removes the
-project and temp dirs. The mock spec runs against Vite.
+`test:e2e` uses `e2e/global-setup.ts` to spawn the real service with temp state/data dirs,
+`BALLAST_PROJECTS_DIR`, and `BALLAST_WEB_DIR=apps/web/dist`. It starts a VTube Studio fixture
+(`e2e/vts-fixture-server.ts`) that leaves AuthenticationToken pending, creates VTube Studio and
+Keyboard connection instances through the service RPC, and records their ids plus the approval
+states. The real-service spec creates projects through the UI; no fixture project is pre-added.
+Teardown calls `/shutdown`, stops the VTS fixture, and removes the temp dirs. The mock specs run
+against Vite.
 
 ### Serving contract for the agent service
 
@@ -138,67 +165,56 @@ project and temp dirs. The mock spec runs against Vite.
 
 - Serve the contents of `dist/` at `/`.
 - `base: "./"` keeps asset URLs relative to any loopback port.
-- Hash routes (`/#/scripts`, `/#/settings`) need **no SPA fallback**.
+- Hash routes (`/#/projects`, `/#/settings`) need **no SPA fallback**.
 - Set `Referrer-Policy: no-referrer`; never inline the token into HTML.
 - Keep `/rpc`, `/health` and `/oauth/*` out of the static handler.
 - `index.html` no-cache, hashed assets immutable. No external requests are made.
 
-## `GetScriptSource` additions
-
-`packages/agent-protocol` gained:
-
-```ts
-ScriptSource = Schema.Struct({
-  path: Schema.String,
-  content: Schema.String,
-  sha256: Schema.String,
-  updatedAt: Schema.Number,
-  language: Schema.Literal("typescript"),
-})
-
-GetScriptSource = Rpc.make("GetScriptSource", {
-  payload: ScriptIdRequest,
-  success: ScriptSource,
-  error: AgentError,
-})
-```
-
-It is in `AgentRpcs`. `ServiceEvent` also has the additive `script-source-changed` variant
-(`{ projectId, scriptId, sha256, updatedAt }`); the open Source pane refetches when it arrives.
-`MockAgentLayer` returns realistic sources and hashes them with Web Crypto. The real service
-implements the handler in `apps/agent/src/service/rpc.ts` and publishes source changes from its
-project scan.
-
 ## Tests and screenshots
 
-- `src/state/store.test.ts` — snapshot, project add/remove, params, consent, watch changes, live
-  logs, connections/auth, cloud, lifecycle, `fetchScriptSource`.
+- `src/state/store.test.ts` — snapshot/projects, create/add/remove, detail and units,
+  start/stop, watch changes, project files, connections/auth, cloud, lifecycle.
 - `src/agent/client.test.ts` — mock default, query/env precedence, ws/wss, token handling.
-- `src/lib/format.test.ts` — reduced status presentation.
-- `e2e/smoke.spec.ts` — mock: project switch, start/stop, consent, logs+source simultaneously,
-  sidebar parameter edit, splitter drag + persistence, maximize/restore both panes, sidebar
-  collapse/expand, narrow auto-collapse, connection dialog, cursor rule, no page errors, #boot
-  gone and viewport filled.
-- `e2e/bridge.spec.ts` — fake `window.ballast`: installed/running state, Advanced uninstall,
-  restore/stop through the bridge; not-installed install flow.
+- `src/lib/format.test.ts` — project, unit and connection presentation.
+- `e2e/smoke.spec.ts` — mock: project list, new/add project, start/stop, project workspace,
+  units, source, logs+source split, sidebar parameter area, splitter drag + persistence,
+  maximize/restore both panes, sidebar collapse/expand, narrow auto-collapse, connection dialog,
+  cursor rule, no page errors, `#boot` gone and viewport filled.
+- `e2e/bridge.spec.ts` — fake `window.ballast`: running state, restart/stop through the bridge,
+  native folder picker.
 - `e2e/approvals.spec.ts` — real service VTube Studio and macOS Accessibility approval rows,
   status text, request hook, and light/dark dialog screenshots.
-- `e2e/real-service.spec.ts` — real service served UI: project selector, consent→approve,
-  start/logs/source, parameter edit, OBS connection dialog, Settings, and real screenshots.
+- `e2e/real-service.spec.ts` — real service served UI: create an OBS instance with no project
+  against a mock obs-websocket server, create a project needing `obs/main`, see the proposed
+  binding, Start-confirm it, review consent bindings, start the worker, add a second OBS instance,
+  rebind the running project with the restart warning, verify the service refuses deleting the
+  bound instance, and observe **Needs connections** for a project with two candidate instances.
+  Also covers unit-filtered logs, source jump, failed reload, string/strings parameters and timer
+  cancel.
 
 Screenshots (1440×1000):
 
 ```
-screenshots/dark-01-scripts.png … dark-08-settings.png
-screenshots/light-01-scripts.png … light-08-settings.png
-screenshots/real-01-scripts.png
-screenshots/real-02-script.png
-screenshots/real-03-consent.png
-screenshots/real-04-script-running.png
-screenshots/real-05-connections.png
-screenshots/real-06-connection-dialog.png
-screenshots/real-07-settings.png
-screenshots/real-08-script-light.png
+screenshots/dark-01-projects.png
+screenshots/dark-02-new-project.png
+screenshots/dark-03-project.png
+screenshots/dark-04-source.png
+screenshots/dark-05-logs.png
+screenshots/dark-06-connections.png
+screenshots/dark-07-settings.png
+screenshots/light-01-projects.png … light-07-settings.png
+
+screenshots/real-dark-01-projects.png
+screenshots/real-dark-02-new-project.png
+screenshots/real-dark-03-project.png
+screenshots/real-dark-04-source-jump.png
+screenshots/real-dark-05-logs-unit.png
+screenshots/real-dark-06-consent.png
+screenshots/real-dark-07-reload-failed.png
+screenshots/real-dark-08-connections.png
+screenshots/real-dark-09-add-connection.png
+screenshots/real-dark-10-project-connections.png
+screenshots/real-light-01-projects.png … real-light-10-project-connections.png
 
 screenshots/approvals-vtuber-studio-dark.png
 screenshots/approvals-vtuber-studio-light.png
@@ -207,16 +223,17 @@ screenshots/approvals-accessibility-light.png
 ```
 
 Bundle before the redesign: **408.98 kB JS / 48.57 kB CSS** (118.54 / 8.68 kB gzip).
-Bundle now: **351.64 kB JS / 29.00 kB CSS** (110.91 / 6.50 kB gzip).
+Bundle now: **379.14 kB JS / 30.88 kB CSS** (118.97 / 6.72 kB gzip).
 
 ## Known protocol gaps / notes
 
-1. `ParamView.optionsSource` has no RPC to resolve live option values; static `options` render as a
-   select, otherwise the field is text.
-2. No `CreateConnection`/`AddConnection` RPC; the list shows service-known connections only.
+1. There is no integration-catalog RPC, so `src/lib/connections.ts` mirrors the field lists the
+   service accepts in `apps/agent/src/service/connections.ts`. Keep them in sync until the catalog
+   is on the wire.
+2. Dynamic `optionsSource` values are only present in `ParamView.options` when the project slot
+   is bound. A `strings` param shows its current selection until the service returns options.
 3. Browser WebSockets cannot send a bearer header; the service accepts `?token=` or the session
    cookie.
-4. Real service script titles include the file extension ("Tick Echo Ts"); the UI strips a
-   trailing extension/Ts for display without changing the record.
-5. Real connections can have `label === slot`; the row shows integration · slot and omits a
-   redundant subtitle.
+4. The source pane refetches on `project-file-changed`; because project planning also publishes
+   project changes, it treats those as a cue to refresh the current file as well.
+5. Removing a project is not exposed in the UI after project management moved out of Settings.

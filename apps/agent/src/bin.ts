@@ -1,12 +1,23 @@
 #!/usr/bin/env -S node --experimental-strip-types --no-warnings=ExperimentalWarning
 // The CLI talks to `@ballast/planner`; TypeScript files are run directly via
 // Node's built-in type stripping (Node >= 22.18), so no build step is needed.
-import { readFile, stat } from "node:fs/promises";
 import { hostname } from "node:os";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Effect, Stream } from "effect";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/http";
+import {
+  NodeChildProcessSpawner,
+  NodeCrypto,
+  NodeFileSystem,
+  NodePath,
+  NodeRuntime,
+  NodeStdio,
+  NodeTerminal,
+} from "@effect/platform-node";
 import {
   decodeManifest,
   diff,
@@ -14,11 +25,26 @@ import {
   planProject,
   resolveProjectEntry,
 } from "@ballast/planner";
+const NodePlatformLayer = Layer.mergeAll(
+  NodeChildProcessSpawner.layer.pipe(
+    Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
+  ),
+  NodeCrypto.layer,
+  NodeFileSystem.layer,
+  NodePath.layer,
+  NodeStdio.layer,
+  NodeTerminal.layer,
+);
+
+type CliServices = Layer.Success<typeof NodePlatformLayer>;
+
 import { parseAssignment } from "./connection-config.ts";
 import type { ConnectionOptions } from "./connection-config.ts";
 import { runScript } from "./run.ts";
+import { ensureService, findRunningService, stopService } from "./service/background.ts";
 import { withAgentClient } from "./service/client.ts";
-import { parseServeOptions } from "./service/config.ts";
+import { parseServeOptions, readEnvironment } from "./service/config.ts";
+import type { ServiceRegistration } from "./service/config.ts";
 import { runServe } from "./service/server.ts";
 import { authorizeTwitchAccount } from "./twitch/auth.ts";
 import { claimPairing } from "./twitch/cloud.ts";
@@ -27,14 +53,16 @@ import {
   readStoredTwitchAccount,
   resolveDataDir,
   resolveTwitchAppConfig,
+  twitchEnvKeys,
   writeCloudPairing,
 } from "./twitch/config.ts";
 import type { TwitchMode } from "./twitch/config.ts";
 import { requiredScopes } from "./twitch/conditions.ts";
 
 const usage = `Usage:
-  ballast serve [--port 0] [--dev] [--supervised] [--standalone]
+  ballast serve [--port 0] [--dev] [--supervised]
       [--state-dir <dir>] [--data-dir <dir>] [--web-dir <dir>] [--cloud <url>]
+  ballast mcp [--state-dir <dir>] [--data-dir <dir>] [--url <url> --token <token>]
   ballast status
   ballast projects list|get <id>|add <path> [--name <name>]|remove <id>
   ballast scripts list|get <project>/<script>|start|stop|restart
@@ -45,7 +73,7 @@ const usage = `Usage:
       |connect <id>|disconnect <id>|auth <id>
   ballast cloud status|begin|pair <code>|unpair [--machine-name <name>]
   ballast consent list|approve <id>|reject <id> [--project <id>]
-  ballast service stop|restart
+  ballast service start|stop|restart|status
   ballast plan <entry.ts> [--diff <previous-manifest.json>]
   ballast run <entry.ts> [--param key=value]...
       [--connection integration/slot=url]...
@@ -79,7 +107,10 @@ Cloud mode: pair this machine with 'ballast pair <code> --cloud <url>', then
 bind a slot with --connection twitch/<slot>=<login> if the account has more
 than one Twitch connection.`;
 
-const resolveDir = dirname(fileURLToPath(import.meta.url));
+const resolveDir = (
+  path: Path.Path,
+): Effect.Effect<string> =>
+  path.fromFileUrl(new URL(".", import.meta.url)).pipe(Effect.orDie);
 
 const formatError = (error: unknown): string => {
   if (error instanceof Error) return error.message;
@@ -95,18 +126,32 @@ const formatError = (error: unknown): string => {
   return String(error);
 };
 
-const printJson = (value: unknown): Effect.Effect<void> =>
-  Effect.sync(() => {
-    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-  });
+const printJson = (value: unknown): Effect.Effect<void, never, Stdio.Stdio> =>
+  Effect.flatMap(Stdio.Stdio, (stdio) =>
+    Stream.run(
+      Stream.make(`${JSON.stringify(value, null, 2)}\n`),
+      stdio.stdout(),
+    ),
+  ).pipe(Effect.orDie);
 
-const readManifest = (path: string) =>
-  Effect.tryPromise({
-    try: async () => decodeManifest(JSON.parse(await readFile(path, "utf8"))),
-    catch: (cause) =>
-      new Error(
-        `Could not read previous manifest "${path}": ${cause instanceof Error ? cause.message : String(cause)}`,
+const readManifest = (
+  path: string,
+): Effect.Effect<ReturnType<typeof decodeManifest>, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const content = yield* fs.readFileString(path).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Error(`Could not read previous manifest "${path}": ${cause.message}`),
       ),
+    );
+    return yield* Effect.try({
+      try: () => decodeManifest(JSON.parse(content)),
+      catch: (cause) =>
+        new Error(
+          `Could not read previous manifest "${path}": ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+    });
   });
 
 interface PlanArgs {
@@ -252,19 +297,21 @@ const parseRunArgs = (args: ReadonlyArray<string>): RunArgs => {
   return { entry, params, connections, secrets, twitchModes, cloudUrl };
 };
 
-const entryFor = (path: string): Effect.Effect<string, Error> =>
+const entryFor = (
+  path: string,
+): Effect.Effect<string, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const info = yield* Effect.tryPromise({
-      try: () => stat(path),
-      catch: (cause) => new Error(String(cause)),
-    });
-    if (!info.isDirectory()) return path;
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(path).pipe(
+      Effect.mapError((cause) => new Error(cause.message)),
+    );
+    if (info.type !== "Directory") return path;
     return (yield* resolveProjectEntry(path).pipe(
       Effect.mapError((error) => new Error(error.message)),
     )).entryFile;
   });
 
-const runCommand = (args: ReadonlyArray<string>): Effect.Effect<never, Error> =>
+const runCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const options = yield* Effect.try({
       try: () => parseRunArgs(args),
@@ -274,23 +321,24 @@ const runCommand = (args: ReadonlyArray<string>): Effect.Effect<never, Error> =>
     return yield* runScript({ ...options, entry });
   });
 
-const planCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const planCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const options = yield* Effect.try({
       try: () => parsePlanArgs(args),
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
 
-    const info = yield* Effect.tryPromise({
-      try: () => stat(options.entry),
-      catch: (cause) => new Error(String(cause)),
-    });
-    const manifest = yield* (info.isDirectory()
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const info = yield* fs.stat(options.entry).pipe(
+      Effect.mapError((cause) => new Error(cause.message)),
+    );
+    const manifest = yield* (info.type === "Directory"
       ? planProject(options.entry).pipe(
           Effect.map((project) => project.manifest),
           Effect.mapError((error) => new Error(error.message)),
         )
-      : plan(options.entry, { resolveDir }).pipe(
+      : plan(options.entry, { resolveDir: yield* resolveDir(path) }).pipe(
           Effect.mapError((error) => new Error(error.message)),
         ));
 
@@ -415,26 +463,35 @@ const parseAuthArgs = (args: ReadonlyArray<string>): AuthArgs => {
   return { slot, entry, scopes, device, open, callbackPort, connections, secrets };
 };
 
-const authCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const authCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
+    const path = yield* Path.Path;
     const parsed = yield* Effect.try({
       try: () => parseAuthArgs(args),
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
-    const dataDir = resolveDataDir();
-    const stored = yield* Effect.tryPromise({
-      try: () => readStoredTwitchAccount(parsed.slot, dataDir),
-      catch: (cause) =>
-        new Error(
-          "Could not read the stored Twitch token: " +
-            (cause instanceof Error ? cause.message : String(cause)),
-        ),
-    });
+    const env = yield* readEnvironment([
+      "BALLAST_DATA_DIR",
+      "XDG_DATA_HOME",
+      "LOCALAPPDATA",
+      "HOME",
+      ...twitchEnvKeys(parsed.slot),
+    ]);
+    const dataDir = resolveDataDir(path, env);
+    const stored = yield* readStoredTwitchAccount(parsed.slot, dataDir).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Error(
+            "Could not read the stored Twitch token: " +
+              (cause instanceof Error ? cause.message : String(cause)),
+          ),
+      ),
+    );
 
     const manifestScopes =
       parsed.entry === undefined
         ? []
-        : yield* plan(parsed.entry, { resolveDir }).pipe(
+        : yield* plan(parsed.entry, { resolveDir: yield* resolveDir(path) }).pipe(
             Effect.mapError((error) => new Error(error.message)),
             Effect.map((manifest) => requiredScopes(manifest, parsed.slot)),
           );
@@ -443,7 +500,7 @@ const authCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
     if (scopes.length === 0) scopes.push("user:read:email");
 
     const config = yield* Effect.try({
-      try: () => resolveTwitchAppConfig(parsed.slot, parsed, stored),
+      try: () => resolveTwitchAppConfig(parsed.slot, parsed, stored, env),
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
 
@@ -464,7 +521,10 @@ interface PairArgs {
   readonly machineName: string | undefined;
 }
 
-const parsePairArgs = (args: ReadonlyArray<string>): PairArgs => {
+const parsePairArgs = (
+  args: ReadonlyArray<string>,
+  defaultCloudUrl: string | undefined,
+): PairArgs => {
   let code: string | undefined;
   let cloud: string | undefined;
   let machineName: string | undefined;
@@ -503,17 +563,18 @@ const parsePairArgs = (args: ReadonlyArray<string>): PairArgs => {
   }
 
   if (code === undefined) throw new Error("pair requires a pairing code");
-  const url = cloud ?? process.env["BALLAST_CLOUD_URL"];
+  const url = cloud ?? defaultCloudUrl;
   if (url === undefined || url === "") {
     throw new Error("pair requires --cloud <url> (or BALLAST_CLOUD_URL)");
   }
   return { code, cloud: url, machineName };
 };
 
-const pairCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const pairCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
+    const env = yield* readEnvironment(["BALLAST_CLOUD_URL"]);
     const parsed = yield* Effect.try({
-      try: () => parsePairArgs(args),
+      try: () => parsePairArgs(args, env["BALLAST_CLOUD_URL"]),
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
 
@@ -524,23 +585,23 @@ const pairCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
       platform: process.platform,
     }).pipe(Effect.mapError((error) => new Error(error.message)));
 
-    yield* Effect.tryPromise({
-      try: () =>
-        writeCloudPairing({
-          version: 1,
-          url: parsed.cloud,
-          machineId: pairing.machineId,
-          machineToken: pairing.machineToken,
-          user: pairing.user,
-          pairedAt: Date.now(),
-          bindings: {},
-        }),
-      catch: (cause) =>
-        new Error(
-          "Could not store the cloud pairing: " +
-            (cause instanceof Error ? cause.message : String(cause)),
-        ),
-    });
+    yield* writeCloudPairing({
+      version: 1,
+      url: parsed.cloud,
+      machineId: pairing.machineId,
+      machineToken: pairing.machineToken,
+      user: pairing.user,
+      pairedAt: Date.now(),
+      bindings: {},
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Error(
+            "Could not store the cloud pairing: " +
+              (cause instanceof Error ? cause.message : String(cause)),
+          ),
+      ),
+    );
 
     console.log(
       "[pair] machine " +
@@ -558,10 +619,20 @@ const pairCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
     });
   });
 
+/** Run against the background service, starting it first when none is running. */
 const service = <A, E>(
   use: (client: import("./service/client.ts").LiveAgentClient) => Effect.Effect<A, E>,
-): Effect.Effect<A, Error> =>
-  withAgentClient(use).pipe(
+): Effect.Effect<A, Error, CliServices> =>
+  Effect.gen(function* () {
+    const explicit = yield* readEnvironment(["BALLAST_SERVICE_URL"]);
+    if (explicit["BALLAST_SERVICE_URL"] === undefined) {
+      const ensured = yield* ensureService();
+      if (ensured.started) {
+        console.error(`Started the Ballast service in the background (pid ${ensured.registration.pid})`);
+      }
+    }
+    return yield* withAgentClient(use);
+  }).pipe(
     Effect.mapError((error) => new Error(formatError(error))),
   );
 
@@ -602,23 +673,18 @@ const parseScriptRef = (value: string | undefined): { projectId: string; scriptI
   return { projectId: value.slice(0, index), scriptId: value.slice(index + 1) };
 };
 
-const serveCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const serveCommand = (
+  args: ReadonlyArray<string>,
+): Effect.Effect<number, Error, CliServices> =>
   Effect.gen(function* () {
-    const options = yield* Effect.try({
-      try: () => parseServeOptions(args),
-      catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-    });
-    const code = yield* runServe(options);
-    process.exitCode = code;
-    // Every service resource has been closed by runServe. A short timer makes
-    // the exit deterministic even if a native socket close is still pending.
-    yield* Effect.sync(() => {
-      setTimeout(() => process.exit(code), 50).unref();
-    });
+    const options = yield* parseServeOptions(args).pipe(
+      Effect.mapError((cause) => new Error(cause.message)),
+    );
+    return yield* runServe(options);
   });
 
-const statusCommand = (): Effect.Effect<void, Error> =>
-  service((client) =>
+const statusCommand = (): Effect.Effect<void, Error, CliServices> =>
+  withAgentClient((client) =>
     Effect.gen(function* () {
       const info = yield* client.GetServiceInfo();
       const health = yield* client.GetHealth();
@@ -630,9 +696,9 @@ const statusCommand = (): Effect.Effect<void, Error> =>
       );
       yield* printJson({ info, health });
     }),
-  );
+  ).pipe(Effect.mapError((error) => new Error(formatError(error))));
 
-const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub, ...rest] = args;
     if (sub === "list" || sub === undefined) {
@@ -706,7 +772,7 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
     throw new Error(`Unknown projects command "${sub}"`);
   });
 
-const scriptsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const scriptsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub, ...rest] = args;
     const projectId = flagValue(rest, "--project");
@@ -781,7 +847,7 @@ const scriptsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error>
     throw new Error(`Unknown scripts command "${sub}"`);
   });
 
-const connectionCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const connectionCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub, ...rest] = args;
     if (sub === "list" || sub === undefined) {
@@ -823,7 +889,7 @@ const connectionCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Err
     throw new Error(`Unknown connections command "${sub}"`);
   });
 
-const cloudCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const cloudCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub, ...rest] = args;
     if (sub === "status" || sub === undefined) {
@@ -852,7 +918,7 @@ const cloudCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =
 const simpleScriptCommand = (
   verb: "start" | "stop" | "restart",
   args: ReadonlyArray<string>,
-): Effect.Effect<void, Error> =>
+): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const ref = parseScriptRef(positional(args, [])[0]);
     yield* printJson(
@@ -867,7 +933,7 @@ const simpleScriptCommand = (
   });
 
 
-const consentCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const consentCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub, ...rest] = args;
     if (sub === "list" || sub === undefined) {
@@ -892,101 +958,163 @@ const consentCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error>
     throw new Error(`Unknown consent command "${sub}"`);
   });
 
-const serviceCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
+const serviceCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub] = args;
+    const describe = (registration: ServiceRegistration): string =>
+      `Ballast ${registration.version} pid ${registration.pid} at ${registration.url}`;
+    if (sub === "start") {
+      const ensured = yield* ensureService();
+      console.log((ensured.started ? "started " : "already running: ") + describe(ensured.registration));
+      return;
+    }
     if (sub === "stop") {
-      yield* service((client) => client.ShutdownService({ force: false }));
-      console.log("service stopped");
+      const stopped = yield* stopService();
+      console.log(stopped === undefined ? "service is not running" : "stopped " + describe(stopped));
       return;
     }
     if (sub === "restart") {
-      yield* service((client) => client.RestartService({ reason: "cli" }));
-      console.log("service restarting");
+      yield* stopService();
+      const ensured = yield* ensureService();
+      console.log("restarted " + describe(ensured.registration));
       return;
     }
-    throw new Error(
-      "service supports stop and restart; install/uninstall are handled by the desktop shell",
-    );
-  });
+    if (sub === "status") {
+      const running = yield* findRunningService();
+      console.log(running === undefined ? "stopped" : "running " + describe(running));
+      return;
+    }
+    throw new Error("Expected ballast service start|stop|restart|status");
+  }).pipe(Effect.mapError((error) => new Error(formatError(error))));
 
-const program = Effect.gen(function* () {
-  const [command, ...rest] = process.argv.slice(2);
+const program: Effect.Effect<number, Error, CliServices> = Effect.gen(function* () {
+  const stdio = yield* Stdio.Stdio;
+  const fs = yield* FileSystem.FileSystem;
+  const [command, ...rest] = yield* stdio.args;
+
+  if (command === "mcp") {
+    yield* Effect.tryPromise({
+      try: async () => {
+        const mcp = await import("@ballast/mcp");
+        const env = await Effect.runPromise(
+          readEnvironment([
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "BALLAST_DATA_DIR",
+            "BALLAST_STATE_DIR",
+            "BALLAST_SERVICE_URL",
+            "BALLAST_SERVICE_TOKEN",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+          ]),
+        );
+        await mcp.runMcpCli({
+          args: rest,
+          env,
+          platform: process.platform,
+          home: env["HOME"] ?? (await Effect.runPromise(fs.realPath("."))),
+        });
+      },
+      catch: (cause) => new Error(formatError(cause)),
+    });
+    return 0;
+  }
 
   if (command === "serve") {
-    yield* serveCommand(rest);
-    return;
+    return yield* serveCommand(rest);
   }
 
   if (command === "status") {
     yield* statusCommand();
-    return;
+    return 0;
   }
 
   if (command === "projects") {
     yield* projectsCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "scripts") {
     yield* scriptsCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "connections") {
     yield* connectionCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "cloud") {
     yield* cloudCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "consent") {
     yield* consentCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "service") {
     yield* serviceCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "start" || command === "stop" || command === "restart") {
     yield* simpleScriptCommand(command, rest);
-    return;
+    return 0;
   }
 
   if (command === "plan") {
     yield* planCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "run") {
     yield* runCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "auth") {
     yield* authCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === "pair") {
     yield* pairCommand(rest);
-    return;
+    return 0;
   }
 
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
-    process.stdout.write(`${usage}\n`);
-    return;
+    yield* Stream.run(Stream.make(`${usage}\n`), stdio.stdout()).pipe(Effect.orDie);
+    return 0;
   }
 
   yield* Effect.fail(new Error(`Unknown command "${command}"\n\n${usage}`));
-});
+}).pipe(Effect.map((code) => code ?? 0));
 
-Effect.runPromise(program).catch((error: unknown) => {
-  process.stderr.write(`ballast: ${formatError(error)}\n`);
-  process.exitCode = 1;
+const main = program.pipe(
+  Effect.catch((error) =>
+    Effect.gen(function* () {
+      const stdio = yield* Stdio.Stdio;
+      yield* Stream.run(
+        Stream.make(`ballast: ${formatError(error)}\n`),
+        stdio.stderr(),
+      ).pipe(Effect.orDie);
+      return 1;
+    }),
+  ),
+  Effect.provide(NodePlatformLayer),
+);
+
+NodeRuntime.runMain(main, {
+  disableErrorReporting: true,
+  teardown: (exit, _onExit) => {
+    if (exit._tag === "Success") {
+      process.exit(typeof exit.value === "number" ? exit.value : 0);
+    } else {
+      process.exit(1);
+    }
+  },
 });

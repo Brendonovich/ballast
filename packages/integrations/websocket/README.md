@@ -16,16 +16,13 @@ export default Effect.gen(function* () {
   const upstream = yield* WebSocket.Client("upstream");
   const bridge = yield* WebSocket.Server("bridge", { port: 1890, path: "/bridge" });
 
-  const send = yield* WebSocket.Send(upstream);
-  const out = yield* WebSocket.ServerSend(bridge);
-
-  yield* WebSocket.Json(ChatMessage).subscribe(upstream, (message) =>
-    out.broadcastText(message.user + ": " + message.text),
+  yield* WebSocket.Json(ChatMessage).subscribe("chat", upstream, (message) =>
+    bridge.broadcastText(message.user + ": " + message.text),
   );
 
-  yield* WebSocket.ServerMessage.subscribe(bridge, (message) =>
+  yield* WebSocket.ServerMessage.subscribe("server-message", bridge, (message) =>
     Effect.gen(function* () {
-      if (message.text !== undefined) yield* send.text(message.text);
+      if (message.text !== undefined) yield* upstream.text(message.text);
     }),
   );
 });
@@ -38,12 +35,14 @@ Client topics: `WebSocket.Message`, `WebSocket.Open`, `WebSocket.Close`, and
 
 ## Manifest capabilities
 
-- `WebSocket.Client(slot, { url? })` records `websocket/connect` with
-  `ws:connect:<host>` or `ws:connect:*` when the URL comes from config.
-- `WebSocket.Server(slot, { host?, port?, path? })` records `websocket/listen`
-  with `ws:listen:<host>:<port><path>`.
-- `WebSocket.Send` records `websocket/send`; `WebSocket.ServerSend` records
-  `websocket/sendToClient` and `websocket/broadcast`.
+- `WebSocket.Client(slot, { url? })` records `websocket/*` plus
+  `websocket/connect` with `ws:connect:<host>` or `ws:connect:*` when the URL
+  comes from config. Sending is `client.send` / `client.text` /
+  `client.binary` / `client.json`.
+- `WebSocket.Server(slot, { host?, port?, path? })` records `websocket/*`
+  plus `websocket/listen` with `ws:listen:<host>:<port><path>`. Sending is
+  `server.send(clientId, message)`; broadcasting is `server.broadcast` plus
+  the `broadcastText` / `broadcastBinary` / `broadcastJson` helpers.
 
 Connection config (agent-side) supplies the URL, headers, subprotocols, reconnect
 policy, and the server host/port/path. The optional script values are intent and

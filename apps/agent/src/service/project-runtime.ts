@@ -1,8 +1,10 @@
-import { createHash, randomBytes } from "node:crypto";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -22,7 +24,9 @@ import {
   type ProjectDiagnostic,
   type ProjectFile,
   type ProjectFileContent,
+  type ProjectBinding,
   type ProjectManifest,
+  type ProjectRequirement,
   type ProjectSummary,
   type ProjectUnitChange,
   type TimerSummary,
@@ -45,6 +49,7 @@ import { makeTimerManager } from "./timers.ts";
 
 const SETTINGS_FILE = "settings.json";
 const APPLIED_FILE = "applied.json";
+const BINDINGS_FILE = "bindings.json";
 
 interface AppliedFile {
   readonly version: 1;
@@ -65,9 +70,12 @@ interface ProjectRuntimeRecord {
   readonly generation: number;
   readonly updatedAt: number;
   readonly lastError: string | undefined;
+  readonly lastErrorKind: "plan" | "runtime" | undefined;
   readonly lastErrorSource: ProjectDetail["lastErrorSource"];
   readonly pendingConsent: ProjectConsentRequest | undefined;
   readonly params: Readonly<Record<string, ParamValue>>;
+  /** "integration/slot" -> connection instance id. */
+  readonly bindings: Readonly<Record<string, string>>;
   readonly session: RuntimeSession | undefined;
   readonly activity: ReadonlyMap<string, number>;
 }
@@ -96,6 +104,12 @@ export interface ProjectRuntimeService {
   readonly restart: (projectId: string) => Effect.Effect<ProjectDetail, AgentError>;
   readonly setParam: (projectId: string, key: string, value: ParamValue) => Effect.Effect<ProjectDetail, AgentError>;
   readonly setEnabled: (projectId: string, enabled: boolean) => Effect.Effect<ProjectDetail, AgentError>;
+  readonly setBinding: (request: {
+    readonly projectId: string;
+    readonly integration: string;
+    readonly slot: string;
+    readonly instanceId: string | null;
+  }) => Effect.Effect<ProjectDetail, AgentError>;
   readonly listTimers: (request: ListTimersRequest) => Effect.Effect<ReadonlyArray<TimerSummary>>;
   readonly cancelTimer: (request: CancelTimerRequest) => Effect.Effect<boolean>;
   readonly consents: (projectId?: string) => Effect.Effect<ReadonlyArray<ProjectConsentRequest>>;
@@ -115,15 +129,25 @@ export class ProjectRuntime extends Context.Service<ProjectRuntime, ProjectRunti
   "ballast/service/ProjectRuntime",
 ) {}
 
-const settingsPath = (project: ProjectRecord): string => join(project.root, ".ballast", SETTINGS_FILE);
-const appliedPath = (project: ProjectRecord): string => join(project.root, ".ballast", APPLIED_FILE);
-const toPosix = (value: string): string => value.split(sep).join("/");
+const settingsPath = (path: Path.Path, project: ProjectRecord): string =>
+  path.join(project.root, ".ballast", SETTINGS_FILE);
+const appliedPath = (path: Path.Path, project: ProjectRecord): string =>
+  path.join(project.root, ".ballast", APPLIED_FILE);
+const bindingsPath = (path: Path.Path, project: ProjectRecord): string =>
+  path.join(project.root, ".ballast", BINDINGS_FILE);
+const toPosix = (path: Path.Path, value: string): string => value.split(path.sep).join("/");
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> => typeof value === "object" && value !== null;
 const paramValue = (value: unknown): ParamValue | undefined =>
   typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : undefined;
 
-const readSettings = async (project: ProjectRecord): Promise<SettingsState> => {
-  const value = await readJson(settingsPath(project));
+const readSettings = (
+  project: ProjectRecord,
+): Effect.Effect<SettingsState, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const value = yield* readJson(settingsPath(path, project)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   if (!isRecord(value)) return { enabled: false, params: {} };
   const params: Record<string, ParamValue> = {};
   const rawParams = value["params"];
@@ -134,7 +158,7 @@ const readSettings = async (project: ProjectRecord): Promise<SettingsState> => {
     }
   }
   return { enabled: value["enabled"] === true, params };
-};
+  });
 
 const isProjectManifest = (value: unknown): value is Manifest => {
   if (!isRecord(value) || !isRecord(value["project"])) return false;
@@ -152,42 +176,98 @@ const isProjectManifest = (value: unknown): value is Manifest => {
   );
 };
 
-const readApplied = async (project: ProjectRecord): Promise<AppliedFile | undefined> => {
-  const value = await readJson(appliedPath(project));
+const readApplied = (
+  project: ProjectRecord,
+): Effect.Effect<AppliedFile | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const value = yield* readJson(appliedPath(path, project)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   if (!isRecord(value) || !isProjectManifest(value["manifest"])) return undefined;
   const appliedAt = value["appliedAt"];
   return { version: 1, manifest: value["manifest"], appliedAt: typeof appliedAt === "number" ? appliedAt : Date.now() };
-};
+  });
 
-const walkProject = async (root: string, directory: string, files: Array<string>, directories: Array<string>): Promise<void> => {
-  const entries = await readdir(directory, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    if (entry.name === "node_modules" || entry.name === ".ballast" || entry.name === "dist" || entry.name === ".git") continue;
-    const absolute = join(directory, entry.name);
-    const path = toPosix(relative(root, absolute));
-    if (entry.isDirectory()) {
-      directories.push(path);
-      await walkProject(root, absolute, files, directories);
-    } else if (entry.isFile()) {
-      files.push(path);
+const readBindings = (
+  project: ProjectRecord,
+): Effect.Effect<
+  Readonly<Record<string, string>>,
+  never,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const value = yield* readJson(bindingsPath(path, project)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  if (!isRecord(value) || !isRecord(value["bindings"])) return {};
+  const bindings: Record<string, string> = {};
+  for (const [key, instanceId] of Object.entries(value["bindings"])) {
+    if (typeof instanceId === "string" && instanceId !== "") bindings[key] = instanceId;
+  }
+  return bindings;
+  });
+
+const walkProject = (
+  root: string,
+  directory: string,
+  files: Array<string>,
+  directories: Array<string>,
+): Effect.Effect<void, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const entries = yield* fs.readDirectory(directory).pipe(
+    Effect.catch(() => Effect.succeed([] as Array<string>)),
+  );
+  entries.sort((left, right) => left.localeCompare(right));
+  for (const name of entries) {
+    if (name === "node_modules" || name === ".ballast" || name === "dist" || name === ".git") continue;
+    const absolute = path.join(directory, name);
+    const relativePath = toPosix(path, path.relative(root, absolute));
+    const info = yield* fs.stat(absolute).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    if (info === undefined) continue;
+    if (info.type === "Directory") {
+      directories.push(relativePath);
+      yield* walkProject(root, absolute, files, directories);
+    } else if (info.type === "File") {
+      files.push(relativePath);
     }
   }
-};
+  });
 
-const projectFingerprint = async (root: string): Promise<string> => {
-  const files: Array<string> = [];
-  const directories: Array<string> = [];
-  await walkProject(root, root, files, directories);
-  const hash = createHash("sha256");
-  for (const path of files) {
-    hash.update(path);
-    hash.update("\u0000");
-    hash.update(await readFile(join(root, path)));
-    hash.update("\u0000");
-  }
-  return hash.digest("hex");
-};
+const projectFingerprint = (
+  root: string,
+): Effect.Effect<string, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
+    const encoder = new TextEncoder();
+    const files: Array<string> = [];
+    const directories: Array<string> = [];
+    yield* walkProject(root, root, files, directories);
+    const parts: Array<Uint8Array> = [];
+    for (const file of files) {
+      parts.push(encoder.encode(file));
+      parts.push(new Uint8Array([0]));
+      parts.push(yield* fs.readFile(path.join(root, file)).pipe(Effect.orDie));
+      parts.push(new Uint8Array([0]));
+    }
+    const combined = new Uint8Array(
+      parts.reduce((total, part) => total + part.byteLength, 0),
+    );
+    let offset = 0;
+    for (const part of parts) {
+      combined.set(part, offset);
+      offset += part.byteLength;
+    }
+    const digest = yield* crypto.digest("SHA-256", combined).pipe(Effect.orDie);
+    return Hex.encode(digest);
+  });
 
 const unitKindOf = (manifest: Manifest, name: string): UnitSummary["kind"] | undefined => {
   if (manifest.topics.some((unit) => unit.name === name)) return "topic";
@@ -213,6 +293,15 @@ export const ProjectRuntimeLive = Layer.effect(
     const logs = yield* Logs;
     const router = yield* EventRouter;
     const hub = yield* ServiceHub;
+    const fs = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
+    const platform = yield* Effect.context<
+      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+    >();
+    const provide = <A, E>(
+      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+    ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
     const timers = yield* makeTimerManager({ clock, logs, hub });
     const state = yield* Ref.make<ReadonlyMap<string, ProjectRuntimeRecord>>(new Map());
@@ -237,34 +326,95 @@ export const ProjectRuntimeLive = Layer.effect(
       });
 
     const saveSettings = (project: ProjectRecord, settings: SettingsState): Effect.Effect<void> =>
-      Effect.tryPromise({
-        try: () => writeJsonAtomic(settingsPath(project), { version: 1, enabled: settings.enabled, params: settings.params }, 0o600),
-        catch: () => undefined,
-      }).pipe(Effect.ignore);
+      provide(
+        writeJsonAtomic(
+          settingsPath(paths, project),
+          { version: 1, enabled: settings.enabled, params: settings.params },
+          0o600,
+        ),
+      ).pipe(Effect.ignore);
 
     const saveApplied = (project: ProjectRecord, manifest: Manifest, at: number): Effect.Effect<void> =>
-      Effect.tryPromise({
-        try: () => writeJsonAtomic(appliedPath(project), { version: 1, manifest, appliedAt: at }, 0o600),
-        catch: () => undefined,
-      }).pipe(Effect.ignore);
+      provide(
+        writeJsonAtomic(
+          appliedPath(paths, project),
+          { version: 1, manifest, appliedAt: at },
+          0o600,
+        ),
+      ).pipe(Effect.ignore);
 
-    const optionsFor = (manifest: Manifest | undefined): Effect.Effect<ReadonlyMap<string, ReadonlyArray<string>>> =>
+    const saveBindings = (
+      project: ProjectRecord,
+      bindings: Readonly<Record<string, string>>,
+    ): Effect.Effect<void> =>
+      provide(
+        writeJsonAtomic(bindingsPath(paths, project), { version: 1, bindings }, 0o600),
+      ).pipe(Effect.ignore);
+
+    const optionsFor = (
+      record: ProjectRuntimeRecord,
+      manifest: Manifest | undefined = record.manifest,
+    ): Effect.Effect<ReadonlyMap<string, ReadonlyArray<string>>> =>
       Effect.gen(function* () {
         const options = new Map<string, ReadonlyArray<string>>();
         if (manifest === undefined) return options;
         for (const param of manifest.params) {
           if (param.options === undefined) continue;
-          const values = yield* connections.optionValues(param.options).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          const instanceId = record.bindings[param.options.integration + "/" + param.options.slot];
+          if (instanceId === undefined) continue;
+          const values = yield* connections
+            .optionValues({ ...param.options, connectionId: instanceId })
+            .pipe(Effect.catch(() => Effect.succeed(undefined)));
           if (values !== undefined) options.set(param.key, values);
         }
         return options;
       });
 
-    const bindings = (): Effect.Effect<ReadonlyMap<string, Binding>> =>
+    const requirementsFor = (
+      record: ProjectRuntimeRecord,
+    ): Effect.Effect<ReadonlyArray<ProjectRequirement>> =>
+      Effect.gen(function* () {
+        const manifest = record.manifest;
+        if (manifest === undefined) return [];
+        const available = yield* connections.summaries();
+        return manifest.connections.map((connection) => {
+          const key = connection.integration + "/" + connection.slot;
+          const requested = record.bindings[key];
+          const instance = requested === undefined
+            ? undefined
+            : available.find((candidate) => candidate.id === requested);
+          const candidates = available.filter(
+            (candidate) => candidate.integration === connection.integration,
+          );
+          const proposed =
+            instance === undefined && candidates.length === 1
+              ? candidates[0]?.id
+              : undefined;
+          return {
+            integration: connection.integration,
+            slot: connection.slot,
+            location: connection.location,
+            ...(instance === undefined ? {} : { boundInstanceId: instance.id }),
+            ...(proposed === undefined ? {} : { proposedInstanceId: proposed }),
+          };
+        });
+      });
+
+    const bindingsFor = (
+      record: ProjectRuntimeRecord,
+    ): Effect.Effect<ReadonlyMap<string, Binding>> =>
       Effect.gen(function* () {
         const map = new Map<string, Binding>();
-        for (const connection of yield* connections.summaries()) {
-          map.set(connection.integration + "/" + connection.slot, { id: connection.id, status: connection.status });
+        const available = yield* connections.summaries();
+        for (const connection of record.manifest?.connections ?? []) {
+          const instanceId = record.bindings[connection.integration + "/" + connection.slot];
+          if (instanceId === undefined) continue;
+          const instance = available.find((candidate) => candidate.id === instanceId);
+          if (instance === undefined) continue;
+          map.set(connection.integration + "/" + connection.slot, {
+            id: instance.id,
+            status: instance.status,
+          });
         }
         return map;
       });
@@ -275,6 +425,7 @@ export const ProjectRuntimeLive = Layer.effect(
         key: param.key,
         type: param.type,
         ...(param.title === undefined ? {} : { title: param.title }),
+        ...(param.description === undefined ? {} : { description: param.description }),
         ...(param.source === undefined ? {} : { source: param.source }),
         ...(param.default === undefined ? {} : { default: param.default }),
         ...(value === undefined ? {} : { value }),
@@ -391,12 +542,14 @@ export const ProjectRuntimeLive = Layer.effect(
     const detailOf = (record: ProjectRuntimeRecord): Effect.Effect<ProjectDetail, AgentError> =>
       Effect.gen(function* () {
         const manifest = record.manifest ?? emptyManifest(record.project.id, record.entry ?? "ballast.ts");
-        const options = yield* optionsFor(record.manifest);
-        const bound = yield* bindings();
+        const options = yield* optionsFor(record);
+        const bound = yield* bindingsFor(record);
+        const requirements = yield* requirementsFor(record);
         const timerRows = yield* timers.list({ projectId: record.project.id });
         return {
           summary: summaryOf(record),
           manifest: wireManifest(manifest, record.params, options, bound),
+          requirements,
           units: units(record, timerRows),
           scripts: [],
           ...(record.appliedAt === undefined ? {} : { appliedAt: record.appliedAt }),
@@ -425,7 +578,13 @@ export const ProjectRuntimeLive = Layer.effect(
     const markFailure = (record: ProjectRuntimeRecord, message: string): Effect.Effect<ProjectRuntimeRecord> =>
       Effect.gen(function* () {
         const source = failureSource(message);
-        const next = yield* setRecord({ ...record, status: "error", lastError: message, lastErrorSource: source });
+        const next = yield* setRecord({
+          ...record,
+          status: "error",
+          lastError: message,
+          lastErrorKind: "plan",
+          lastErrorSource: source,
+        });
         yield* hub.publish({
           _tag: "reload-failed",
           projectId: next.project.id,
@@ -437,12 +596,35 @@ export const ProjectRuntimeLive = Layer.effect(
         return next;
       });
 
+    const markRuntimeFailure = (
+      record: ProjectRuntimeRecord,
+      message: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const next = yield* setRecord({
+          ...record,
+          status: "error",
+          lastError: message,
+          lastErrorKind: "runtime",
+          lastErrorSource: failureSource(message),
+        });
+        yield* publish(next);
+      });
+
+    const startWithRuntimeErrors = (
+      record: ProjectRuntimeRecord,
+    ): Effect.Effect<ProjectRuntimeRecord, AgentError> =>
+      startGeneration(record).pipe(
+        Effect.tapError((error) => markRuntimeFailure(record, error.message)),
+      );
+
     const ensureRecord = (project: ProjectRecord): Effect.Effect<ProjectRuntimeRecord, AgentError> =>
       Effect.gen(function* () {
         const existing = yield* getRecord(project.id);
         if (existing !== undefined) return existing;
-        const settings = yield* Effect.promise(() => readSettings(project));
-        const applied = yield* Effect.promise(() => readApplied(project));
+        const settings = yield* provide(readSettings(project));
+        const applied = yield* provide(readApplied(project));
+        const bindings = yield* provide(readBindings(project));
         const record: ProjectRuntimeRecord = {
           project,
           entry: applied?.manifest.project.entry,
@@ -456,9 +638,11 @@ export const ProjectRuntimeLive = Layer.effect(
           generation: 0,
           updatedAt: project.updatedAt,
           lastError: undefined,
+          lastErrorKind: undefined,
           lastErrorSource: undefined,
           pendingConsent: undefined,
           params: settings.params,
+          bindings,
           session: undefined,
           activity: new Map(),
         };
@@ -469,30 +653,39 @@ export const ProjectRuntimeLive = Layer.effect(
       Effect.gen(function* () {
         const previous = record.appliedManifest ?? emptyManifest(record.project.id, resolvedEntry);
         const changes = diffProject(previous, manifest);
-        const options = yield* optionsFor(manifest);
-        const bound = yield* bindings();
+        const options = yield* optionsFor(record, manifest);
+        const bound = yield* bindingsFor(record);
+        const requirements = yield* requirementsFor({ ...record, manifest });
+        const bindings: ReadonlyArray<ProjectBinding> = requirements.flatMap((requirement) => {
+          const instanceId = requirement.boundInstanceId ?? requirement.proposedInstanceId;
+          return instanceId === undefined
+            ? []
+            : [{ integration: requirement.integration, slot: requirement.slot, instanceId }];
+        });
         const scopeChanges = changes.units.scopes.added;
         return {
-          id: "consent_" + randomBytes(6).toString("hex"),
+          id: "consent_" + Hex.encode(yield* crypto.randomBytes(6).pipe(Effect.orDie)),
           projectId: record.project.id,
           projectName: record.project.name,
           createdAt: Date.now(),
           reason: scopeChanges.length > 0 ? "scopes" : "connections",
           summary: scopeChanges.length > 0 ? "Adds scopes: " + scopeChanges.join(", ") : "Adds connection slots",
           diff: toWireDiff(changes.units, options, bound, record.params),
+          bindings,
         };
       });
 
     const planAndApply = (record: ProjectRuntimeRecord, force: boolean): Effect.Effect<ProjectRuntimeRecord, AgentError> =>
       Effect.gen(function* () {
         const resolved = yield* resolveProjectEntry(record.project.root).pipe(Effect.mapError((error) => agentError("invalid", error.message)));
-        const fingerprint = yield* Effect.promise(() => projectFingerprint(record.project.root));
+        const fingerprint = yield* provide(projectFingerprint(record.project.root));
         if (!force && record.fingerprint === fingerprint && record.manifest !== undefined) {
           if (record.status !== "error") return record;
           const recovered = yield* setRecord({
             ...record,
             status: record.session === undefined ? "stopped" : "running",
             lastError: undefined,
+            lastErrorKind: undefined,
             lastErrorSource: undefined,
           });
           yield* publish(recovered);
@@ -513,16 +706,69 @@ export const ProjectRuntimeLive = Layer.effect(
         }
         const appliedAt = Date.now();
         yield* saveApplied(record.project, planned.manifest, appliedAt);
-        const next = yield* setRecord({ ...base, appliedManifest: planned.manifest, appliedAt, pendingConsent: undefined, status: record.session === undefined ? "stopped" : "running", lastError: undefined, lastErrorSource: undefined });
-        if (next.enabled && next.session === undefined) return yield* startGeneration(next);
+        const next = yield* setRecord({ ...base, appliedManifest: planned.manifest, appliedAt, pendingConsent: undefined, status: record.session === undefined ? "stopped" : "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined });
         yield* publish(next);
+        return next;
+      }).pipe(
+        Effect.tapError((error) => markFailure(record, error.message).pipe(Effect.asVoid)),
+      );
+
+    const confirmBindings = (
+      record: ProjectRuntimeRecord,
+      explicit?: ReadonlyArray<ProjectBinding>,
+    ): Effect.Effect<ProjectRuntimeRecord, AgentError> =>
+      Effect.gen(function* () {
+        const requirements = yield* requirementsFor(record);
+        const bindings = { ...record.bindings };
+        if (explicit !== undefined) {
+          for (const binding of explicit) {
+            bindings[binding.integration + "/" + binding.slot] = binding.instanceId;
+          }
+        } else {
+          for (const requirement of requirements) {
+            if (requirement.boundInstanceId !== undefined) continue;
+            if (requirement.proposedInstanceId === undefined) continue;
+            bindings[requirement.integration + "/" + requirement.slot] =
+              requirement.proposedInstanceId;
+          }
+        }
+        yield* saveBindings(record.project, bindings);
+        const next = yield* setRecord({ ...record, bindings });
+        const remaining = yield* requirementsFor(next);
+        const missing = remaining.filter(
+          (requirement) => requirement.boundInstanceId === undefined,
+        );
+        if (missing.length > 0) {
+          return yield* Effect.fail(
+            agentError(
+              "conflict",
+              "The project has unbound connections: " +
+                missing
+                  .map((requirement) => requirement.integration + "/" + requirement.slot)
+                  .join(", "),
+              { missing },
+            ),
+          );
+        }
         return next;
       });
 
-    const requestHandler = (record: ProjectRuntimeRecord) => (integration: string, request: string, slot: string, input: unknown): Effect.Effect<unknown, string> =>
+    const requestHandler = (
+      record: ProjectRuntimeRecord,
+      requirements: ReadonlyArray<ProjectRequirement>,
+    ) => (integration: string, request: string, slot: string, input: unknown): Effect.Effect<unknown, string> =>
       Effect.gen(function* () {
         yield* router.recordOutbound({ projectId: record.project.id, scriptId: record.entry ?? "", integration, slot, request, input });
-        return yield* connections.request({ integration, slot, request, input });
+        const instanceId = requirements.find(
+          (requirement) => requirement.integration === integration && requirement.slot === slot,
+        )?.boundInstanceId;
+        return yield* connections.request({
+          integration,
+          slot,
+          ...(instanceId === undefined ? {} : { connectionId: instanceId }),
+          request,
+          input,
+        });
       });
 
     const reconcile = (
@@ -530,21 +776,26 @@ export const ProjectRuntimeLive = Layer.effect(
       starting?: ProjectRuntimeRecord,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const all = [...(yield* records()), ...include];
+        const all = [
+          ...(yield* records()),
+          ...include,
+          ...(starting === undefined ? [] : [starting]),
+        ];
         const running: Array<ActiveScript> = all.flatMap((record) => {
           const manifest = record.appliedManifest ?? record.manifest;
           return !record.enabled || manifest === undefined ? [] : [{ projectId: record.project.id, scriptId: record.entry ?? "", manifest, enabled: record.enabled }];
         });
         running.push(...(yield* scripts.running()));
-        if (starting?.manifest !== undefined) {
-          running.push({ projectId: starting.project.id, scriptId: starting.entry ?? "", manifest: starting.manifest, enabled: starting.enabled });
-        }
         const known: Array<ActiveScript> = all.flatMap((record) => {
-          const manifest = record.appliedManifest ?? record.manifest;
+          const manifest = record.manifest ?? record.appliedManifest;
           return manifest === undefined ? [] : [{ projectId: record.project.id, scriptId: record.entry ?? "", manifest, enabled: record.enabled }];
         });
         known.push(...(yield* scripts.known()));
-        yield* connections.reconcile({ running, known });
+        const bindings = new Map<string, ReadonlyMap<string, string>>();
+        for (const record of all) {
+          bindings.set(record.project.id, new Map(Object.entries(record.bindings)));
+        }
+        yield* connections.reconcile({ running, known, bindings });
       });
 
 
@@ -556,20 +807,52 @@ export const ProjectRuntimeLive = Layer.effect(
         }
         const generation = record.generation + 1;
         const previous = record.session;
+        const requirements = yield* requirementsFor(record);
+        const missing = requirements.filter(
+          (requirement) => requirement.boundInstanceId === undefined,
+        );
+        if (missing.length > 0) {
+          return yield* Effect.fail(
+            agentError(
+              "conflict",
+              "The project has unbound connections: " +
+                missing
+                  .map((requirement) => requirement.integration + "/" + requirement.slot)
+                  .join(", "),
+              { missing },
+            ),
+          );
+        }
+        const bindingMap = new Map(
+          requirements.flatMap((requirement) =>
+            requirement.boundInstanceId === undefined
+              ? []
+              : [[requirement.integration + "/" + requirement.slot, requirement.boundInstanceId] as const],
+          ),
+        );
         yield* router.expectSubscriptions({
           projectId: record.project.id,
           scriptId: record.entry,
           subscriptions: manifest.topics.map((topic) => topic.integration + "/" + topic.slot + "/" + topic.topic),
+          bindings: bindingMap,
         });
         yield* reconcile([], record);
-        yield* connections.ready(manifest.connections.map((connection) => connection.integration + "/" + connection.slot));
-        const bundle = yield* bundleScript(record.entryFile, generation).pipe(Effect.mapError((error) => agentError("internal", error.message)));
+        yield* connections.ready(
+          requirements.flatMap((requirement) =>
+            requirement.boundInstanceId === undefined
+              ? []
+              : [requirement.boundInstanceId],
+          ),
+        );
+        const bundle = yield* provide(bundleScript(record.entryFile, generation)).pipe(
+          Effect.mapError((error) => agentError("internal", error.message)),
+        );
         const timerDeclaration = (name: string): TimerManifest | undefined => manifest.timers.find((timer) => timer.name === name);
         const session = yield* startRuntimeSession({
           bundlePath: bundle.path,
           generation,
           settings: { get: (key) => record.params[key] },
-          request: requestHandler(record),
+          request: requestHandler(record, requirements),
           registerTimer: (name) => timerDeclaration(name) === undefined ? Effect.die(new Error("Timer " + name + " is not declared")) : timers.registerName({ projectId: record.project.id, generation, name }),
           scheduleTimer: (input) => {
             const declaration = timerDeclaration(input.name);
@@ -603,6 +886,7 @@ export const ProjectRuntimeLive = Layer.effect(
           projectId: record.project.id,
           scriptId: record.entry,
           session,
+          bindings: bindingMap,
           unitNames: new Map(
             manifest.topics.map((topic) => [
               topic.integration + "/" + topic.slot + "/" + topic.topic,
@@ -611,7 +895,7 @@ export const ProjectRuntimeLive = Layer.effect(
           ),
         });
         yield* timers.activate({ projectId: record.project.id, generation, session, manifest });
-        const next = yield* setRecord({ ...record, appliedManifest: manifest, manifest, generation, status: "running", lastError: undefined, lastErrorSource: undefined, pendingConsent: undefined, session });
+        const next = yield* setRecord({ ...record, appliedManifest: manifest, manifest, generation, status: "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined, pendingConsent: undefined, session });
         if (previous !== undefined && previous !== session) {
           Effect.runForkWith(context)(Effect.sleep("30 seconds").pipe(Effect.andThen(previous.close), Effect.catchCause(() => Effect.void)));
         }
@@ -638,14 +922,22 @@ export const ProjectRuntimeLive = Layer.effect(
 
     const start = (projectId: string): Effect.Effect<ProjectDetail, AgentError> =>
       semaphore.withPermit(Effect.gen(function* () {
-        let record = yield* requireRecord(projectId);
-        yield* saveEnabled(record, true);
-        record = yield* setRecord({ ...record, enabled: true });
-        record = yield* planAndApply(record, false);
-        if (record.pendingConsent !== undefined) return yield* detailOf(record);
-        if (record.session !== undefined && record.status === "running") return yield* detailOf(record);
-        const started = yield* startGeneration(record);
-        return yield* detailOf(started);
+        const initial = yield* requireRecord(projectId);
+        yield* saveEnabled(initial, true);
+        const enabled = yield* setRecord({ ...initial, enabled: true });
+        const record = yield* planAndApply(enabled, false);
+        return yield* Effect.gen(function* () {
+          const confirmed = yield* confirmBindings(record);
+          if (confirmed.pendingConsent !== undefined) return yield* detailOf(confirmed);
+          if (confirmed.session !== undefined && confirmed.status === "running") {
+            return yield* detailOf(confirmed);
+          }
+          return yield* detailOf(yield* startGeneration(confirmed));
+        }).pipe(
+          Effect.tapError((error) =>
+            markRuntimeFailure(record, error.message).pipe(Effect.asVoid),
+          ),
+        );
       }));
 
     const stop = (projectId: string): Effect.Effect<ProjectDetail, AgentError> =>
@@ -674,8 +966,10 @@ export const ProjectRuntimeLive = Layer.effect(
     const check = (projectId: string): Effect.Effect<ProjectCheckResult, AgentError> =>
       semaphore.withPermit(Effect.gen(function* () {
         const record = yield* requireRecord(projectId);
-        const options = yield* optionsFor(record.manifest);
-        const bound = yield* bindings();
+        const options = yield* optionsFor(record);
+        const bound = yield* bindingsFor(record);
+        const requirements = yield* requirementsFor(record);
+        const availableConnections = yield* connections.summaries();
         const applied = record.appliedManifest;
         const appliedManifest =
           applied === undefined ? undefined : wireManifest(applied, record.params, options, bound);
@@ -689,8 +983,12 @@ export const ProjectRuntimeLive = Layer.effect(
             units: [],
             changes: [],
             requiresConsent: false,
-            missingConnections: [],
+            requirements,
+            missingConnections: requirements.filter(
+              (requirement) => requirement.boundInstanceId === undefined,
+            ),
             missingScopes: [],
+            availableConnections,
             ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
             ...(appliedManifest === undefined ? {} : { appliedManifest }),
             diagnostics: [],
@@ -737,8 +1035,12 @@ export const ProjectRuntimeLive = Layer.effect(
             units: [],
             changes: [],
             requiresConsent: false,
-            missingConnections: [],
+            requirements,
+            missingConnections: requirements.filter(
+              (requirement) => requirement.boundInstanceId === undefined,
+            ),
             missingScopes: [],
+            availableConnections,
             ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
             ...(appliedManifest === undefined ? {} : { appliedManifest }),
             diagnostics,
@@ -756,22 +1058,36 @@ export const ProjectRuntimeLive = Layer.effect(
           ...(change.after === undefined ? {} : { after: change.after }),
           ...(change.source === undefined ? {} : { source: change.source }),
         }));
-        const missingConnections = diff.units.connections.added.map((connection) => ({
-          integration: connection.integration,
-          slot: connection.slot,
-          location: connection.location,
-        }));
-        const checked: ProjectRuntimeRecord = { ...record, manifest: next.manifest, entry: next.entry.entry, entryFile: next.entry.entryFile };
+        const plannedRecord: ProjectRuntimeRecord = { ...record, manifest: next.manifest };
+        const plannedRequirements = yield* requirementsFor(plannedRecord);
+        const plannedBound = yield* bindingsFor(plannedRecord);
+        const plannedOptions = yield* optionsFor(plannedRecord);
+        const missingConnections = plannedRequirements.filter(
+          (requirement) => requirement.boundInstanceId === undefined,
+        );
+        const cleared =
+          record.lastErrorKind === "plan"
+            ? yield* setRecord({
+                ...record,
+                status: record.session === undefined ? "stopped" : "running",
+                lastError: undefined,
+                lastErrorKind: undefined,
+                lastErrorSource: undefined,
+              })
+            : record;
+        const checked: ProjectRuntimeRecord = { ...cleared, manifest: next.manifest, entry: next.entry.entry, entryFile: next.entry.entryFile };
         return {
           summary: summaryOf(checked),
           ok: true,
-          manifest: wireManifest(next.manifest, record.params, options, bound),
+          manifest: wireManifest(next.manifest, record.params, plannedOptions, plannedBound),
           ...(appliedManifest === undefined ? {} : { appliedManifest }),
           units: units(checked, []),
           changes,
           requiresConsent: diff.requiresConsent,
+          requirements: plannedRequirements,
           missingConnections,
           missingScopes: [...diff.units.scopes.added],
+          availableConnections,
           ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
           diagnostics: [],
         };
@@ -782,7 +1098,7 @@ export const ProjectRuntimeLive = Layer.effect(
         const record = yield* requireRecord(projectId);
         const stopped = record.session === undefined ? record : yield* stopGeneration(record, true);
         const next = yield* planAndApply({ ...stopped, enabled: true }, true);
-        const started = next.session === undefined ? yield* startGeneration({ ...next, enabled: true }) : next;
+        const started = next.session === undefined ? yield* startWithRuntimeErrors({ ...next, enabled: true }) : next;
         yield* saveEnabled(started, true);
         return yield* detailOf(started);
       }));
@@ -799,13 +1115,43 @@ export const ProjectRuntimeLive = Layer.effect(
           (param.type === "string" && typeof value === "string") ||
           (param.type === "number" && typeof value === "number" && Number.isFinite(value)) ||
           (param.type === "boolean" && typeof value === "boolean") ||
-          (param.type === "enum" && typeof value === "string");
+          (param.type === "enum" && typeof value === "string") ||
+          (param.type === "strings" &&
+            Array.isArray(value) &&
+            value.every((entry) => typeof entry === "string"));
         if (!valid) return yield* Effect.fail(agentError("invalid", "Param " + key + " expects a " + param.type + " value"));
+        if ((param.type === "enum" || param.type === "strings") && param.options !== undefined) {
+          const instanceId =
+            record.bindings[param.options.integration + "/" + param.options.slot];
+          const options =
+            instanceId === undefined
+              ? undefined
+              : yield* connections
+                  .optionValues({ ...param.options, connectionId: instanceId })
+                  .pipe(Effect.catch(() => Effect.succeed(undefined)));
+          if (options !== undefined) {
+            const selected =
+              param.type === "strings" && Array.isArray(value)
+                ? value.filter((entry): entry is string => typeof entry === "string")
+                : typeof value === "string"
+                  ? [value]
+                  : [];
+            const rejected = selected.filter((entry) => !options.includes(entry));
+            if (rejected.length > 0) {
+              return yield* Effect.fail(
+                agentError(
+                  "invalid",
+                  "Param " + key + " must be one of: " + options.join(", "),
+                ),
+              );
+            }
+          }
+        }
         const params = { ...record.params, [key]: value };
         yield* saveSettings(record.project, { enabled: record.enabled, params });
         const next = yield* setRecord({ ...record, params });
         if (next.session !== undefined) {
-          const restarted = yield* startGeneration(next);
+          const restarted = yield* startWithRuntimeErrors(next);
           return yield* detailOf(restarted);
         }
         return yield* detailOf(next);
@@ -813,15 +1159,80 @@ export const ProjectRuntimeLive = Layer.effect(
 
     const setEnabled = (projectId: string, enabled: boolean): Effect.Effect<ProjectDetail, AgentError> => enabled ? start(projectId) : stop(projectId);
 
+    const setBinding = (request: {
+      readonly projectId: string;
+      readonly integration: string;
+      readonly slot: string;
+      readonly instanceId: string | null;
+    }): Effect.Effect<ProjectDetail, AgentError> =>
+      semaphore.withPermit(Effect.gen(function* () {
+        const record = yield* requireRecord(request.projectId);
+        const manifest = record.manifest ?? record.appliedManifest;
+        if (manifest === undefined) {
+          return yield* Effect.fail(agentError("invalid", "The project has no manifest yet"));
+        }
+        const requirement = manifest.connections.find(
+          (connection) =>
+            connection.integration === request.integration &&
+            connection.slot === request.slot,
+        );
+        if (requirement === undefined) {
+          return yield* Effect.fail(
+            agentError(
+              "invalid",
+              "The project has no connection requirement " +
+                request.integration +
+                "/" +
+                request.slot,
+            ),
+          );
+        }
+        if (request.instanceId !== null) {
+          const instance = yield* connections.summary(request.instanceId);
+          if (instance === undefined) {
+            return yield* Effect.fail(
+              agentError("not-found", "No connection instance " + request.instanceId),
+            );
+          }
+          if (instance.integration !== request.integration) {
+            return yield* Effect.fail(
+              agentError(
+                "invalid",
+                "Connection " + instance.id + " is " + instance.integration +
+                  ", not " + request.integration,
+              ),
+            );
+          }
+        }
+        const key = request.integration + "/" + request.slot;
+        const bindings = { ...record.bindings };
+        if (request.instanceId === null) delete bindings[key];
+        else bindings[key] = request.instanceId;
+        yield* saveBindings(record.project, bindings);
+        const next = yield* setRecord({ ...record, bindings });
+        if (record.session !== undefined) {
+          if (request.instanceId === null) {
+            yield* saveEnabled(next, false);
+            const stopped = yield* stopGeneration({ ...next, enabled: false }, false);
+            return yield* detailOf(stopped);
+          }
+          const restarted = yield* startWithRuntimeErrors(next);
+          yield* publish(restarted);
+          return yield* detailOf(restarted);
+        }
+        yield* reconcile([]);
+        yield* publish(next);
+        return yield* detailOf(next);
+      }));
+
     const files = (projectId: string): Effect.Effect<{ readonly entry: string; readonly files: ReadonlyArray<ProjectFile> }, AgentError> =>
       Effect.gen(function* () {
         const record = yield* requireRecord(projectId);
         const filePaths: Array<string> = [];
         const directories: Array<string> = [];
-        yield* Effect.tryPromise({
-          try: () => walkProject(record.project.root, record.project.root, filePaths, directories),
-          catch: (cause) => agentError("internal", String(cause)),
-        });
+        yield* provide(
+          walkProject(record.project.root, record.project.root, filePaths, directories),
+        );
         const all: Array<ProjectFile> = [
           ...directories.map((path) => ({ path, kind: "directory" as const })),
           ...filePaths.map((path) => ({ path, kind: "file" as const })),
@@ -832,17 +1243,29 @@ export const ProjectRuntimeLive = Layer.effect(
     const readFileAt = (projectId: string, path: string): Effect.Effect<ProjectFileContent, AgentError> =>
       Effect.gen(function* () {
         const record = yield* requireRecord(projectId);
-        const root = resolve(record.project.root);
-        const absolute = resolve(root, path);
-        const relativePath = relative(root, absolute);
-        const segments = relativePath.split(sep);
+        const root = paths.resolve(record.project.root);
+        const absolute = paths.resolve(root, path);
+        const relativePath = paths.relative(root, absolute);
+        const segments = relativePath.split(paths.sep);
         if (relativePath === "" || relativePath.startsWith("..") || segments.includes(".ballast") || segments.includes("node_modules")) {
           return yield* Effect.fail(agentError("invalid", "File " + path + " is outside the project"));
         }
-        const info = yield* Effect.tryPromise({ try: () => stat(absolute), catch: () => agentError("not-found", "No file " + path) });
-        if (!info.isFile()) return yield* Effect.fail(agentError("invalid", path + " is not a file"));
-        const content = yield* Effect.tryPromise({ try: () => readFile(absolute, "utf8"), catch: (cause) => agentError("internal", String(cause)) });
-        return { path: toPosix(relativePath), content, sha256: contentHash(content), updatedAt: info.mtimeMs, language: fileLanguage(path) };
+        const info = yield* provide(fs.stat(absolute)).pipe(
+          Effect.mapError(() => agentError("not-found", "No file " + path)),
+        );
+        if (info.type !== "File") {
+          return yield* Effect.fail(agentError("invalid", path + " is not a file"));
+        }
+        const content = yield* provide(fs.readFileString(absolute)).pipe(
+          Effect.mapError((cause) => agentError("internal", cause.message)),
+        );
+        return {
+          path: toPosix(paths, relativePath),
+          content,
+          sha256: yield* provide(contentHash(content)).pipe(Effect.orDie),
+          updatedAt: Option.getOrElse(info.mtime, () => new Date()).getTime(),
+          language: fileLanguage(path),
+        };
       });
 
     const summaries = (): Effect.Effect<ReadonlyArray<ProjectSummary>> =>
@@ -863,7 +1286,7 @@ export const ProjectRuntimeLive = Layer.effect(
         }
         yield* timers.loadProject({ id: project.id, root: project.root });
         const record = yield* ensureRecord(project);
-        const fingerprint = yield* Effect.promise(() => projectFingerprint(project.root));
+        const fingerprint = yield* provide(projectFingerprint(project.root));
         const planned = yield* planAndApply(
           record,
           fingerprint !== record.fingerprint,
@@ -904,7 +1327,7 @@ export const ProjectRuntimeLive = Layer.effect(
     const counts = Effect.map(records(), (all) => ({
       total: all.length,
       running: all.filter((record) => record.status === "running").length,
-      needsConsent: all.filter((record) => record.status === "needs-consent").length,
+      needsConsent: all.filter((record) => record.pendingConsent !== undefined).length,
       error: all.filter((record) => record.status === "error").length,
     }));
 
@@ -912,6 +1335,28 @@ export const ProjectRuntimeLive = Layer.effect(
       Effect.gen(function* () {
         for (const record of yield* records()) {
           if (!record.enabled || record.session !== undefined) continue;
+          const manifest = record.manifest ?? record.appliedManifest;
+          const scriptId = record.entry ?? manifest?.project.entry;
+          if (manifest !== undefined && scriptId !== undefined) {
+            const bindings = new Map(
+              manifest.connections.flatMap((connection) => {
+                const key = connection.integration + "/" + connection.slot;
+                const instanceId = record.bindings[key];
+                return instanceId === undefined
+                  ? []
+                  : ([[key, instanceId]] as const);
+              }),
+            );
+            yield* router.expectSubscriptions({
+              projectId: record.project.id,
+              scriptId,
+              subscriptions: manifest.topics.map(
+                (topic) =>
+                  topic.integration + "/" + topic.slot + "/" + topic.topic,
+              ),
+              bindings,
+            });
+          }
           yield* start(record.project.id).pipe(Effect.catchCause(() => Effect.void));
         }
       });
@@ -922,7 +1367,12 @@ export const ProjectRuntimeLive = Layer.effect(
         if (record !== undefined) {
           yield* stopGeneration(record, false);
           yield* timers.removeProject(projectId);
-          yield* Effect.tryPromise({ try: () => rm(join(record.project.root, ".ballast"), { recursive: true, force: true }), catch: () => undefined }).pipe(Effect.ignore);
+          yield* provide(
+            fs.remove(paths.join(record.project.root, ".ballast"), {
+              recursive: true,
+              force: true,
+            }),
+          ).pipe(Effect.ignore);
         }
         yield* Ref.update(state, (map) => {
           if (!map.has(projectId)) return map;
@@ -963,6 +1413,7 @@ export const ProjectRuntimeLive = Layer.effect(
       restart,
       setParam,
       setEnabled,
+      setBinding,
       listTimers: (request) => timers.list(request),
       cancelTimer: (request) => timers.cancel({ projectId: request.projectId, scriptId: request.scriptId ?? "", timer: request.timer, key: request.key }),
       consents: (projectId) => Effect.map(records(), (all) => all.flatMap((record) => record.pendingConsent === undefined || (projectId !== undefined && record.project.id !== projectId) ? [] : [record.pendingConsent])),
@@ -974,14 +1425,18 @@ export const ProjectRuntimeLive = Layer.effect(
           if (manifest === undefined) return yield* Effect.fail(agentError("invalid", "The project has no planned manifest"));
           const appliedAt = Date.now();
           yield* saveApplied(record.project, manifest, appliedAt);
-          const next = yield* setRecord({
-            ...record,
-            appliedManifest: manifest,
-            appliedAt,
-            pendingConsent: undefined,
-            status: record.session === undefined ? "stopped" : "running",
-          });
-          const started = next.enabled && next.session === undefined ? yield* startGeneration(next) : next;
+          const confirmed = yield* confirmBindings(
+            {
+              ...record,
+              appliedManifest: manifest,
+              appliedAt,
+              pendingConsent: undefined,
+              status: record.session === undefined ? "stopped" : "running",
+            },
+            record.pendingConsent?.bindings ?? [],
+          );
+          const next = yield* setRecord(confirmed);
+          const started = next.enabled && next.session === undefined ? yield* startWithRuntimeErrors(next) : next;
           yield* hub.publish({ _tag: "project-consent-resolved", projectId: started.project.id, consentId, approved: true, project: summaryOf(started) });
           return yield* detailOf(started);
         })),

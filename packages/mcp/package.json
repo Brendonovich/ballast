@@ -14,12 +14,11 @@
   },
   "scripts": {
     "typecheck": "tsgo -b",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "start": "node --experimental-strip-types --no-warnings=ExperimentalWarning src/bin.ts"
   },
   "dependencies": {
     "@ballast/agent-protocol": "workspace:*",
-    "@ballast/core": "workspace:*",
     "@ballast/fake": "workspace:*",
     "@ballast/module-http": "workspace:*",
     "@ballast/module-keyboard": "workspace:*",
@@ -28,11 +27,11 @@
     "@ballast/module-twitch": "workspace:*",
     "@ballast/module-vtube-studio": "workspace:*",
     "@ballast/module-websocket": "workspace:*",
-    "@ballast/planner": "workspace:*",
     "@effect/platform-node": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@ballast/planner": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "vitest": "catalog:"

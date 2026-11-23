@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { NodeServices } from "@effect/platform-node";
 import { Socket } from "effect/socket";
 import type { ParamOptionSource } from "@ballast/core";
 import {
@@ -120,6 +122,7 @@ const withDriver = <A, E>(
   }).pipe(
     Effect.provide(VTubeStudioDriver.layer(options)),
     Effect.provide(Socket.layerWebSocketConstructorGlobal),
+    Effect.provide(NodeServices.layer),
   );
 
 const apiState: MockVtsReply = {
@@ -204,11 +207,9 @@ describe("VTube Studio driver", () => {
 
   it.live("waits for the user to allow the plugin", () =>
     Effect.gen(function* () {
-      let tokenRequest: MockVtsRequest | undefined;
       const server = yield* startMockVtsServer(
         standardHandler((request) => {
           if (request.requestType === "AuthenticationToken") {
-            tokenRequest = request;
             return { type: "ignore" };
           }
           return undefined;
@@ -222,8 +223,11 @@ describe("VTube Studio driver", () => {
           expect(waiting.message ?? "").toContain("Allow");
           expect(tokens.tokens.size).toBe(0);
 
-          const request = tokenRequest;
-          if (request === undefined) return yield* Effect.fail(new Error("No token request"));
+          const request = yield* waitForRequest(
+            server,
+            (candidate) => candidate.requestType === "AuthenticationToken",
+            "the authentication token request",
+          );
           yield* Effect.sync(() => server.reply(request, { authenticationToken: "token-1" }));
 
           const connected = yield* waitForState(driver, "connected");
@@ -611,7 +615,8 @@ describe("VTube Studio driver", () => {
           }),
       );
 
-      const path = tokenPath("main", dataDir);
+      const paths = yield* Path.Path;
+      const path = tokenPath(paths, "main", dataDir);
       const contents = yield* Effect.tryPromise(() => readFile(path, "utf8"));
       const decoded = Schema.decodeUnknownSync(
         Schema.fromJsonString(
@@ -627,6 +632,9 @@ describe("VTube Studio driver", () => {
         const info = yield* Effect.tryPromise(() => stat(path));
         expect(info.mode & 0o777).toBe(0o600);
       }
-    }).pipe(Effect.provide(Socket.layerWebSocketConstructorGlobal)),
+    }).pipe(
+      Effect.provide(Socket.layerWebSocketConstructorGlobal),
+      Effect.provide(NodeServices.layer),
+    ),
   );
 });

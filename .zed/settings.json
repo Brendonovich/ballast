@@ -1,0 +1,21 @@
+{
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.jj",
+    "**/CVS",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings",
+    "**/node_modules",
+    "**/dist",
+    "**/dist-service",
+    "**/build-service",
+    "**/out",
+    "**/test-results",
+    "**/.wrangler",
+    "**/.alchemy"
+  ]
+}

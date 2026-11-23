@@ -12,7 +12,12 @@ import * as RpcServer from "effect/rpc/RpcServer";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 
 export const SettingValueSchema = Schema.NullOr(
-  Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
+  Schema.Union([
+    Schema.String,
+    Schema.Number,
+    Schema.Boolean,
+    Schema.Array(Schema.String),
+  ]),
 );
 export type SettingValue = Schema.Schema.Type<typeof SettingValueSchema>;
 

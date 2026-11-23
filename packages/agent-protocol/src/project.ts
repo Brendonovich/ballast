@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ParamValue } from "./common.ts";
+import { ConnectionSummary } from "./connections.ts";
 import {
   ConsentReason,
   ManifestConnection,
@@ -115,6 +116,23 @@ export const emptyProjectManifest = (id: string, entry: string): ProjectManifest
 });
 
 /** One project-level consent request; there is no per-script consent. */
+export const ProjectRequirement = Schema.Struct({
+  integration: Schema.String,
+  slot: Schema.String,
+  location: Schema.Literals(["local", "cloud", "either"]),
+  boundInstanceId: Schema.optionalKey(Schema.String),
+  /** Pre-filled when exactly one instance of this integration exists. */
+  proposedInstanceId: Schema.optionalKey(Schema.String),
+});
+export type ProjectRequirement = typeof ProjectRequirement.Type;
+
+export const ProjectBinding = Schema.Struct({
+  integration: Schema.String,
+  slot: Schema.String,
+  instanceId: Schema.String,
+});
+export type ProjectBinding = typeof ProjectBinding.Type;
+
 export const ProjectConsentRequest = Schema.Struct({
   id: Schema.String,
   projectId: Schema.String,
@@ -123,6 +141,8 @@ export const ProjectConsentRequest = Schema.Struct({
   reason: ConsentReason,
   summary: Schema.String,
   diff: ManifestDiff,
+  /** Proposed slot → instance bindings confirmed by approving/starting. */
+  bindings: Schema.Array(ProjectBinding),
 });
 export type ProjectConsentRequest = typeof ProjectConsentRequest.Type;
 
@@ -146,6 +166,7 @@ export type ProjectSummary = typeof ProjectSummary.Type;
 export const ProjectDetail = Schema.Struct({
   summary: ProjectSummary,
   manifest: ProjectManifest,
+  requirements: Schema.Array(ProjectRequirement),
   units: Schema.Array(UnitSummary),
   appliedAt: Schema.optionalKey(Schema.Number),
   pendingConsent: Schema.optionalKey(ProjectConsentRequest),
@@ -204,6 +225,15 @@ export const SetProjectEnabledRequest = Schema.Struct({
 });
 export type SetProjectEnabledRequest = typeof SetProjectEnabledRequest.Type;
 
+export const SetProjectBindingRequest = Schema.Struct({
+  projectId: Schema.String,
+  integration: Schema.String,
+  slot: Schema.String,
+  /** Null removes the binding; the project then cannot start until rebound. */
+  instanceId: Schema.NullOr(Schema.String),
+});
+export type SetProjectBindingRequest = typeof SetProjectBindingRequest.Type;
+
 export const ProjectDiagnostic = Schema.Struct({
   file: Schema.String,
   line: Schema.Number,
@@ -233,8 +263,10 @@ export const ProjectCheckResult = Schema.Struct({
   units: Schema.Array(UnitSummary),
   changes: Schema.Array(ProjectUnitChange),
   requiresConsent: Schema.Boolean,
-  missingConnections: Schema.Array(ManifestConnection),
+  requirements: Schema.Array(ProjectRequirement),
+  missingConnections: Schema.Array(ProjectRequirement),
   missingScopes: Schema.Array(Schema.String),
+  availableConnections: Schema.Array(ConnectionSummary),
   pendingConsent: Schema.optionalKey(ProjectConsentRequest),
   diagnostics: Schema.Array(ProjectDiagnostic),
   error: Schema.optionalKey(Schema.String),

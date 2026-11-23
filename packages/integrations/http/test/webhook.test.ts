@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { NodeServices } from "@effect/platform-node";
 import { createHmac } from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -19,6 +20,7 @@ import type {
   WebhookRelayDelivery,
 } from "../src/driver/index.ts";
 
+const platformLayer = NodeServices.layer;
 const startRuntime = (definitions: ReadonlyArray<WebhookDefinition>) =>
   Effect.gen(function* () {
     const driver = yield* WebhookDriver;
@@ -111,7 +113,7 @@ describe("webhook local listener", () => {
         expect(JSON.parse(new TextDecoder().decode(delivery.body))).toEqual({ amount: 5 });
         expect(delivery.headers["x-kofi-token"]).toBe("s3cret");
       }),
-    ).pipe(Effect.provide(webhookLayer)),
+    ).pipe(Effect.provide(webhookLayer), Effect.provide(platformLayer)),
   );
 
   it.live("verifies HMAC SHA-256 over the raw body and defaults to 204", () =>
@@ -154,7 +156,7 @@ describe("webhook local listener", () => {
         const deliveries = Array.from(yield* Fiber.join(deliveryFiber));
         expect(deliveries).toHaveLength(1);
       }),
-    ).pipe(Effect.provide(webhookLayer)),
+    ).pipe(Effect.provide(webhookLayer), Effect.provide(platformLayer)),
   );
 });
 
@@ -253,7 +255,11 @@ describe("webhook cloud mode", () => {
           );
           expect(Exit.isFailure(dropped)).toBe(true);
         }),
-      ).pipe(Effect.provide(relay), Effect.provide(webhookLayer));
+      ).pipe(
+        Effect.provide(relay),
+        Effect.provide(webhookLayer),
+        Effect.provide(platformLayer),
+      );
 
       expect(yield* Ref.get(unregistered)).toEqual(["hook_abc"]);
     }),

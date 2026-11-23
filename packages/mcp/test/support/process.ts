@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 
 export const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 export const agentBin = join(repoRoot, "apps/agent/src/bin.ts");
-export const mcpRoot = join(repoRoot, "packages/mcp");
-export const mcpBin = join(mcpRoot, "src/bin.ts");
+/** The MCP is run through the agent CLI, not its standalone bin. */
+export const mcpCommand = [agentBin, "mcp"] as const;
+export const mcpRoot = repoRoot;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

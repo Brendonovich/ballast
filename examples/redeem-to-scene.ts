@@ -7,9 +7,9 @@ export const title = "Redeem to Scene";
 
 export default Effect.gen(function* () {
   const rewardTitle = yield* Ballast.Param.string("rewardTitle");
-  const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes("main") });
   const broadcaster = yield* Twitch.Account("broadcaster");
   const obs = yield* OBS.Connection("main");
+  const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes(obs) });
   yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (e) =>
     Effect.gen(function* () {
       if (e.reward.title !== (yield* rewardTitle)) return;

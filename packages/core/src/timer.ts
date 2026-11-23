@@ -81,14 +81,6 @@ export interface Timer<A> {
   readonly maxAgeMs: number;
   readonly payloadFingerprint: string;
   /**
-   * Register the handler for this timer. Declares the timer in the manifest in
-   * plan phase and registers a runtime handler at runtime. The handler is never
-   * evaluated while planning.
-   */
-  readonly subscribe: (
-    handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
-  ) => Effect.Effect<void>;
-  /**
    * Schedule (or replace) one timer instance. `key` is the idempotency key
    * within this timer: scheduling the same key replaces the due time and
    * payload instead of creating a second instance.
@@ -100,11 +92,6 @@ export interface Timer<A> {
   ) => Effect.Effect<void>;
   /** Cancel a pending or fired instance. Cancelling a missing key is a no-op. */
   readonly cancel: (key: string) => Effect.Effect<void>;
-}
-
-/** A timer whose payload is `void`; `after` takes no payload argument. */
-export interface UnitTimer extends Omit<Timer<void>, "after"> {
-  readonly after: (key: string, after: Duration.Input) => Effect.Effect<void>;
 }
 
 export class TimerCalledDuringPlanError extends Error {
@@ -182,13 +169,16 @@ export const toTimerManifest = (timer: TimerMetadata<unknown>): TimerManifest =>
 });
 
 export interface TimerHostService {
-  readonly make: <A>(spec: TimerSpec<A>) => Effect.Effect<Timer<A>>;
+  readonly subscribe: <A>(
+    spec: TimerSpec<A>,
+    handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
+  ) => Effect.Effect<Timer<A>>;
 }
 
 /**
  * The host service timers are declared through. Plan records the declaration
- * and never registers a handler; runtime registers the handler with the
- * agent-provided timer runtime.
+ * and never evaluates the handler; runtime registers the handler with the
+ * agent-provided timer runtime. There is no separate define/register step.
  */
 export class TimerHost extends Context.Service<TimerHost, TimerHostService>()(
   "Ballast/TimerHost",
@@ -219,9 +209,6 @@ export class TimerRuntime extends Context.Service<TimerRuntime, TimerRuntimeServ
 ) {}
 
 interface TimerImplementation<A> {
-  readonly subscribe: (
-    handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
-  ) => Effect.Effect<void>;
   readonly after: (
     key: string,
     after: Duration.Input,
@@ -239,7 +226,6 @@ const makeTimer = <A>(
   onStale: metadata.onStale,
   maxAgeMs: metadata.maxAgeMs,
   payloadFingerprint: metadata.payloadFingerprint,
-  subscribe: implementation.subscribe,
   after: implementation.after,
   cancel: implementation.cancel,
 });
@@ -269,7 +255,7 @@ export const TimerHostPlan: Layer.Layer<TimerHost> = Layer.effect(
     const declared = new Map<string, string>();
 
     return TimerHost.of({
-      make: (spec) =>
+      subscribe: (spec, _handler) =>
         Effect.gen(function* () {
           const metadata = toTimerMetadata(spec);
           const signature = `${metadata.payloadFingerprint}:${metadata.onStale}:${metadata.maxAgeMs}`;
@@ -278,8 +264,8 @@ export const TimerHostPlan: Layer.Layer<TimerHost> = Layer.effect(
             return yield* Effect.die(new TimerDeclarationError(metadata.name));
           }
           declared.set(metadata.name, signature);
+          yield* subscribeInPlan(recorder, metadata);
           return makeTimer(metadata, {
-            subscribe: (_handler) => subscribeInPlan(recorder, metadata),
             after: () => Effect.die(new TimerCalledDuringPlanError(metadata.name)),
             cancel: () => Effect.die(new TimerCalledDuringPlanError(metadata.name)),
           });
@@ -310,14 +296,13 @@ export const TimerHostRuntime: Layer.Layer<TimerHost> = Layer.effect(
     const runtime = yield* Effect.serviceOption(TimerRuntime);
 
     return TimerHost.of({
-      make: (spec) =>
-        Effect.sync(() => {
+      subscribe: (spec, handler) =>
+        Effect.gen(function* () {
           const metadata = toTimerMetadata(spec);
+          yield* withTimerRuntime(runtime, metadata.name, (service) =>
+            service.subscribe(metadata, handler),
+          );
           return makeTimer(metadata, {
-            subscribe: (handler) =>
-              withTimerRuntime(runtime, metadata.name, (service) =>
-                service.subscribe(metadata, handler),
-              ),
             after: (key, after, payload) =>
               withTimerRuntime(runtime, metadata.name, (service) =>
                 service.schedule(metadata, {
@@ -337,27 +322,9 @@ export const TimerHostRuntime: Layer.Layer<TimerHost> = Layer.effect(
 );
 
 /**
- * Declare a durable timer. Call this in init and subscribe in the same init;
- * schedule instances from handlers or `Ballast.run`.
- */
-const makeTimerInternal = <A>(
-  name: string,
-  options: TimerOptions<A>,
-  source: DeclarationSource | undefined,
-): Effect.Effect<Timer<A>, never, TimerHost> =>
-  Effect.flatMap(TimerHost, (host) =>
-    host.make({ name, ...options, ...(source === undefined ? {} : { source }) }),
-  );
-
-export const make = <A>(
-  name: string,
-  options: TimerOptions<A>,
-): Effect.Effect<Timer<A>, never, TimerHost> =>
-  makeTimerInternal(name, options, captureSource(2));
-
-/**
- * Declare a timer, subscribe its handler, and return the handle in one step.
- * This is the shortest form for init:
+ * Declare a durable timer, register its handler, and return the handle. This is
+ * the only timer declaration form; schedule instances from handlers or
+ * `Ballast.run`.
  *
  * ```ts
  * const cooldown = yield* Ballast.Timer.subscribe(
@@ -375,29 +342,13 @@ export const subscribe = <A>(
   options: Omit<TimerOptions<A>, "payload"> = {},
 ): Effect.Effect<Timer<A>, never, TimerHost> => {
   const source = captureSource(2);
-  return Effect.gen(function* () {
-    const timer = yield* makeTimerInternal(
+  return Effect.flatMap(TimerHost, (host) => {
+    const spec: TimerSpec<A> = {
       name,
-      { ...options, payload },
-      source,
-    );
-    yield* timer.subscribe(handler);
-    return timer;
+      payload,
+      ...options,
+      ...(source === undefined ? {} : { source }),
+    };
+    return host.subscribe(spec, handler);
   });
 };
-
-/** Declare a timer with no payload; `after` takes only a key and a duration. */
-export const unit = (
-  name: string,
-  options: Omit<TimerOptions<void>, "payload"> = {},
-): Effect.Effect<UnitTimer, never, TimerHost> =>
-  Effect.map(make(name, { ...options, payload: Schema.Void }), (timer) => ({
-    name: timer.name,
-    title: timer.title,
-    onStale: timer.onStale,
-    maxAgeMs: timer.maxAgeMs,
-    payloadFingerprint: timer.payloadFingerprint,
-    subscribe: timer.subscribe,
-    cancel: timer.cancel,
-    after: (key, after) => timer.after(key, after, undefined),
-  }));

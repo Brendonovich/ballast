@@ -18,7 +18,7 @@ await buildDesktop({ minify: false });
 const child = spawn(electron, [".", ...process.argv.slice(2)], {
   cwd: root,
   stdio: "inherit",
-  env: { ...process.env, BALLAST_DEV: process.env.BALLAST_DEV ?? "1" },
+  env: process.env,
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

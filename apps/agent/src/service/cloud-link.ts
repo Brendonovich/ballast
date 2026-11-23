@@ -1,7 +1,10 @@
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as Ref from "effect/Ref";
 import { agentError } from "@ballast/agent-protocol";
@@ -20,7 +23,7 @@ import {
 import type { CloudPairing } from "../twitch/config.ts";
 import { machineName as hostMachineName } from "./config.ts";
 import { removeFile } from "./fs.ts";
-import { Logs } from "./telemetry.ts";
+import { EventRouter, Logs } from "./telemetry.ts";
 
 export interface CloudLinkService {
   readonly status: Effect.Effect<CloudStatus>;
@@ -62,6 +65,26 @@ export const CloudLinkLive = (options: {
     CloudLink,
     Effect.gen(function* () {
       const logs = yield* Logs;
+      const events = yield* EventRouter;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
+      const loadPairing = (dataDir: string) =>
+        readCloudPairing(dataDir).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+      const savePairing = (value: CloudPairing, dataDir: string) =>
+        writeCloudPairing(value, dataDir).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+      const deletePairing = (dataDir: string) =>
+        removeFile(cloudPairingPath(path, dataDir)).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+        );
+      yield* events.beginWarmup;
       const status = yield* Ref.make<CloudStatus>({ state: "unlinked" });
       const current = yield* Ref.make<CloudRuntime | undefined>(undefined);
       const pairing = yield* Ref.make<CloudPairing | undefined>(undefined);
@@ -143,10 +166,9 @@ export const CloudLinkLive = (options: {
         });
 
       yield* Effect.gen(function* () {
-        const stored = yield* Effect.tryPromise({
-          try: () => readCloudPairing(options.dataDir),
-          catch: (cause) => errorMessage(cause),
-        }).pipe(
+        const stored = yield* loadPairing(options.dataDir).pipe(
+          Effect.mapError((cause) => errorMessage(cause)),
+        ).pipe(
           Effect.catch((reason) => {
             return Effect.gen(function* () {
               yield* setStatus({ state: "error", error: reason });
@@ -235,11 +257,11 @@ export const CloudLinkLive = (options: {
             pairedAt: Date.now(),
             bindings: {},
           };
-          yield* Effect.tryPromise({
-            try: () => writeCloudPairing(value, options.dataDir),
-            catch: (cause) =>
+          yield* savePairing(value, options.dataDir).pipe(
+            Effect.mapError((cause) =>
               agentError("internal", `Could not store the cloud pairing: ${errorMessage(cause)}`),
-          });
+            ),
+          );
           yield* Ref.set(pairing, value);
           yield* startRuntime(value);
           yield* logs.write({
@@ -254,10 +276,7 @@ export const CloudLinkLive = (options: {
         Effect.gen(function* () {
           yield* closeRuntime();
           yield* Ref.set(pairing, undefined);
-          yield* Effect.tryPromise({
-            try: () => removeFile(cloudPairingPath(options.dataDir)),
-            catch: () => undefined,
-          }).pipe(Effect.ignore);
+          yield* deletePairing(options.dataDir).pipe(Effect.ignore);
           yield* setStatus({ state: "unlinked" });
           yield* logs.write({
             level: "info",

@@ -1,4 +1,12 @@
-import type { ConnectionStatus, ConnectionSummary, ParamValue, ScriptSummary } from "@ballast/agent-protocol";
+import type {
+  ConnectionStatus,
+  ConnectionSummary,
+  ParamValue,
+  ProjectRequirement,
+  ProjectSummary,
+  UnitKind,
+  UnitStatus,
+} from "@ballast/agent-protocol";
 
 import type { Tone } from "../ui/primitives.tsx";
 
@@ -58,6 +66,16 @@ export const integrationName = (integration: string): string => {
       return "Twitch";
     case "fake":
       return "Fake";
+    case "vts":
+      return "VTube Studio";
+    case "keyboard":
+      return "Keyboard";
+    case "midi":
+      return "MIDI";
+    case "websocket":
+      return "WebSocket";
+    case "http":
+      return "HTTP";
     default:
       return integration;
   }
@@ -66,59 +84,99 @@ export const integrationName = (integration: string): string => {
 export const paramValueLabel = (value: ParamValue | undefined): string => {
   if (value === undefined) return "";
   if (typeof value === "boolean") return value ? "On" : "Off";
+  if (Array.isArray(value)) return value.join(", ");
   return String(value);
 };
 
-/**
- * The agent title-cases a filename including its extension. Keep the UI clean
- * without changing the record: "Tick Echo Ts" is shown as "Tick Echo".
- */
-export const scriptDisplayName = (script: ScriptSummary): string =>
-  script.name.replace(/\s+ts$/i, "").replace(/\.(?:[cm]?[jt]s)$/i, "").trim() || script.name;
-
-export const scriptStatusLabel = (script: ScriptSummary): string => {
-  if (script.status === "stopped" && script.generation === 0) return "Not started";
-  switch (script.status) {
-    case "needs-consent":
-      return "Needs consent";
+export const projectStatusLabel = (project: ProjectSummary): string => {
+  if (project.status === "error") {
+    return project.enabled ? "Running previous version" : "Error";
+  }
+  switch (project.status) {
     case "running":
       return "Running";
-    case "error":
-      return "Error";
+    case "needs-consent":
+      return "Needs consent";
     case "stopped":
       return "Stopped";
-    case "idle":
-      return "Idle";
-    case "planning":
-      return "Planning";
-    case "starting":
-      return "Starting";
-    case "stopping":
-      return "Stopping";
   }
 };
 
-export const scriptStatusTone = (script: ScriptSummary): Tone => {
-  if (script.status === "stopped" && script.generation === 0) return "warning";
-  switch (script.status) {
+/**
+ * A project with a live worker. A failed reload keeps the previous worker
+ * running, while a stopped project with an error has no worker. The protocol
+ * does not expose the session directly, so `enabled` distinguishes those two
+ * error cases.
+ */
+export const projectWorkerRunning = (project: ProjectSummary): boolean =>
+  project.status === "running" ||
+  project.status === "needs-consent" ||
+  (project.status === "error" && project.enabled);
+
+/** Requirements that block Start: no explicit binding and no sole-instance proposal. */
+export const blockingRequirements = (
+  requirements: ReadonlyArray<ProjectRequirement>,
+): ReadonlyArray<ProjectRequirement> =>
+  requirements.filter(
+    (requirement) =>
+      requirement.boundInstanceId === undefined &&
+      requirement.proposedInstanceId === undefined,
+  );
+
+export const projectStatusTone = (project: ProjectSummary): Tone => {
+  switch (project.status) {
     case "running":
       return "success";
     case "needs-consent":
       return "warning";
     case "error":
       return "danger";
-    case "planning":
-    case "starting":
-    case "stopping":
-      return "info";
-    case "idle":
     case "stopped":
       return "neutral";
   }
 };
 
-export const isScriptBusy = (status: ScriptSummary["status"]): boolean =>
-  status === "planning" || status === "starting" || status === "stopping";
+const unitKindLabelValue: Record<UnitKind, string> = {
+  topic: "Topic",
+  timer: "Timer",
+  workflow: "Workflow",
+  param: "Param",
+  run: "Run",
+};
+
+export const unitKindLabel = (kind: UnitKind): string => unitKindLabelValue[kind];
+
+const unitKindPluralValue: Record<UnitKind, string> = {
+  topic: "Topics",
+  timer: "Timers",
+  workflow: "Workflows",
+  param: "Params",
+  run: "Runs",
+};
+
+export const unitKindPlural = (kind: UnitKind): string => unitKindPluralValue[kind];
+
+export const unitStatusLabel = (status: UnitStatus): string => {
+  switch (status) {
+    case "active":
+      return "Active";
+    case "waiting":
+      return "Waiting";
+    case "error":
+      return "Error";
+  }
+};
+
+export const unitStatusTone = (status: UnitStatus): Tone => {
+  switch (status) {
+    case "active":
+      return "success";
+    case "waiting":
+      return "neutral";
+    case "error":
+      return "danger";
+  }
+};
 
 export const connectionStatusLabel = (status: ConnectionStatus): string => {
   switch (status) {

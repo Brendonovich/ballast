@@ -10,6 +10,7 @@ const manifest: Manifest = {
     { key: "count", type: "number", default: 1 },
     { key: "enabled", type: "boolean", default: false },
     { key: "mode", type: "enum", default: "a" },
+    { key: "scenes", type: "strings", default: ["Scene 1"] },
   ],
 };
 
@@ -23,6 +24,7 @@ describe("run params", () => {
           ["count", "3"],
           ["enabled", "true"],
           ["mode", "b"],
+          ["scenes", "Scene 1, Scene 2"],
         ]),
       );
 
@@ -31,10 +33,12 @@ describe("run params", () => {
         ["count", 3],
         ["enabled", true],
         ["mode", "b"],
+        ["scenes", ["Scene 1", "Scene 2"]],
       ]);
 
       const store = new RuntimeParamStore(values);
       expect(store.get("prefix")).toBe("hi");
+      expect(store.get("scenes")).toEqual(["Scene 1", "Scene 2"]);
       expect(store.get("missing")).toBeUndefined();
     }),
   );
@@ -92,6 +96,36 @@ describe("run params", () => {
       expect(error.message).toContain('Param "scene" value "Missing scene" is not available');
       expect(error.message).toContain("obs/main/scenes");
       expect(error.message).toContain("Scene 1, Scene 2");
+    }),
+  );
+
+  it.effect("validates every selected string against dynamic options", () =>
+    Effect.gen(function* () {
+      const withOptions: Manifest = {
+        ...emptyManifest("options"),
+        params: [
+          {
+            key: "scenes",
+            type: "strings",
+            options: { integration: "obs", slot: "main", source: "scenes" },
+          },
+        ],
+      };
+      const accepted = yield* parseParamValues(
+        withOptions,
+        new Map([["scenes", "Scene 1, Scene 2"]]),
+        () => Effect.succeed(["Scene 1", "Scene 2"]),
+      );
+      expect(accepted.get("scenes")).toEqual(["Scene 1", "Scene 2"]);
+
+      const error = yield* parseParamValues(
+        withOptions,
+        new Map([["scenes", "Scene 1, Missing scene"]]),
+        () => Effect.succeed(["Scene 1", "Scene 2"]),
+      ).pipe(Effect.flip);
+
+      expect(error.message).toContain('Param "scenes" value "Missing scene" is not available');
+      expect(error.message).toContain("obs/main/scenes");
     }),
   );
 

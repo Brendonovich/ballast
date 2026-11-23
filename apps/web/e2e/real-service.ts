@@ -9,18 +9,34 @@ export interface RealServiceInfo {
   readonly url: string;
   readonly token: string;
   readonly pid: number;
-  readonly projectId: string;
-  readonly projectPath: string;
+  readonly projectsDir: string;
   readonly tempRoot: string;
   readonly vtsPid: number;
   readonly approvals: {
     readonly vtuberStudio: boolean;
     readonly accessibility: boolean;
   };
+  readonly connections: {
+    readonly vts: string | undefined;
+    readonly keyboard: string | undefined;
+  };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const optionalString = (value: unknown): string | undefined =>
+  typeof value === "string" ? value : undefined;
+
+const readConnections = (
+  value: unknown,
+): { readonly vts: string | undefined; readonly keyboard: string | undefined } => {
+  if (!isRecord(value)) return { vts: undefined, keyboard: undefined };
+  return {
+    vts: optionalString(value["vts"]),
+    keyboard: optionalString(value["keyboard"]),
+  };
+};
 
 export const readRealServiceInfo = (): RealServiceInfo | undefined => {
   try {
@@ -30,8 +46,7 @@ export const readRealServiceInfo = (): RealServiceInfo | undefined => {
       typeof value["url"] !== "string" ||
       typeof value["token"] !== "string" ||
       typeof value["pid"] !== "number" ||
-      typeof value["projectId"] !== "string" ||
-      typeof value["projectPath"] !== "string" ||
+      typeof value["projectsDir"] !== "string" ||
       typeof value["tempRoot"] !== "string" ||
       typeof value["vtsPid"] !== "number"
     ) {
@@ -52,14 +67,14 @@ export const readRealServiceInfo = (): RealServiceInfo | undefined => {
       url: value["url"],
       token: value["token"],
       pid: value["pid"],
-      projectId: value["projectId"],
-      projectPath: value["projectPath"],
+      projectsDir: value["projectsDir"],
       tempRoot: value["tempRoot"],
       vtsPid: value["vtsPid"],
       approvals: {
         vtuberStudio: approvals.vtuberStudio,
         accessibility: approvals.accessibility,
       },
+      connections: readConnections(value["connections"]),
     };
   } catch {
     return undefined;

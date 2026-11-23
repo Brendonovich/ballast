@@ -9,19 +9,23 @@ import type {
   EventRecord,
   LogEntry,
   ProjectDetail,
-  ProjectManifest,
   ProjectSummary,
   StreamEventsRequest,
   StreamLogsRequest,
+  UnitKind,
 } from "@ballast/agent-protocol";
 
-import { applyProject, checkText } from "./adapter.ts";
-import type { ProjectAdapter } from "./adapter.ts";
+import {
+  applyProject,
+  checkText,
+  requirementLine,
+  requirementViews,
+} from "./adapter.ts";
+import type { ProjectAdapter, ProjectState } from "./adapter.ts";
 import { formatCatalog, selectCatalog } from "./catalog.ts";
 import type { CatalogFilter } from "./catalog.ts";
 import { formatUnknown, ToolError, toolError } from "./errors.ts";
 import { GUIDE } from "./guide.ts";
-import { initProject } from "./scaffold.ts";
 
 export interface ToolContext {
   readonly adapter: ProjectAdapter;
@@ -61,7 +65,11 @@ const defineTool = <S extends Schema.Top & { readonly DecodingServices: never }>
   inputSchema: jsonSchemaOf(options.parameters),
   call: (args) =>
     Effect.try({
-      try: () => Schema.decodeUnknownSync(options.parameters)(args === undefined ? {} : args),
+      try: () =>
+        Schema.decodeUnknownSync(options.parameters)(args === undefined ? {} : args, {
+          onExcessProperty: "error",
+          errors: "all",
+        }),
       catch: (cause) => toolError("Invalid arguments: " + formatUnknown(cause)),
     }).pipe(Effect.flatMap(options.run)),
 });
@@ -150,93 +158,64 @@ const formatEvent = (event: EventRecord): string =>
   " " +
   jsonText(event.payload, 500);
 
-const projectGaps = (
-  manifest: ProjectManifest,
-  connections: ReadonlyArray<ConnectionSummary>,
-): {
-  readonly missingConnections: ReadonlyArray<{
-    readonly integration: string;
-    readonly slot: string;
-    readonly location: "local" | "cloud" | "either";
-    readonly status?: string | undefined;
-  }>;
-  readonly missingScopes: ReadonlyArray<{
-    readonly integration: string;
-    readonly slot: string;
-    readonly scopes: ReadonlyArray<string>;
-  }>;
-} => {
-  const missingConnections: Array<{
-    integration: string;
-    slot: string;
-    location: "local" | "cloud" | "either";
-    status?: string;
-  }> = [];
-  const required = new Map<string, Set<string>>();
-  const addScopes = (integration: string, slot: string, scopes: ReadonlyArray<string>) => {
-    if (scopes.length === 0) return;
-    const key = integration + "/" + slot;
-    const set = required.get(key) ?? new Set<string>();
-    for (const scope of scopes) set.add(scope);
-    required.set(key, set);
-  };
-  for (const topic of manifest.topics) addScopes(topic.integration, topic.slot, topic.scopes);
-  for (const request of manifest.requests) addScopes(request.integration, request.slot, request.scopes);
-
-  for (const connection of manifest.connections) {
-    const configured = connections.find(
+const unitFilter = (
+  adapter: ProjectAdapter,
+  projectId: string,
+  unit: string | undefined,
+): Effect.Effect<
+  { readonly unitKind: UnitKind; readonly unitName: string } | undefined,
+  ToolError
+> =>
+  Effect.gen(function* () {
+    if (unit === undefined) return undefined;
+    const detail = yield* adapter.getProject(projectId);
+    const separator = unit.indexOf(":");
+    const requestedKind = separator > 0 ? unit.slice(0, separator) : undefined;
+    const requestedName = separator > 0 ? unit.slice(separator + 1) : unit;
+    const found = detail.units.find(
       (candidate) =>
-        candidate.integration === connection.integration && candidate.slot === connection.slot,
+        candidate.name === requestedName &&
+        (requestedKind === undefined || candidate.kind === requestedKind),
     );
-    if (configured === undefined) {
-      missingConnections.push({
-        integration: connection.integration,
-        slot: connection.slot,
-        location: connection.location,
-      });
-    } else if (configured.status !== "connected") {
-      missingConnections.push({
-        integration: connection.integration,
-        slot: connection.slot,
-        location: connection.location,
-        status: configured.status,
-      });
+    if (found === undefined) {
+      return yield* Effect.fail(
+        toolError(
+          "No unit '" +
+            unit +
+            "' in project " +
+            projectId +
+            ". Units: " +
+            (detail.units.length === 0
+              ? "none"
+              : detail.units.map((candidate) => candidate.kind + ":" + candidate.name).join(", ")),
+        ),
+      );
     }
-  }
-
-  const missingScopes = [...required].flatMap(([key, scopes]) => {
-    const separator = key.indexOf("/");
-    const integration = key.slice(0, separator);
-    const slot = key.slice(separator + 1);
-    const configured = connections.find(
-      (candidate) => candidate.integration === integration && candidate.slot === slot,
-    );
-    const granted = new Set(configured?.scopes.granted ?? []);
-    const missing = [...scopes].filter((scope) => !granted.has(scope));
-    return missing.length === 0 ? [] : [{ integration, slot, scopes: missing }];
+    return { unitKind: found.kind, unitName: found.name };
   });
 
-  return { missingConnections, missingScopes };
-};
-
-const statusState = (
+export const statusState = (
   project: ProjectSummary,
   detail: ProjectDetail,
-  missingConnections: ReadonlyArray<unknown>,
-): string => {
-  if (detail.pendingConsent !== undefined) return "waiting_for_user_consent";
+): { readonly state: ProjectState; readonly reason?: "consent" | undefined } => {
+  if (detail.pendingConsent !== undefined || project.status === "needs-consent") {
+    return { state: "waiting_for_user", reason: "consent" };
+  }
   if (project.status === "error") {
-    return detail.appliedAt !== undefined && detail.units.some((unit) => unit.status === "active")
-      ? "previous_version_running_latest_failed"
-      : "error";
+    return {
+      state:
+        detail.appliedAt !== undefined && detail.units.some((unit) => unit.status === "active")
+          ? "previous_version_running_latest_failed"
+          : "error",
+    };
   }
   if (project.status === "running") {
-    return missingConnections.length > 0 ? "running_missing_connections" : "running";
+    return { state: "running" };
   }
   // The service auto-applies plans with no new permissions, so appliedAt does
   // not prove the user ever started the project. Report "stopped"; apply will
   // explain that the first Start is user-only.
-  return "stopped";
+  return { state: "stopped" };
 };
 
 const formatStatus = (
@@ -244,15 +223,22 @@ const formatStatus = (
   connections: ReadonlyArray<ConnectionSummary>,
 ): ToolOutput => {
   const project = detail.summary;
-  const gaps = projectGaps(detail.manifest, connections);
-  const state = statusState(project, detail, gaps.missingConnections);
+  const requirements = requirementViews(detail.requirements ?? [], connections);
+  const missingScopes = [
+    ...new Set([
+      ...(detail.pendingConsent?.diff.added.scopes ?? []),
+      ...connections.flatMap((connection) => connection.scopes.missing),
+    ]),
+  ];
+  const state = statusState(project, detail);
   const lines: Array<string> = [
     "project " +
       project.id +
       " (" +
       project.name +
       ") · " +
-      state +
+      state.state +
+      (state.reason === undefined ? "" : " (" + state.reason + ")") +
       " · " +
       (project.enabled ? "enabled" : "disabled") +
       (project.entry === undefined ? "" : " · entry " + project.entry),
@@ -287,23 +273,14 @@ const formatStatus = (
         ")",
     );
   }
-  if (gaps.missingConnections.length > 0) {
-    lines.push("missing connections:");
-    for (const connection of gaps.missingConnections) {
-      lines.push(
-        "  " +
-          connection.integration +
-          "/" +
-          connection.slot +
-          (connection.status === undefined ? " (not configured)" : " (" + connection.status + ")"),
-      );
+  if (requirements.length > 0) {
+    lines.push("requirements:");
+    for (const requirement of requirements) {
+      lines.push("  " + requirementLine(requirement));
     }
   }
-  if (gaps.missingScopes.length > 0) {
-    lines.push("missing scopes:");
-    for (const missing of gaps.missingScopes) {
-      lines.push("  " + missing.integration + "/" + missing.slot + ": " + missing.scopes.join(", "));
-    }
+  if (missingScopes.length > 0) {
+    lines.push("missing scopes: " + missingScopes.join(", "));
   }
   if (detail.units.length > 0) {
     lines.push("units:");
@@ -320,11 +297,15 @@ const formatStatus = (
     }
   }
   return result(lines.join("\n"), {
-    state,
+    state: state.state,
+    ...(state.reason === undefined ? {} : { reason: state.reason }),
     project,
     units: detail.units,
-    missingConnections: gaps.missingConnections,
-    missingScopes: gaps.missingScopes,
+    requirements,
+    missingConnections: (detail.requirements ?? []).filter(
+      (requirement) => requirement.boundInstanceId === undefined,
+    ),
+    missingScopes,
     ...(detail.pendingConsent === undefined ? {} : { pendingConsent: detail.pendingConsent }),
     ...(detail.lastErrorSource === undefined ? {} : { lastErrorSource: detail.lastErrorSource }),
   });
@@ -341,13 +322,16 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_catalog",
     description:
-      "List Ballast integrations, their event topics (with Effect-Schema-derived JSON Schemas), requests (with input/output schemas and required scopes) and connection kinds. Without filters this returns a compact integration summary. Pass integration to focus on one, search to match topic/request names, and includeSchemas: true only when you need the payload shape; the OBS/Twitch/VTube Studio catalogs are large. Read ballast_guide before using a topic or request.",
+      "List Ballast integrations, their event topics (with Effect-Schema-derived JSON Schemas), requests (with input/output schemas and required scopes) and connection kinds. Without filters this returns a compact integration summary. Pass integration to focus on one, topic/request to pick one entry, search to match names, and includeSchemas: true only when you need the payload shape. Results are paged: if the text says truncated, call again with offset (or narrow with search/topic/request). The OBS/Twitch/VTube Studio catalogs are large. Read ballast_guide before using a topic or request.",
     parameters: Schema.Struct({
       integration: Schema.optionalKey(Schema.String),
       kind: Schema.optionalKey(Schema.Literals(["topics", "requests", "connections", "all"])),
       search: Schema.optionalKey(Schema.String),
+      topic: Schema.optionalKey(Schema.String),
+      request: Schema.optionalKey(Schema.String),
       includeSchemas: Schema.optionalKey(Schema.Boolean),
       limit: Schema.optionalKey(Schema.Number),
+      offset: Schema.optionalKey(Schema.Number),
     }),
     run: (input) =>
       Effect.try({
@@ -356,8 +340,11 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
             ...(input.integration === undefined ? {} : { integration: input.integration }),
             ...(input.kind === undefined ? {} : { kind: input.kind }),
             ...(input.search === undefined ? {} : { search: input.search }),
+            ...(input.topic === undefined ? {} : { topic: input.topic }),
+            ...(input.request === undefined ? {} : { request: input.request }),
             ...(input.includeSchemas === undefined ? {} : { includeSchemas: input.includeSchemas }),
             ...(input.limit === undefined ? {} : { limit: input.limit }),
+            ...(input.offset === undefined ? {} : { offset: input.offset }),
           };
           const selection = selectCatalog(filter);
           return result(formatCatalog(selection), selection);
@@ -368,47 +355,42 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_project_init",
     description:
-      "Create a Ballast project folder and register it with the running service: ballast.ts, package.json (ballast.entry), tsconfig.json and a short AGENTS.md pointing at ballast_guide. Existing files are never overwritten. This does not start the project; the first Start is a user action in the Ballast app. Use ballast_check next.",
+      "Create and register a Ballast project through the running service: ballast.ts, package.json (ballast.entry) and a short AGENTS.md pointing at ballast_guide. The service refuses a non-empty folder. This does not start the project; the first Start is a user action in the Ballast app. Use ballast_check next.",
     parameters: Schema.Struct({
-      dir: Schema.String,
-      name: Schema.optionalKey(Schema.String),
+      name: Schema.String,
+      dir: Schema.optionalKey(Schema.String),
     }),
     run: (input) =>
       Effect.gen(function* () {
-        const scaffold = yield* initProject(context.adapter, input.dir, input.name);
+        const detail = yield* context.adapter.createProject(input.name, input.dir);
+        const project = detail.summary;
         const text = [
-          "registered project " + scaffold.project.summary.id + " (" + scaffold.project.summary.name + ")",
-          "root " + scaffold.root,
-          "created: " + (scaffold.created.length === 0 ? "none" : scaffold.created.join(", ")),
-          "kept existing: " + (scaffold.skipped.length === 0 ? "none" : scaffold.skipped.join(", ")),
-          "next: edit ballast.ts, then call ballast_check with project '" + scaffold.project.summary.id + "'.",
+          "created project " + project.id + " (" + project.name + ")",
+          "root " + project.root,
+          "files: ballast.ts, package.json, AGENTS.md",
+          "next: edit ballast.ts, then call ballast_check with project '" + project.id + "'.",
         ].join("\n");
-        return result(text, {
-          project: scaffold.project.summary,
-          root: scaffold.root,
-          created: scaffold.created,
-          skipped: scaffold.skipped,
-        });
+        return result(text, { project, root: project.root });
       }),
   }),
   defineTool({
     name: "ballast_check",
     description:
-      "Typecheck, bundle and plan a registered Ballast project WITHOUT applying or starting it. Returns structured diagnostics (file, line, column, TS code, message), the planned units with source links, the diff from the applied manifest, requiresConsent, and the connections/scopes the user must configure. Use after every edit. On a failed build the previously running version is untouched; ballast_status says whether it is still running.",
+      "Typecheck, bundle and plan a registered Ballast project WITHOUT applying or starting it. Returns structured diagnostics (file, line, column, TS code, message), the planned units with source links, the diff from the applied manifest, requiresConsent, missing scopes, and every connection requirement: bound to an instance, proposed at Start, unbound with compatible instances, or missing. Use after every edit. On a failed build the previously running version is untouched; ballast_status says whether it is still running.",
     parameters: Schema.Struct({
       project: Schema.String,
     }),
     run: (input) =>
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
-        const check = yield* context.adapter.checkProject(project);
+        const check = yield* context.adapter.checkProject(project.id);
         return result(checkText(check), check);
       }),
   }),
   defineTool({
     name: "ballast_apply",
     description:
-      "Request a reload of a checked Ballast project. Consent and the first start are USER-ONLY: this tool never grants scopes, approves consent or starts a project that has never been started. It returns state=waiting_for_user with the exact action the user must take in the Ballast app, or state=reloaded after a running project restarts. Never call it as a substitute for user approval.",
+      "Request a reload of a checked Ballast project. Consent, connection bindings and the first start are USER-ONLY: this tool never grants scopes, approves consent, binds slots or starts a project that has never been started. It returns state=waiting_for_user with reason connections (naming the unbound slots), consent, scopes or start, and the exact action the user must take in the Ballast app; state=running after a running project restarts. Never call it as a substitute for user approval.",
     parameters: Schema.Struct({
       project: Schema.String,
     }),
@@ -426,7 +408,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_status",
     description:
-      "Report the service and one project (or all projects): running, previous-version-running-latest-failed, waiting for consent, stopped/never started, missing connections and missing scopes, plus per-unit status and source links. Call it after ballast_apply or when the user asks what Ballast is doing. This is a snapshot; it does not plan or change anything.",
+      "Report the service and one project (or all projects): running, waiting_for_user (with reason), previous_version_running_latest_failed, stopped or error; every connection requirement as bound, proposed, unbound or missing; missing scopes; and per-unit status and source links. Call it after ballast_apply or when the user asks what Ballast is doing. This is a snapshot; it does not plan or change anything.",
     parameters: Schema.Struct({
       project: Schema.optionalKey(Schema.String),
     }),
@@ -485,7 +467,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_logs",
     description:
-      "Return recent Ballast service logs for a project, optionally filtered to one unit. Use after applying a change or when a handler misbehaves. Since accepts an epoch millisecond timestamp, an ISO date or a relative duration such as 10m or 2h; limit defaults to 100 (max 2000). The result is a snapshot from the service ring buffer, not a live tail.",
+      "Return recent Ballast service logs for a project, optionally filtered to one unit. The unit may be a name or kind:name (for example run:ready); the service receives both unitKind and unitName. Use after applying a change or when a handler misbehaves. Since accepts an epoch millisecond timestamp, an ISO date or a relative duration such as 10m or 2h; limit defaults to 100 (max 2000). The result is a snapshot from the service ring buffer, not a live tail.",
     parameters: Schema.Struct({
       project: Schema.String,
       unit: Schema.optionalKey(Schema.String),
@@ -500,14 +482,21 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
           catch: (cause) => toolError(formatUnknown(cause)),
         });
         const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 2000));
+        const filter = yield* unitFilter(context.adapter, project.id, input.unit);
         const request: StreamLogsRequest = {
           projectId: project.id,
-          ...(input.unit === undefined ? {} : { unitName: input.unit }),
+          ...(filter === undefined
+            ? {}
+            : { unitKind: filter.unitKind, unitName: filter.unitName }),
         };
         const entries = yield* context.adapter.logs(request, 2000);
         const filtered = entries
           .filter((entry) => since === undefined || entry.at >= since)
-          .filter((entry) => input.unit === undefined || entry.unitName === input.unit)
+          .filter(
+            (entry) =>
+              filter === undefined ||
+              (entry.unitKind === filter.unitKind && entry.unitName === filter.unitName),
+          )
           .slice(-limit);
         const text =
           filtered.length === 0
@@ -523,7 +512,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_events",
     description:
-      "Return recent inbound events and outbound requests recorded by the Ballast service for a project. Filter by unit, integration or topic. Since accepts epoch ms, an ISO date or a relative duration like 10m; limit defaults to 50 (max 500). Use it to see whether a subscription fired and what payload the handler received. This is a snapshot, not a live tail.",
+      "Return recent inbound events and outbound requests recorded by the Ballast service for a project. Filter by unit (name or kind:name), integration or topic; the service receives unitKind/unitName. Since accepts epoch ms, an ISO date or a relative duration like 10m; limit defaults to 50 (max 500). Use it to see whether a subscription fired and what payload the handler received. This is a snapshot, not a live tail.",
     parameters: Schema.Struct({
       project: Schema.String,
       unit: Schema.optionalKey(Schema.String),
@@ -540,16 +529,23 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
           catch: (cause) => toolError(formatUnknown(cause)),
         });
         const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 50), 500));
+        const filter = yield* unitFilter(context.adapter, project.id, input.unit);
         const request: StreamEventsRequest = {
           projectId: project.id,
-          ...(input.unit === undefined ? {} : { unitName: input.unit }),
+          ...(filter === undefined
+            ? {}
+            : { unitKind: filter.unitKind, unitName: filter.unitName }),
           ...(input.integration === undefined ? {} : { integration: input.integration }),
           ...(input.topic === undefined ? {} : { topic: input.topic }),
         };
         const events = yield* context.adapter.events(request, 500);
         const filtered = events
           .filter((event) => since === undefined || event.at >= since)
-          .filter((event) => input.unit === undefined || event.unitName === input.unit)
+          .filter(
+            (event) =>
+              filter === undefined ||
+              (event.unitKind === filter.unitKind && event.unitName === filter.unitName),
+          )
           .filter((event) => input.integration === undefined || event.integration === input.integration)
           .filter((event) => input.topic === undefined || event.topic === input.topic)
           .slice(-limit);

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { SourceMapConsumer } from "source-map-js";
 import type { Manifest } from "@ballast/core";
 
@@ -9,16 +9,43 @@ const stripFileUrl = (file: string): string => {
   return query === -1 ? withoutUrl : withoutUrl.slice(0, query);
 };
 
-const normalizeSource = (source: string, projectRoot: string): string => {
+const normalizeSource = (
+  source: string,
+  projectRoot: string,
+  bundleDirectory: string,
+): string => {
   const file = stripFileUrl(source);
+  const roots = existsSync(projectRoot)
+    ? [projectRoot, realpathSync(projectRoot)]
+    : [projectRoot];
+  const toProjectRelative = (absolute: string): string | undefined => {
+    for (const root of roots) {
+      const relativePath = relative(root, absolute);
+      if (relativePath === "" || relativePath.startsWith("..")) continue;
+      return relativePath.split("\\").join("/");
+    }
+    return undefined;
+  };
   if (file.startsWith("/")) {
-    const relativePath = relative(projectRoot, file);
-    return relativePath.startsWith("..") ? file : relativePath.split("\\").join("/");
+    return toProjectRelative(file) ?? file;
+  }
+  for (const base of [projectRoot, bundleDirectory, process.cwd()]) {
+    const absolute = resolve(base, file);
+    if (!existsSync(absolute)) continue;
+    const projectRelative = toProjectRelative(realpathSync(absolute));
+    if (projectRelative !== undefined) return projectRelative;
+  }
+  const rootIndex = file.lastIndexOf(projectRoot.replaceAll("\\", "/"));
+  if (rootIndex >= 0) {
+    const suffix = file.slice(rootIndex + projectRoot.length).replace(/^\/+/, "");
+    if (suffix !== "") return suffix;
   }
   const parts = file.split("/");
   for (let index = 0; index < parts.length; index += 1) {
-    const candidate = parts.slice(index).join("/");
-    if (existsSync(resolve(projectRoot, candidate))) return candidate;
+    const absolute = resolve(projectRoot, parts.slice(index).join("/"));
+    if (!existsSync(absolute)) continue;
+    const projectRelative = toProjectRelative(realpathSync(absolute));
+    if (projectRelative !== undefined) return projectRelative;
   }
   const base = parts[parts.length - 1];
   if (base !== undefined && existsSync(resolve(projectRoot, base))) return base;
@@ -59,7 +86,7 @@ export const mapManifestSources = (
       return source;
     }
     return {
-      file: normalizeSource(original.source, projectRoot),
+      file: normalizeSource(original.source, projectRoot, dirname(bundlePath)),
       line: original.line,
       column: original.column + 1,
     };

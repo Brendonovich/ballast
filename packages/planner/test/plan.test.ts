@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,8 +48,8 @@ describe("plan", () => {
           {
             integration: "fake",
             slot: "main",
-            request: "fake/echo",
-            scopes: ["fake:write"],
+            request: "fake/*",
+            scopes: [],
           },
         ],
         unresolved: [],
@@ -101,7 +101,7 @@ describe("plan", () => {
 
       expect(topic?.name).toBe("named-tick");
       expect(topic?.source?.file).toBe("src/a.ts");
-      expect(topic?.source?.line).toBe(47);
+      expect(topic?.source?.line).toBe(48);
       expect(topic?.source?.column).toBeGreaterThan(0);
       expect(manifest.params[0]?.source?.file).toBe("src/a.ts");
       expect(manifest.timers[0]?.source?.file).toBe("src/a.ts");
@@ -138,6 +138,21 @@ describe("plan", () => {
     }),
   );
 
+  it.effect("keeps source paths project-relative outside the repository", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-outside-")));
+      yield* Effect.promise(() =>
+        cp(fileURLToPath(new URL("./fixtures/project", import.meta.url)), root, {
+          recursive: true,
+        }),
+      );
+      const project = yield* planProject(root);
+      expect(project.manifest.topics[0]?.source?.file).toBe("src/a.ts");
+      expect(project.manifest.params[0]?.source?.file).toBe("src/a.ts");
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
+    }),
+  );
+
   it.effect("plans a whole project through the entry file", () =>
     Effect.gen(function* () {
       const project = yield* planProject(
@@ -169,11 +184,29 @@ describe("plan", () => {
     }),
   );
 
+  it.effect("plans a strings param backed by OBS scenes", () =>
+    Effect.gen(function* () {
+      const project = yield* planProject(
+        fileURLToPath(new URL("../../../examples/param-strings-project", import.meta.url)),
+      );
+      const param = project.manifest.params.find((value) => value.key === "scenes");
+
+      expect(param?.type).toBe("strings");
+      expect(param?.default).toEqual(["Scene 1"]);
+      expect(param?.options).toEqual({
+        integration: "obs",
+        slot: "main",
+        source: "scenes",
+      });
+      expect(param?.description).toBe("Pick one or more OBS scenes");
+    }),
+  );
+
   it.effect("records requests without calling them", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
       const requests = manifest.requests.map((request) => request.request);
-      expect(requests).toEqual(["fake/echo"]);
+      expect(requests).toEqual(["fake/*"]);
     }),
   );
 

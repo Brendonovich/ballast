@@ -30,8 +30,10 @@ export const Connection = (
  * Dynamic string options backed by the live OBS scene list. The agent resolves
  * them at run time with GetSceneList before validating params.
  */
-export const scenes = (slot: string): Ballast.ParamOptionSource => ({
+export const scenes = (
+  connection: Ballast.ConnectionRef<typeof INTEGRATION>,
+): Ballast.ParamOptionSource => ({
   integration: INTEGRATION,
-  slot,
+  slot: connection.slot,
   source: "scenes",
 });

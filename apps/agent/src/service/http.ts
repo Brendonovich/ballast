@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { extname, join, normalize, resolve } from "node:path";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -78,11 +78,20 @@ const forbidden = () =>
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 
-const contentType = (path: string): string =>
-  MIME[extname(path).toLowerCase()] ?? "application/octet-stream";
+const contentType = (path: Path.Path, file: string): string =>
+  MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream";
 
-const staticResponse = (webDir: string | undefined, pathname: string): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+const staticResponse = (
+  webDir: string | undefined,
+  pathname: string,
+): Effect.Effect<
+  HttpServerResponse.HttpServerResponse,
+  never,
+  FileSystem.FileSystem | Path.Path
+> =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     if (webDir === undefined) {
       return HttpServerResponse.text(PLACEHOLDER, {
         contentType: "text/html; charset=utf-8",
@@ -90,22 +99,23 @@ const staticResponse = (webDir: string | undefined, pathname: string): Effect.Ef
       });
     }
     const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-    const candidate = resolve(webDir, normalize(relative));
-    if (!candidate.startsWith(resolve(webDir) + "/") && candidate !== resolve(webDir, "index.html")) {
+    const candidate = path.resolve(webDir, path.normalize(relative));
+    if (!candidate.startsWith(path.resolve(webDir) + "/") && candidate !== path.resolve(webDir, "index.html")) {
       return HttpServerResponse.text("Not found\n", { status: 404 });
     }
-    const exists = yield* Effect.promise(() => fileExists(candidate));
+    const exists = yield* fileExists(candidate).pipe(
+      Effect.catch(() => Effect.succeed(false)),
+    );
     let file = candidate;
     if (!exists) {
-      if (relative !== "index.html" && extname(relative) !== "") {
+      if (relative !== "index.html" && path.extname(relative) !== "") {
         return HttpServerResponse.text("Not found\n", { status: 404 });
       }
-      file = join(webDir, "index.html");
+      file = path.join(webDir, "index.html");
     }
-    const content = yield* Effect.tryPromise({
-      try: () => readFile(file),
-      catch: () => undefined,
-    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const content = yield* fs.readFile(file).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
     if (content === undefined) {
       return HttpServerResponse.text(PLACEHOLDER, {
         contentType: "text/html; charset=utf-8",
@@ -114,7 +124,7 @@ const staticResponse = (webDir: string | undefined, pathname: string): Effect.Ef
     }
     return HttpServerResponse.uint8Array(content, {
       headers: {
-        "content-type": contentType(file),
+        "content-type": contentType(path, file),
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
       },
@@ -129,6 +139,7 @@ export interface HttpRoutesOptions {
   readonly webDir: string | undefined;
   readonly startedAt: number;
   readonly version: string;
+  readonly pid: number;
   readonly health: () => Effect.Effect<Record<string, unknown>>;
 }
 
@@ -136,7 +147,7 @@ export const registerHttpRoutes = (
   router: HttpRouter.HttpRouter,
   options: HttpRoutesOptions,
   lifecycle: LifecycleService,
-): Effect.Effect<void> =>
+) =>
   Effect.gen(function* () {
     yield* router.addGlobalMiddleware((effect) =>
       Effect.gen(function* () {
@@ -179,19 +190,14 @@ export const registerHttpRoutes = (
       }),
     );
 
-    const control = (code: number): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+    yield* router.add("POST", "/shutdown", () =>
       Effect.gen(function* () {
         yield* Effect.forkDetach(
-          Effect.sleep("100 millis").pipe(Effect.andThen(lifecycle.stop(code))),
+          Effect.sleep("100 millis").pipe(Effect.andThen(lifecycle.stop(0))),
         );
-        return yield* HttpServerResponse.json(
-          { ok: true, restarting: code === 75 },
-          { status: 202 },
-        ).pipe(Effect.orDie);
-      });
-
-    yield* router.add("POST", "/shutdown", () => control(0));
-    yield* router.add("POST", "/restart", () => control(75));
+        return yield* HttpServerResponse.json({ ok: true }, { status: 202 }).pipe(Effect.orDie);
+      }),
+    );
 
     yield* router.add(
       "GET",
@@ -203,7 +209,7 @@ export const registerHttpRoutes = (
           name: AGENT_NAME,
           version: options.version,
           apiVersion: 1,
-          pid: process.pid,
+          pid: options.pid,
           startedAt: options.startedAt,
           uptimeMs: Math.max(0, Date.now() - options.startedAt),
           ...body,

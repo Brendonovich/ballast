@@ -33,11 +33,22 @@ describe("project bundle service", () => {
       try {
         const result = await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
+            const connection = yield* client.CreateConnection({
+              integration: "fake",
+              label: "E2E Fake",
+              config: {},
+            });
             const added = yield* client.AddProject({
               path: join(root, "project"),
               name: "Bundle",
             });
             const projectId = added.summary.id;
+            yield* client.SetProjectBinding({
+              projectId,
+              integration: "fake",
+              slot: "main",
+              instanceId: connection.id,
+            });
             yield* client.StartProject({ projectId });
             let consentId: string | undefined;
             for (let attempt = 0; attempt < 100; attempt++) {

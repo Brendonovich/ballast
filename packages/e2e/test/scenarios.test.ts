@@ -61,34 +61,33 @@ const projectWithScripts = async (
   return root;
 };
 
-const redeemScript = [
-  'import * as Ballast from "@ballast/core";',
-  'import * as Twitch from "@ballast/module-twitch";',
-  'import { Effect } from "effect";',
-  '',
-  'export const title = "E2E Redemption";',
-  '',
-  'export default Effect.gen(function* () {',
-  '  const broadcaster = yield* Twitch.Account("broadcaster");',
-  '  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (event) =>',
-  '    Effect.sync(() => console.log("E2E_REWARD:" + event.reward.title)),',
-  '  );',
-  '  yield* Effect.log("E2E_STARTED");',
-  '});',
-].join("\n");
+const projectWithSource = async (
+  root: string,
+  name: string,
+  source: string,
+): Promise<string> => {
+  const project = join(root, name);
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "ballast.ts"), source, "utf8");
+  return project;
+};
 
-const secondScript = [
-  'import * as Ballast from "@ballast/core";',
-  'import * as Twitch from "@ballast/module-twitch";',
-  'import { Effect } from "effect";',
-  '',
-  'export const title = "E2E Second";',
-  '',
-  'export default Effect.gen(function* () {',
-  '  const broadcaster = yield* Twitch.Account("broadcaster");',
-  '  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, () => Effect.void);',
-  '});',
-].join("\n");
+const twitchProjectSource = (marker: string, title: string): string =>
+  [
+    'import * as Twitch from "@ballast/module-twitch";',
+    'import { Effect } from "effect";',
+    "",
+    `export const title = "${title}";`,
+    "",
+    "export default Effect.gen(function* () {",
+    '  const broadcaster = yield* Twitch.Account("broadcaster");',
+    '  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (event) =>',
+    `    Effect.sync(() => console.log("E2E_REWARD:${marker}:" + event.reward.title)),`,
+    "  );",
+    '  yield* Effect.log("E2E_STARTED");',
+    "});",
+    "",
+  ].join("\n");
 
 const kofiScript = [
   'import * as Http from "@ballast/module-http";',
@@ -180,21 +179,27 @@ interface LogCollector {
 const collectLogs = (
   client: Client,
   projectId: string,
-  scriptId: string,
+  scriptId?: string,
 ): Effect.Effect<LogCollector> =>
   Effect.gen(function* () {
     const entries = yield* Ref.make<ReadonlyArray<LogEntry>>([]);
-    const fiber = yield* client.StreamLogs({ projectId, scriptId, afterSeq: 0 }).pipe(
-      Stream.runForEach((entry) => Ref.update(entries, (current) => [...current, entry])),
-      Effect.forkChild,
-    );
+    const fiber = yield* client
+      .StreamLogs({
+        projectId,
+        ...(scriptId === undefined ? {} : { scriptId }),
+        afterSeq: 0,
+      })
+      .pipe(
+        Stream.runForEach((entry) => Ref.update(entries, (current) => [...current, entry])),
+        Effect.forkChild,
+      );
     return { entries, close: Fiber.interrupt(fiber).pipe(Effect.asVoid) };
   });
 
 const waitForWorkerReady = (
   client: Client,
   projectId: string,
-  scriptId: string,
+  scriptId: string | undefined,
   marker?: string,
 ): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
@@ -276,19 +281,50 @@ const postEventSub = async (
   return response.status;
 };
 
-const twitchConnectionReady = (client: Client) =>
+const twitchConnectionReady = (client: Client, connectionId: string) =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < 300; attempt++) {
       const connections = yield* client.ListConnections().pipe(
         Effect.catch(() => Effect.succeed({ connections: [] })),
       );
       const connection = connections.connections.find(
-        (entry) => entry.integration === "twitch" && entry.slot === "broadcaster",
+        (entry) => entry.id === connectionId,
       );
       if (connection?.status === "connected") return connection;
       yield* Effect.sleep("100 millis");
     }
     return yield* Effect.fail(new Error("Cloud Twitch connection did not connect"));
+  });
+
+const startProjectAndApprove = (client: Client, projectId: string) =>
+  Effect.gen(function* () {
+    let lastStatus: string | undefined;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const detail = yield* client
+        .GetProject({ projectId })
+        .pipe(Effect.catch(() => Effect.succeed(undefined)));
+      lastStatus =
+        detail === undefined
+          ? "missing"
+          : detail.summary.status +
+            (detail.summary.lastError === undefined ? "" : ": " + detail.summary.lastError);
+      if (detail?.summary.status === "running" && detail.pendingConsent === undefined) {
+        return detail;
+      }
+      if (detail?.pendingConsent !== undefined) {
+        yield* client
+          .ApproveProjectConsent({ consentId: detail.pendingConsent.id })
+          .pipe(Effect.catch(() => Effect.void));
+      } else if (detail?.summary.status !== "running") {
+        yield* client.StartProject({ projectId }).pipe(Effect.catch(() => Effect.void));
+      }
+      yield* Effect.sleep("100 millis");
+    }
+    return yield* Effect.fail(
+      new Error(
+        "Project did not start: " + projectId + " (lastStatus=" + (lastStatus ?? "unknown") + ")",
+      ),
+    );
   });
 
 const readMachineToken = async (dataDir: string): Promise<string | undefined> => {
@@ -309,26 +345,56 @@ describe("real cloud + real desktop service", () => {
       const process = requireCloud(ctx);
       if (process === undefined || fake === undefined) return;
       const twitch = fake;
-      const root = await projectWithScripts({ "redeem.ts": redeemScript, "second.ts": secondScript });
+      const root = await mkdtemp(join(tmpdir(), "ballast-e2e-twitch-"));
+      const one = await projectWithSource(
+        root,
+        "one",
+        twitchProjectSource("ONE", "E2E One"),
+      );
+      const two = await projectWithSource(
+        root,
+        "two",
+        twitchProjectSource("TWO", "E2E Two"),
+      );
       let service: ServiceProcess = await startService({
         root: join(root, "service"),
         cloudUrl: process.url,
       });
       try {
-        const projectId = await withAgentClient(service.registration, (client) =>
+        const setup = await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
             yield* pair(client, process.url);
-            const detail = yield* client.AddProject({ path: root, name: "E2E Twitch" });
-            return detail.summary.id;
+            const first = yield* client.AddProject({ path: one, name: "E2E One" });
+            const second = yield* client.AddProject({ path: two, name: "E2E Two" });
+            const connection = yield* client.CreateConnection({
+              integration: "twitch",
+              label: "E2E Twitch",
+              config: {},
+              mode: "cloud",
+            });
+            for (const project of [first, second]) {
+              yield* client.SetProjectBinding({
+                projectId: project.summary.id,
+                integration: "twitch",
+                slot: "broadcaster",
+                instanceId: connection.id,
+              });
+            }
+            return {
+              first: first.summary.id,
+              second: second.summary.id,
+              connectionId: connection.id,
+            };
           }),
         );
 
         const subscription = await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
-            yield* startAndApprove(client, projectId, "scripts/redeem.ts");
-            yield* startAndApprove(client, projectId, "scripts/second.ts");
-            yield* waitForWorkerReady(client, projectId, "scripts/redeem.ts", "E2E_STARTED");
-            yield* twitchConnectionReady(client);
+            yield* startProjectAndApprove(client, setup.first);
+            yield* startProjectAndApprove(client, setup.second);
+            yield* waitForWorkerReady(client, setup.first, undefined, "E2E_STARTED");
+            yield* waitForWorkerReady(client, setup.second, undefined, "E2E_STARTED");
+            yield* twitchConnectionReady(client, setup.connectionId);
             return yield* Effect.promise(() =>
               waitFor(async () => {
                 const value = [...twitch.subscriptions.values()][0];
@@ -339,32 +405,35 @@ describe("real cloud + real desktop service", () => {
         );
         expect(twitch.subscriptions.size).toBe(1);
 
-        const online = await withAgentClient(service.registration, (client) =>
+        await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
-            const collector = yield* collectLogs(client, projectId, "scripts/redeem.ts");
+            const firstLogs = yield* collectLogs(client, setup.first);
+            const secondLogs = yield* collectLogs(client, setup.second);
             yield* Effect.sleep("300 millis");
             const status = yield* Effect.promise(() =>
               postEventSub(process.url, subscription, "e2e-online", "Hydrate"),
             );
             expect(status).toBe(204);
-            const entries = yield* waitForLogs(collector, (message) =>
-              message.includes("E2E_REWARD:Hydrate"),
+            yield* waitForLogs(firstLogs, (message) =>
+              message.includes("E2E_REWARD:ONE:Hydrate"),
             ).pipe(
               Effect.catch((cause) =>
                 Effect.fail(
                   new Error(
                     cause.message +
                       " logs=" +
-                      JSON.stringify(Ref.getUnsafe(collector.entries)),
+                      JSON.stringify(Ref.getUnsafe(firstLogs.entries)),
                   ),
                 ),
               ),
             );
-            yield* collector.close;
-            return entries;
+            yield* waitForLogs(secondLogs, (message) =>
+              message.includes("E2E_REWARD:TWO:Hydrate"),
+            );
+            yield* firstLogs.close;
+            yield* secondLogs.close;
           }),
         );
-        expect(online.filter((entry) => entry.message.includes("E2E_REWARD:Hydrate"))).toHaveLength(1);
 
         await service.process.stop();
         const offlineStatus = await postEventSub(
@@ -383,21 +452,35 @@ describe("real cloud + real desktop service", () => {
         });
         await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
-            yield* twitchConnectionReady(client).pipe(Effect.catch(() => Effect.void));
-            const collector = yield* collectLogs(client, projectId, "scripts/redeem.ts");
-            const entries = yield* waitForLogs(collector, (message) =>
-              message.includes("E2E_REWARD:Offline Hydrate"),
+            yield* twitchConnectionReady(client, setup.connectionId).pipe(
+              Effect.catch(() => Effect.void),
+            );
+            const firstLogs = yield* collectLogs(client, setup.first);
+            const secondLogs = yield* collectLogs(client, setup.second);
+            const first = yield* waitForLogs(firstLogs, (message) =>
+              message.includes("E2E_REWARD:ONE:Offline Hydrate"),
+            );
+            const second = yield* waitForLogs(secondLogs, (message) =>
+              message.includes("E2E_REWARD:TWO:Offline Hydrate"),
             );
             yield* Effect.sleep("1 second");
             expect(
-              entries.filter((entry) => entry.message.includes("E2E_REWARD:Offline Hydrate")),
+              first.filter((entry) =>
+                entry.message.includes("E2E_REWARD:ONE:Offline Hydrate"),
+              ),
             ).toHaveLength(1);
-            yield* collector.close;
+            expect(
+              second.filter((entry) =>
+                entry.message.includes("E2E_REWARD:TWO:Offline Hydrate"),
+              ),
+            ).toHaveLength(1);
+            yield* firstLogs.close;
+            yield* secondLogs.close;
           }),
         );
 
         await withAgentClient(service.registration, (client) =>
-          client.StopScript({ projectId, scriptId: "scripts/redeem.ts" }).pipe(
+          client.StopProject({ projectId: setup.first }).pipe(
             Effect.catch(() => Effect.void),
           ),
         );
@@ -405,16 +488,20 @@ describe("real cloud + real desktop service", () => {
         expect(twitch.subscriptions.size).toBe(1);
 
         await withAgentClient(service.registration, (client) =>
-          client.StopScript({ projectId, scriptId: "scripts/second.ts" }).pipe(
+          client.StopProject({ projectId: setup.second }).pipe(
             Effect.catch(() => Effect.void),
           ),
         );
         await waitFor(async () => (twitch.subscriptions.size === 0 ? true : undefined));
       } catch (cause) {
+        const detail =
+          cause instanceof Error
+            ? (cause.stack ?? cause.message)
+            : typeof cause === "object" && cause !== null
+              ? JSON.stringify(cause)
+              : String(cause);
         throw new Error(
-          (cause instanceof Error ? (cause.stack ?? cause.message) : String(cause)) +
-            "\n--- service log ---\n" +
-            service.process.log().slice(-12_000),
+          detail + "\n--- service log ---\n" + service.process.log().slice(-12_000),
         );
       } finally {
         await service.process.stop();
@@ -517,10 +604,14 @@ describe("real cloud + real desktop service", () => {
           return Array.isArray(hooks) && hooks.length === 0 ? true : undefined;
         });
       } catch (cause) {
+        const detail =
+          cause instanceof Error
+            ? (cause.stack ?? cause.message)
+            : typeof cause === "object" && cause !== null
+              ? JSON.stringify(cause)
+              : String(cause);
         throw new Error(
-          (cause instanceof Error ? (cause.stack ?? cause.message) : String(cause)) +
-            "\n--- service log ---\n" +
-            service.process.log().slice(-12_000),
+          detail + "\n--- service log ---\n" + service.process.log().slice(-12_000),
         );
       } finally {
         await service.process.stop();

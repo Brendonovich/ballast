@@ -2,7 +2,7 @@ import type { ServiceAction, ServiceStatus } from "../bridge.ts";
 import type { DesktopConfig } from "./config.ts";
 import type { ServiceLauncher } from "./service/launcher.ts";
 
-export type DemoAction = "status" | "install" | "start" | "restart" | "stop" | "uninstall";
+export type DemoAction = "status" | "start" | "restart" | "stop";
 
 const print = (payload: unknown): void => {
   console.log("BALLAST_DEMO " + JSON.stringify(payload));
@@ -15,10 +15,10 @@ const actionPayload = (action: ServiceAction): Record<string, unknown> => ({
 });
 
 /**
- * Verification-only entry point (electron . --ballast-demo=install).
+ * Verification-only entry point (electron . --ballast-demo=start).
  * It exercises the same launcher calls as the tray/IPC and prints one JSON
- * line per step, so a shell script can drive install, restart, stop and
- * uninstall against a throwaway app id and inspect the real launchd job.
+ * line per step, so a shell script can drive start, restart and stop against
+ * a throwaway app id and inspect the real background process.
  */
 export async function runLifecycleDemo(
   launcher: ServiceLauncher,
@@ -27,7 +27,6 @@ export async function runLifecycleDemo(
 ): Promise<number> {
   const base = {
     action,
-    label: config.label,
     appId: config.appId,
     userDataDir: config.userDataDir,
     stateDir: config.stateDir,
@@ -42,15 +41,9 @@ export async function runLifecycleDemo(
       return 0;
     }
 
-    if (action === "install") {
-      await launcher.prepare();
-      const result = await launcher.install();
-      print({ ...base, ...actionPayload(result) });
-      return result.ok ? 0 : 1;
-    }
-
     if (action === "start") {
       const before = await launcher.status();
+      await launcher.prepare();
       const result = await launcher.start();
       print({ ...base, before, ...actionPayload(result) });
       return result.ok ? 0 : 1;
@@ -63,15 +56,8 @@ export async function runLifecycleDemo(
       return result.ok ? 0 : 1;
     }
 
-    if (action === "stop") {
-      const before = await launcher.status();
-      const result = await launcher.stop();
-      print({ ...base, before, ...actionPayload(result) });
-      return result.ok ? 0 : 1;
-    }
-
     const before = await launcher.status();
-    const result = await launcher.uninstall();
+    const result = await launcher.stop();
     print({ ...base, before, ...actionPayload(result) });
     return result.ok ? 0 : 1;
   } catch (cause) {

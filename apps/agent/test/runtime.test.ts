@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeServices } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -81,7 +82,7 @@ describe("runtime worker", () => {
         expect(Option.isNone(extra)).toBe(true);
 
         yield* sessionA.close;
-      }),
+      }).pipe(Effect.provide(NodeServices.layer)),
     20_000,
   );
 });

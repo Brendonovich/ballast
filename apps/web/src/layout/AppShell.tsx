@@ -1,13 +1,18 @@
-import { For, Show, createEffect, onMount } from "solid-js";
+import { For, Show, onMount } from "solid-js";
 import type { JSX } from "solid-js";
-import { A, useLocation, useNavigate } from "@solidjs/router";
+import { A, useLocation } from "@solidjs/router";
 import type { RouteSectionProps } from "@solidjs/router";
 
 import { useAgent } from "../state/context.tsx";
-import { connectionNeedsAttention } from "../lib/format.ts";
-import { ConnectionsIcon, ScriptsIcon, SettingsIcon } from "../ui/icons.tsx";
+import {
+  blockingRequirements,
+  connectionNeedsAttention,
+  projectStatusLabel,
+  projectStatusTone,
+} from "../lib/format.ts";
+import { ConnectionsIcon, ProjectsIcon, SettingsIcon } from "../ui/icons.tsx";
 import type { IconProps } from "../ui/icons.tsx";
-import { Button, SelectInput, Spinner, StatusDot, cx } from "../ui/primitives.tsx";
+import { Button, Spinner, StatusDot, cx } from "../ui/primitives.tsx";
 
 interface NavItem {
   readonly href: string;
@@ -18,10 +23,10 @@ interface NavItem {
 
 const nav: ReadonlyArray<NavItem> = [
   {
-    href: "/scripts",
-    label: "Scripts",
-    icon: ScriptsIcon,
-    active: (path) => path === "/" || path.startsWith("/scripts"),
+    href: "/projects",
+    label: "Projects",
+    icon: ProjectsIcon,
+    active: (path) => path === "/" || path.startsWith("/projects"),
   },
   {
     href: "/connections",
@@ -37,33 +42,29 @@ const nav: ReadonlyArray<NavItem> = [
   },
 ];
 
+const projectHref = (projectId: string): string =>
+  `/projects/${encodeURIComponent(projectId)}`;
+
 export const AppShell = (props: RouteSectionProps): JSX.Element => {
   const store = useAgent();
   const location = useLocation();
-  const navigate = useNavigate();
 
-  onMount(() => store.start());
-
-  createEffect(() => {
-    if (store.selectedProjectId() !== "all") return;
-    const first = store.projects()[0];
-    if (first !== undefined) store.selectProject(first.id);
+  onMount(() => {
+    store.start();
+    void store.whenReady().then(() => store.refreshProjectConsents());
   });
 
-  const selectedId = (): string => {
-    const value = store.selectedProjectId();
-    return typeof value === "string" && value !== "all" ? value : "";
-  };
-
-  const chooseProject = (value: string): void => {
-    if (value !== "") store.selectProject(value);
-    if (location.pathname.startsWith("/scripts/")) navigate("/scripts");
-  };
-
   const reconnecting = (): boolean => store.watchStatus() === "reconnecting";
-  const workspace = (): boolean => location.pathname.startsWith("/scripts/");
+  const workspace = (): boolean => {
+    const path = location.pathname;
+    return path.startsWith("/projects/") && path !== "/projects/";
+  };
   const attention = (): number =>
     store.connections().filter((connection) => connectionNeedsAttention(connection)).length;
+  const needsConnections = (projectId: string): boolean => {
+    const detail = store.projectDetail(projectId);
+    return detail !== undefined && blockingRequirements(detail.requirements).length > 0;
+  };
 
   return (
     <div class="flex h-full min-h-0 bg-canvas text-body" data-testid="app-shell">
@@ -75,28 +76,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
           </div>
         </div>
 
-        <div class="px-3 pb-2">
-          <label class="mb-1 block text-[11px] text-muted" for="project-select">
-            Project
-          </label>
-          <SelectInput
-            id="project-select"
-            data-testid="project-switcher"
-            value={selectedId()}
-            onChange={(event) => chooseProject(event.currentTarget.value)}
-            disabled={store.projects().length === 0}
-            class="bg-rail shadow-none hover:bg-hover"
-          >
-            <Show when={store.projects().length === 0}>
-              <option value="">No projects</option>
-            </Show>
-            <For each={store.projects()}>
-              {(project) => <option value={project.id}>{project.name}</option>}
-            </For>
-          </SelectInput>
-        </div>
-
-        <nav class="mt-4 space-y-0.5 px-2">
+        <nav class="space-y-0.5 px-2">
           <For each={nav}>
             {(item) => {
               const active = (): boolean => item.active(location.pathname);
@@ -122,7 +102,60 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
           </For>
         </nav>
 
-        <div class="mt-auto px-4 py-3">
+        <div class="mt-5 min-h-0 flex-1 overflow-y-auto px-2">
+          <p class="px-2 pb-1 text-[10px] text-faint">Projects</p>
+          <Show
+            when={store.projects().length > 0}
+            fallback={<p class="px-2 py-1 text-[11px] text-faint">No projects</p>}
+          >
+            <For each={store.projects()}>
+              {(project) => (
+                <A
+                  href={projectHref(project.id)}
+                  data-testid="sidebar-project"
+                  data-project-id={project.id}
+                  data-status={
+                    needsConnections(project.id)
+                      ? "needs-connections"
+                      : store.projectConsent(project.id) !== undefined
+                        ? "needs-consent"
+                        : project.status
+                  }
+                  class={cx(
+                    "flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors",
+                    location.pathname === projectHref(project.id)
+                      ? "bg-[var(--v2-background-bg-layer-02)]"
+                      : "hover:bg-hover",
+                  )}
+                >
+                  <StatusDot
+                    tone={
+                      store.projectConsent(project.id) !== undefined ||
+                      needsConnections(project.id)
+                        ? "warning"
+                        : projectStatusTone(project)
+                    }
+                    class="mt-1.5"
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-[12px] text-body">{project.name}</span>
+                    <span class="block truncate text-[10px] text-faint">
+                      {needsConnections(project.id)
+                        ? "Needs connections"
+                        : store.projectConsent(project.id) !== undefined
+                          ? "Needs consent"
+                          : project.status === "error" && project.enabled
+                            ? "Running previous version"
+                            : projectStatusLabel(project)}
+                    </span>
+                  </span>
+                </A>
+              )}
+            </For>
+          </Show>
+        </div>
+
+        <div class="px-4 py-3">
           <div class="flex items-center gap-2 text-[11px] text-faint">
             <StatusDot
               tone={reconnecting() ? "warning" : store.watchStatus() === "live" ? "success" : "info"}
@@ -135,9 +168,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
           </div>
           <Show when={store.info()}>
             {(info) => (
-              <p class="mt-1 truncate font-mono text-[10px] text-faint">
-                {info().version}
-              </p>
+              <p class="mt-1 truncate font-mono text-[10px] text-faint">{info().version}</p>
             )}
           </Show>
         </div>

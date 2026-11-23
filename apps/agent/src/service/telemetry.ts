@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -220,9 +219,11 @@ export const EventLogLive = Layer.effect(
     const record = (input: EventInput): Effect.Effect<EventRecord> =>
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
+        const id = input.id ??
+          `${input.integration}:${globalThis.crypto.randomUUID()}`;
         const entry: EventRecord = {
           seq: current.nextSeq,
-          id: input.id ?? `${input.integration}:${randomUUID()}`,
+          id,
           at: Date.now(),
           direction: input.direction,
           integration: input.integration,
@@ -278,6 +279,8 @@ interface SessionEntry {
   readonly session: RuntimeSession;
   readonly projectId: string;
   readonly scriptId: string;
+  /** "integration/slot" -> connection instance id. */
+  readonly bindings?: ReadonlyMap<string, string>;
   /** Project-mode topic key -> declared unit name, for unit-filtered events. */
   readonly unitNames?: ReadonlyMap<string, string>;
 }
@@ -298,6 +301,7 @@ interface PendingEntry {
   readonly projectId: string;
   readonly scriptId: string;
   readonly subscriptions: ReadonlySet<string>;
+  readonly bindings?: ReadonlyMap<string, string>;
   readonly events: ReadonlyArray<{
     readonly key: string;
     readonly input: InboundEvent;
@@ -317,11 +321,16 @@ interface EventRouterService {
     readonly projectId: string;
     readonly scriptId: string;
     readonly subscriptions: ReadonlyArray<string>;
+    readonly bindings?: ReadonlyMap<string, string>;
   }) => Effect.Effect<void>;
   readonly cancelExpected: (entry: {
     readonly projectId: string;
     readonly scriptId: string;
   }) => Effect.Effect<void>;
+  /** Hold unmatched events until subscriptions from startup are registered. */
+  readonly beginWarmup: Effect.Effect<void>;
+  /** Stop holding unmatched startup events; buffered ones remain available. */
+  readonly finishWarmup: Effect.Effect<void>;
   readonly publishInbound: (input: InboundEvent) => Effect.Effect<void>;
   readonly recordOutbound: (input: {
     readonly projectId: string;
@@ -345,6 +354,10 @@ export const EventRouterLive = Layer.effect(
   Effect.gen(function* () {
     const sessions = yield* Ref.make<ReadonlyMap<string, SessionEntry>>(new Map());
     const pending = yield* Ref.make<ReadonlyMap<string, PendingEntry>>(new Map());
+    const warming = yield* Ref.make(false);
+    const startup = yield* Ref.make<
+      ReadonlyArray<{ readonly key: string; readonly input: InboundEvent }>
+    >([]);
     const semaphore = yield* Semaphore.make(1);
     const events = yield* EventLog;
 
@@ -369,11 +382,10 @@ export const EventRouterLive = Layer.effect(
 
     const recordDelivered = (
       entry: SessionEntry,
+      key: string,
       input: InboundEvent,
     ): Effect.Effect<void> => {
-      const unitName =
-        entry.unitNames?.get(`${input.integration}/${input.slot}/${input.topic}`) ??
-        entry.unitNames?.get(input.key ?? "");
+      const unitName = entry.unitNames?.get(key) ?? entry.unitNames?.get(input.key ?? "");
       return events.record({
         ...(input.eventId === undefined ? {} : { id: input.eventId }),
         direction: "inbound",
@@ -391,13 +403,33 @@ export const EventRouterLive = Layer.effect(
       });
     };
 
+    const matchKeys = (
+      subscriptions: ReadonlySet<string>,
+      bindings: ReadonlyMap<string, string> | undefined,
+      input: InboundEvent,
+    ): ReadonlyArray<string> => {
+      if (input.connectionId !== undefined && bindings !== undefined) {
+        const keys: Array<string> = [];
+        for (const [requirement, instanceId] of bindings) {
+          if (instanceId !== input.connectionId) continue;
+          const index = requirement.indexOf("/");
+          if (index <= 0) continue;
+          const key = requirement + "/" + input.topic;
+          if (subscriptions.has(key)) keys.push(key);
+        }
+        if (keys.length > 0) return keys;
+      }
+      const fallback = `${input.integration}/${input.slot}/${input.topic}`;
+      return subscriptions.has(fallback) ? [fallback] : [];
+    };
+
     const deliver = (
       entry: SessionEntry,
       key: string,
       input: InboundEvent,
     ): Effect.Effect<void> =>
       Effect.sync(() => entry.session.deliver(key, input.payload)).pipe(
-        Effect.andThen(recordDelivered(entry, input)),
+        Effect.andThen(recordDelivered(entry, key, input)),
       );
 
     const expectSubscriptions: EventRouterService["expectSubscriptions"] = (entry) =>
@@ -405,11 +437,25 @@ export const EventRouterLive = Layer.effect(
         Effect.gen(function* () {
           if (entry.subscriptions.length === 0) return;
           const key = keyOf(entry.projectId, entry.scriptId);
+          const subscriptions = new Set(entry.subscriptions);
+          const existing = (yield* Ref.get(pending)).get(key);
+          const events =
+            existing !== undefined
+              ? existing.events
+              : (yield* Ref.get(warming))
+                ? (yield* Ref.get(startup)).flatMap((event) => {
+                    const keys = matchKeys(subscriptions, entry.bindings, event.input);
+                    return keys.length === 0
+                      ? []
+                      : [{ key: keys[0] ?? event.key, input: event.input }];
+                  })
+                : [];
           const next: PendingEntry = {
             projectId: entry.projectId,
             scriptId: entry.scriptId,
-            subscriptions: new Set(entry.subscriptions),
-            events: [],
+            subscriptions,
+            ...(entry.bindings === undefined ? {} : { bindings: entry.bindings }),
+            events,
           };
           yield* Ref.update(pending, (current) => {
             const map = new Map(current);
@@ -456,10 +502,13 @@ export const EventRouterLive = Layer.effect(
           });
           if (buffered === undefined) return;
           for (const event of buffered.events) {
-            if (entry.session.subscriptions.has(event.key)) {
-              yield* deliver(entry, event.key, event.input);
-            } else {
+            const keys = matchKeys(entry.session.subscriptions, entry.bindings, event.input);
+            if (keys.length === 0) {
               yield* recordDropped(event.input);
+              continue;
+            }
+            for (const key of keys) {
+              yield* deliver(entry, key, event.input);
             }
           }
         }),
@@ -495,21 +544,24 @@ export const EventRouterLive = Layer.effect(
         Effect.gen(function* () {
           const key = eventKey(input);
           const current = yield* Ref.get(sessions);
-          const matched = [...current.values()].filter((entry) =>
-            entry.session.subscriptions.has(key),
+          const matched = [...current.values()].flatMap((entry) =>
+            matchKeys(entry.session.subscriptions, entry.bindings, input).map((matchedKey) => ({
+              entry,
+              key: matchedKey,
+            })),
           );
           if (matched.length > 0) {
             yield* Effect.forEach(
               matched,
-              (entry) => deliver(entry, key, input),
+              (match) => deliver(match.entry, match.key, input),
               { discard: true },
             );
             return;
           }
 
           const currentPending = yield* Ref.get(pending);
-          const waiting = [...currentPending.values()].filter((entry) =>
-            entry.subscriptions.has(key),
+          const waiting = [...currentPending.values()].filter(
+            (entry) => matchKeys(entry.subscriptions, entry.bindings, input).length > 0,
           );
           if (waiting.length > 0) {
             yield* Ref.update(pending, (currentMap) => {
@@ -529,7 +581,31 @@ export const EventRouterLive = Layer.effect(
             return;
           }
 
+          if (yield* Ref.get(warming)) {
+            yield* Ref.update(startup, (current) =>
+              current.length >= MAX_PENDING_EVENTS
+                ? current
+                : [...current, { key, input }],
+            );
+            return;
+          }
           yield* recordDropped(input);
+        }),
+      );
+
+    const beginWarmup: EventRouterService["beginWarmup"] =
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          yield* Ref.set(warming, true);
+          yield* Ref.set(startup, []);
+        }),
+      );
+
+    const finishWarmup: EventRouterService["finishWarmup"] =
+      semaphore.withPermit(
+        Effect.gen(function* () {
+          yield* Ref.set(warming, false);
+          yield* Ref.set(startup, []);
         }),
       );
 
@@ -538,6 +614,8 @@ export const EventRouterLive = Layer.effect(
       unregister,
       expectSubscriptions,
       cancelExpected,
+      beginWarmup,
+      finishWarmup,
       publishInbound,
       recordOutbound: (input) =>
         events

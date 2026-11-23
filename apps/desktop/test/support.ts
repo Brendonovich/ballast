@@ -6,7 +6,6 @@ export function configFor(root: string, overrides: Partial<ConfigInput> = {}): D
     env: {},
     platform: "darwin",
     arch: "arm64",
-    uid: 501,
     isPackaged: false,
     execPath: process.execPath,
     appPath: root,
@@ -14,8 +13,6 @@ export function configFor(root: string, overrides: Partial<ConfigInput> = {}): D
     homeDir: path.join(root, "home"),
     userDataDir: path.join(root, "userData"),
     appVersion: "0.0.0-test",
-    userName: "tester",
-    userDomain: undefined,
     ...overrides,
   });
 }

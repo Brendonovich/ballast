@@ -1,15 +1,16 @@
-import { createInterface } from "node:readline";
 import { MessageChannel, Worker } from "node:worker_threads";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import type { Json } from "effect/Schema";
+import { NodeStream } from "@effect/platform-node";
 import { serveRuntimeRpc } from "@ballast/core";
 import type { RuntimeHostHandlers, SettingValue } from "@ballast/core";
 
 export interface RuntimeSettings {
-  readonly get: (key: string) => string | number | boolean | undefined;
+  readonly get: (key: string) => string | number | boolean | ReadonlyArray<string> | undefined;
 }
 
 export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
@@ -243,35 +244,37 @@ export const startRuntimeSession = (
           Effect.promise(() => instance.terminate()).pipe(Effect.ignore),
       );
 
+      const emitLine = (line: string): void => {
+        if (line.trim() === "") return;
+        const traced = unitLine(line);
+        onLog({
+          level: levelOf(traced.message),
+          message: traced.message,
+          ...(traced.unitName === undefined ? {} : { unitName: traced.unitName }),
+        });
+      };
+
+      const readLines = (
+        stream: NodeJS.ReadableStream | null,
+      ): Effect.Effect<void> => {
+        if (stream === null) return Effect.void;
+        return NodeStream.fromReadable({
+          evaluate: () => stream,
+          onError: () => undefined,
+        }).pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runForEach((line) => Effect.sync(() => emitLine(line)).pipe(Effect.asVoid)),
+          Effect.catch(() => Effect.void),
+        );
+      };
+
       yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const readers: Array<ReturnType<typeof createInterface>> = [];
-          if (worker?.stdout !== null && worker?.stdout !== undefined) {
-            const reader = createInterface({ input: worker.stdout });
-            reader.on("line", (line) => {
-              if (line.trim() === "") return;
-              const traced = unitLine(line);
-              onLog({
-                level: levelOf(traced.message),
-                message: traced.message,
-                ...(traced.unitName === undefined ? {} : { unitName: traced.unitName }),
-              });
-            });
-            readers.push(reader);
-          }
-          if (worker?.stderr !== null && worker?.stderr !== undefined) {
-            const reader = createInterface({ input: worker.stderr });
-            reader.on("line", (line) => {
-              if (line.trim() === "") return;
-              const traced = unitLine(line);
-              onLog({
-                level: levelOf(traced.message),
-                message: traced.message,
-                ...(traced.unitName === undefined ? {} : { unitName: traced.unitName }),
-              });
-            });
-            readers.push(reader);
-          }
+        Effect.gen(function* () {
+          const stdout = worker?.stdout ?? null;
+          const stderr = worker?.stderr ?? null;
+          yield* readLines(stdout).pipe(Effect.forkScoped);
+          yield* readLines(stderr).pipe(Effect.forkScoped);
           const onError = (cause: Error) => {
             Deferred.doneUnsafe(ready, Exit.fail(cause));
             if (!closed) {
@@ -293,7 +296,6 @@ export const startRuntimeSession = (
           return () => {
             worker?.off("error", onError);
             worker?.off("exit", onExit);
-            for (const reader of readers) reader.close();
           };
         }),
         (detach) => Effect.sync(detach),

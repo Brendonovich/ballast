@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, Queue, Ref, Schema } from "effect";
+import { Cause, Crypto, Deferred, Effect, Exit, Queue, Ref, Schema } from "effect";
 import type { Scope } from "effect/Scope";
 import { Socket } from "effect/socket";
 import {
@@ -44,7 +44,7 @@ const backoffMs = (attempt: number): number =>
  */
 export const startObsDriver = (
   options: ObsDriverOptions,
-): Effect.Effect<ObsDriver, never, Scope> =>
+): Effect.Effect<ObsDriver, never, Crypto.Crypto | Scope> =>
   Effect.gen(function* () {
     const current = yield* Ref.make<
       import("./obs-protocol.ts").ObsSocketClient | undefined

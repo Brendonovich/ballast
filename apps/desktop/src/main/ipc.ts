@@ -1,4 +1,4 @@
-import { ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import { dialog, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
 import {
   BRIDGE_CHANNELS,
   type AppInfo,
@@ -40,8 +40,6 @@ export function registerBridgeIpc(options: BridgeIpcOptions): void {
   };
 
   ipcMain.handle(BRIDGE_CHANNELS.serviceStatus, () => options.launcher.status());
-  ipcMain.handle(BRIDGE_CHANNELS.serviceInstall, () => action(() => options.launcher.install()));
-  ipcMain.handle(BRIDGE_CHANNELS.serviceUninstall, () => action(() => options.launcher.uninstall()));
   ipcMain.handle(BRIDGE_CHANNELS.serviceStart, () => action(() => options.launcher.start()));
   ipcMain.handle(BRIDGE_CHANNELS.serviceStop, () => action(() => options.launcher.stop()));
   ipcMain.handle(BRIDGE_CHANNELS.serviceRestart, () => action(() => options.launcher.restart()));
@@ -70,5 +68,15 @@ export function registerBridgeIpc(options: BridgeIpcOptions): void {
       throw new Error("only http(s) URLs can be opened externally");
     }
     await shell.openExternal(url);
+  });
+  ipcMain.handle(BRIDGE_CHANNELS.appPickDirectory, async () => {
+    const current = options.windows.current();
+    const picked =
+      current === null
+        ? await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] })
+        : await dialog.showOpenDialog(current, {
+            properties: ["openDirectory", "createDirectory"],
+          });
+    return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 }

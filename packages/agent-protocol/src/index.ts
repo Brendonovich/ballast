@@ -3,6 +3,7 @@ export * from "./common.ts";
 export * from "./connections.ts";
 export * from "./events.ts";
 export * from "./logs.ts";
+export * from "./mock-sources.ts";
 export * from "./mock.ts";
 export * from "./project.ts";
 export * from "./projects.ts";

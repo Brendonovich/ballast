@@ -14,17 +14,16 @@ export default Effect.gen(function* () {
       title: "Reward title",
       default: "Hydrate",
     });
+    const broadcaster = yield* Twitch.Account("broadcaster");
+    const obs = yield* OBS.Connection("main");
     const scene = yield* Ballast.Param.string("scene", {
       title: "Scene",
-      options: OBS.scenes("main"),
+      options: OBS.scenes(obs),
     });
     const holdSeconds = yield* Ballast.Param.number("holdSeconds", {
       title: "Hold for (seconds)",
       default: 5,
     });
-
-    const broadcaster = yield* Twitch.Account("broadcaster");
-    const obs = yield* OBS.Connection("main");
 
     yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (event) =>
       Effect.gen(function* () {
@@ -83,12 +82,11 @@ export default Effect.gen(function* () {
     });
 
     const fake = yield* Fake.Connection("main");
-    const echo = yield* Fake.Echo(fake);
 
     yield* Fake.Tick.subscribe("tick", fake, (tick) =>
       Effect.gen(function* () {
         const text = (yield* prefix) + " tick " + tick.n;
-        const { text: echoed } = yield* echo({ text });
+        const { text: echoed } = yield* fake.echo({ text });
         yield* Effect.log(echoed);
       }),
     );

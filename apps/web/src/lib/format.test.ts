@@ -1,32 +1,41 @@
 import { describe, expect, it } from "vitest";
-import type { ConnectionSummary, ScriptSummary } from "@ballast/agent-protocol";
+import type { ConnectionSummary, ProjectSummary, UnitSummary } from "@ballast/agent-protocol";
 
 import {
   connectionNeedsAttention,
   connectionStatusLabel,
   paramValueLabel,
   plural,
-  scriptDisplayName,
-  scriptStatusLabel,
-  scriptStatusTone,
+  projectStatusLabel,
+  projectStatusTone,
+  projectWorkerRunning,
+  unitStatusLabel,
+  unitStatusTone,
 } from "./format.ts";
 
-const script = (overrides: Partial<ScriptSummary> = {}): ScriptSummary => ({
-  projectId: "proj_main",
-  id: "scripts/test.ts",
-  name: "Test",
-  entry: "scripts/test.ts",
-  status: "stopped",
+const project = (overrides: Partial<ProjectSummary> = {}): ProjectSummary => ({
+  id: "proj_main",
+  name: "Main Channel",
+  root: "/Users/streamer/Ballast/main",
+  entry: "ballast.ts",
   enabled: false,
-  generation: 0,
+  status: "stopped",
+  unitCount: 2,
+  createdAt: 1_764_000_000_000,
   updatedAt: 1_764_000_000_000,
+  ...overrides,
+});
+
+const unit = (overrides: Partial<UnitSummary> = {}): UnitSummary => ({
+  kind: "run",
+  name: "ready",
+  status: "waiting",
   ...overrides,
 });
 
 const connection = (overrides: Partial<ConnectionSummary> = {}): ConnectionSummary => ({
   id: "obs/main",
   integration: "obs",
-  slot: "main",
   title: "OBS Studio",
   label: "Main OBS",
   location: "local",
@@ -35,30 +44,44 @@ const connection = (overrides: Partial<ConnectionSummary> = {}): ConnectionSumma
   fields: [],
   values: [],
   scopes: { granted: [], required: [], missing: [] },
-  usedBy: [],
+  boundBy: [],
   requiresAuth: false,
   ...overrides,
 });
 
-describe("script presentation", () => {
-  it("calls a never-started script 'Not started'", () => {
-    expect(scriptStatusLabel(script())).toBe("Not started");
-    expect(scriptStatusTone(script())).toBe("warning");
+describe("project presentation", () => {
+  it("labels stopped, running and consent states", () => {
+    expect(projectStatusLabel(project())).toBe("Stopped");
+    expect(projectStatusTone(project())).toBe("neutral");
+    expect(projectStatusLabel(project({ status: "running", enabled: true }))).toBe("Running");
+    expect(projectStatusTone(project({ status: "running", enabled: true }))).toBe("success");
+    expect(projectStatusLabel(project({ status: "needs-consent" }))).toBe("Needs consent");
+    expect(projectStatusTone(project({ status: "needs-consent" }))).toBe("warning");
   });
 
-  it("strips the title-cased extension the real service appends", () => {
-    expect(scriptDisplayName(script({ name: "Tick Echo Ts" }))).toBe("Tick Echo");
-    expect(scriptDisplayName(script({ name: "Obs Scene.ts" }))).toBe("Obs Scene");
-    expect(scriptDisplayName(script({ name: "Cheer Alert" }))).toBe("Cheer Alert");
+  it("distinguishes a failed reload from a stopped project with an error", () => {
+    expect(
+      projectStatusLabel(
+        project({ status: "error", enabled: true, lastError: "ballast.ts:3:1 — nope" }),
+      ),
+    ).toBe("Running previous version");
+    expect(projectStatusLabel(project({ status: "error" }))).toBe("Error");
+    expect(projectStatusTone(project({ status: "error" }))).toBe("danger");
+    expect(projectWorkerRunning(project({ status: "error", enabled: true }))).toBe(true);
+    expect(projectWorkerRunning(project({ status: "error", enabled: false }))).toBe(false);
+    expect(projectWorkerRunning(project({ status: "running", enabled: true }))).toBe(true);
+    expect(projectWorkerRunning(project({ status: "stopped" }))).toBe(false);
   });
+});
 
-  it("labels the states the reduced list shows", () => {
-    expect(scriptStatusLabel(script({ status: "running", enabled: true, generation: 2 }))).toBe(
-      "Running",
-    );
-    expect(scriptStatusLabel(script({ status: "needs-consent" }))).toBe("Needs consent");
-    expect(scriptStatusTone(script({ status: "error" }))).toBe("danger");
-    expect(scriptStatusLabel(script({ status: "stopped", generation: 3 }))).toBe("Stopped");
+describe("unit presentation", () => {
+  it("labels unit states", () => {
+    expect(unitStatusLabel(unit({ status: "active" }).status)).toBe("Active");
+    expect(unitStatusLabel(unit({ status: "waiting" }).status)).toBe("Waiting");
+    expect(unitStatusLabel(unit({ status: "error" }).status)).toBe("Error");
+    expect(unitStatusTone("active")).toBe("success");
+    expect(unitStatusTone("waiting")).toBe("neutral");
+    expect(unitStatusTone("error")).toBe("danger");
   });
 });
 
@@ -82,6 +105,7 @@ describe("small formatting helpers", () => {
     expect(paramValueLabel(42)).toBe("42");
     expect(paramValueLabel(true)).toBe("On");
     expect(paramValueLabel(false)).toBe("Off");
+    expect(paramValueLabel(["Game", "BRB"])).toBe("Game, BRB");
   });
 
   it("pluralizes counts", () => {

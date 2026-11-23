@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { NodeServices } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -20,7 +21,10 @@ const connectClient = (url: string): Effect.Effect<WebSocket, Error, import("eff
     (socket) => Effect.sync(() => socket.close()),
   );
 
-const serverLayer = driverLayer.pipe(Layer.provide(nodeListener));
+const serverLayer = driverLayer.pipe(
+  Layer.provide(nodeListener),
+  Layer.provide(NodeServices.layer),
+);
 
 const waitFor = (milliseconds: number) => Effect.sleep(milliseconds);
 

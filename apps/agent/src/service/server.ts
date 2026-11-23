@@ -1,15 +1,25 @@
 import { createServer } from "node:http";
 import { createWriteStream } from "node:fs";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Stdio from "effect/Stdio";
+import * as Config from "effect/Config";
+import * as Option from "effect/Option";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
-import { NodeHttpServer } from "@effect/platform-node";
+import {
+  NodeCrypto,
+  NodeFileSystem,
+  NodeHttpServer,
+  NodePath,
+  NodeStdio,
+  NodeTerminal,
+} from "@effect/platform-node";
 import { AgentRpcs } from "@ballast/agent-protocol";
 import {
   AGENT_NAME,
@@ -36,21 +46,28 @@ import {
   Logs,
   LogsLive,
   ServiceHubLive,
+  EventRouter,
   EventRouterLive,
 } from "./telemetry.ts";
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-const installLogDir = (logDir: string | undefined): Effect.Effect<Effect.Effect<void>> =>
-  Effect.sync(() => {
+const installLogDir = (
+  logDir: string | undefined,
+  stdoutIsTerminal: boolean,
+): Effect.Effect<Effect.Effect<void>, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
     if (logDir === undefined) return Effect.void;
-    mkdirSync(logDir, { recursive: true, mode: 0o700 });
-    const logFile = join(logDir, "service.log");
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(logDir, { recursive: true, mode: 0o700 }).pipe(Effect.orDie);
+    const logFile = path.join(logDir, "service.log");
     const stream = createWriteStream(logFile, { flags: "a", mode: 0o600 });
-    // Under the installed supervisor stdout/stderr already point at the log
-    // files. Only mirror when running interactively to avoid duplicate lines.
-    if (process.stdout.isTTY !== true) {
+    // A background service spawned by the desktop app or CLI already has
+    // stdout/stderr pointing at the log files. Only mirror when running
+    // interactively to avoid duplicate lines.
+    if (!stdoutIsTerminal) {
       stream.end();
       return Effect.void;
     }
@@ -105,7 +122,12 @@ const installProcessHandlers = (
     return cleanups;
   });
 
-const makeLayers = (options: ServeOptions, startedAt: number, version: string) => {
+const makeLayers = (
+  options: ServeOptions,
+  startedAt: number,
+  version: string,
+  devFakeInput: boolean,
+) => {
   const base = Layer.mergeAll(
     LogsLive,
     EventLogLive,
@@ -115,17 +137,17 @@ const makeLayers = (options: ServeOptions, startedAt: number, version: string) =
     HttpRouter.layer,
     RpcSerialization.layerJson,
   );
+  const events = EventRouterLive.pipe(Layer.provideMerge(base));
   const cloud = CloudLinkLive({
     dataDir: options.dataDir,
     cloudUrl: options.cloudUrl,
-  }).pipe(Layer.provideMerge(base));
-  const events = EventRouterLive.pipe(Layer.provideMerge(cloud));
+  }).pipe(Layer.provideMerge(events), Layer.provideMerge(base));
   const connections = ConnectionManagerLive({
     dataDir: options.dataDir,
-    ...(options.dev && process.env["BALLAST_DEV_FAKE_INPUT"] === "1"
+    ...(options.dev && devFakeInput
       ? { keyboardLayer: devKeyboardLayer, midiLayer: devMidiLayer }
       : {}),
-  }).pipe(Layer.provideMerge(events));
+  }).pipe(Layer.provideMerge(events), Layer.provideMerge(cloud));
   const scripts = ScriptManagerLive.pipe(Layer.provideMerge(connections));
   const projects = ProjectRuntimeLive.pipe(Layer.provideMerge(scripts));
   const handlers = AgentRpcsLive({
@@ -143,27 +165,39 @@ const makeLayers = (options: ServeOptions, startedAt: number, version: string) =
 };
 
 /**
- * Run the long-lived service. Resolves with the exit code: 0 for a normal
- * ShutdownService, 75 for RestartService so the OS supervisor respawns it.
+ * Run the long-lived service until a shutdown request or signal; resolves with
+ * the exit code. Nothing supervises it: the desktop app or CLI spawns it as a
+ * detached process and restarts it by stopping it and spawning a new one.
+ */
+/*
+ * Effect v4's NodeHttpServer.layer exposes NodeServices as a union whose
+ * members do not unify with the individual service keys the handlers require.
+ * Every Node service is provided by the layers below at runtime; the assertion
+ * keeps this platform entry's requirements at `never`.
  */
 export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
   Effect.scoped(
     Effect.gen(function* () {
-    yield* Effect.tryPromise({
-      try: () => acquireLock(options.stateDir),
-      catch: (cause) => new Error(errorMessage(cause)),
-    });
+    yield* acquireLock(options.stateDir).pipe(
+      Effect.mapError((cause) => new Error(cause.message)),
+    );
 
     const startedAt = Date.now();
-    const token = makeServiceToken();
+    const stdio = yield* Stdio.Stdio;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    const token = yield* makeServiceToken();
     const portRef = yield* Ref.make(options.port);
-    const version = yield* Effect.tryPromise({
-      try: () => resolveServiceVersion(),
-      catch: (cause) => new Error(errorMessage(cause)),
-    }).pipe(Effect.catch(() => Effect.succeed(AGENT_VERSION)));
-    const stopLogging = yield* installLogDir(options.logDir);
+    const version = yield* resolveServiceVersion().pipe(
+      Effect.catch(() => Effect.succeed(AGENT_VERSION)),
+    );
+    const devFakeInput = yield* Config.String("BALLAST_DEV_FAKE_INPUT").pipe(
+      Config.option,
+      Effect.map((value) => Option.contains(value, "1")),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+    const stopLogging = yield* installLogDir(options.logDir, stdoutIsTerminal);
     yield* Effect.addFinalizer(() => stopLogging);
-    const layer = makeLayers(options, startedAt, version);
+    const layer = makeLayers(options, startedAt, version, devFakeInput);
 
     const program = Effect.gen(function* () {
       const server = yield* HttpServer.HttpServer;
@@ -184,13 +218,21 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       const eventLog = yield* EventLog;
       const lifecycle = yield* Lifecycle;
       const router = yield* HttpRouter.HttpRouter;
+      const eventRouter = yield* EventRouter;
 
       yield* scripts.syncAll;
       yield* runtime.syncAll;
       yield* scripts.resumeEnabled();
       yield* runtime.resumeEnabled();
+      yield* eventRouter.finishWarmup;
 
-      const devToken = options.dev ? process.env["BALLAST_DEV_TOKEN"] : undefined;
+      const devToken = options.dev
+        ? yield* Config.String("BALLAST_DEV_TOKEN").pipe(
+            Config.option,
+            Effect.map(Option.getOrUndefined),
+            Effect.catch(() => Effect.succeed(undefined)),
+          )
+        : undefined;
       const health = (): Effect.Effect<Record<string, unknown>> =>
         Effect.gen(function* () {
           const counts = yield* scripts.counts;
@@ -224,6 +266,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
         webDir: options.webDir,
         startedAt,
         version,
+        pid: process.pid,
         health,
       }, lifecycle);
 
@@ -264,10 +307,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
         dataDir: options.dataDir,
         stateDir: options.stateDir,
       };
-      yield* Effect.tryPromise({
-        try: () => writeServiceRegistration(options.stateDir, registration),
-        catch: (cause) => new Error(`Could not write service.json: ${errorMessage(cause)}`),
-      });
+      yield* writeServiceRegistration(options.stateDir, registration);
 
       yield* HttpServer.serveEffect()(router.asHttpEffect());
       yield* Effect.log(`Ballast service listening on ${url}`);
@@ -286,4 +326,14 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       Effect.ensuring(clearServiceFiles(options.stateDir)),
     );
     }),
-  );
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeCrypto.layer,
+        NodeFileSystem.layer,
+        NodePath.layer,
+        NodeStdio.layer,
+        NodeTerminal.layer,
+      ),
+    ),
+  ) as Effect.Effect<number, Error>;

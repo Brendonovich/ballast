@@ -103,7 +103,7 @@ manifest diffs, logs, events, timers, workflow runs, params and state.
 |---|---|---|---|
 | Subscription | `Topic.subscribe(name, connection, handler, options?)` | explicit name (required after cutover) | Event delivery is at-least-once by the bus; handlers are not durable |
 | Workflow | `Workflow.make(name, spec, body)` | explicit name | Yes: engine store |
-| Timer | `Ballast.Timer.make/subscribe(name, ...)` | explicit name | Yes: timer store |
+| Timer | `Ballast.Timer.subscribe(name, schema, handler, options?)` | explicit name | Yes: timer store |
 | Param | `Ballast.Param.string(key, ...)` | explicit key | No; project setting |
 | Run loop | `Ballast.run(name, effect)` | explicit name | **No**; explicitly non-durable |
 
@@ -142,8 +142,8 @@ The prototype proves this for named subscriptions:
   the location in `packages/planner/src/source-map.ts`;
 - the fixture `packages/planner/test/fixtures/project/ballast.ts` imports
   `src/a.ts`, where the units are declared. The planned manifest points at
-  `src/a.ts` for the param (line 15), timer (line 20), run (line 27),
-  workflow (line 34) and subscription (line 47).
+  `src/a.ts` for the param (line 15), timer (line 21), run (line 28),
+  workflow (line 35) and subscription (line 48).
 
 The same hook will be applied to params, timers, workflows and run loops. A
 source link is **not** captured for unnamed legacy subscriptions, so existing
@@ -260,9 +260,16 @@ There is no per-file/per-unit hot swap and no file-upload API.
 
 Planning must run `tsgo` before accepting a bundle. Decision:
 
-- if the project has a `tsconfig.json`, run `tsgo --noEmit -p <project>/tsconfig.json`;
-- otherwise generate `.ballast/tsconfig.generated.json` extending the agent's
-  base config, with the project's files and `@ballast/*` types;
+- if the project has a `tsconfig.json`, run `tsgo --noEmit -p
+  <project>/tsconfig.json` directly, so the gate and the editor see the same
+  config;
+- otherwise generate `.ballast/tsconfig.generated.json` with the agent's base
+  config, the project's files and `@ballast/*` types;
+- scaffolds write an editor-ready `tsconfig.json` whose `paths` point at
+  `<dataDir>/types/current`; that stable symlink resolves `@ballast/*`,
+  `effect` and `@types/node` from the service's own bundle, so a project
+  outside the repo works in an editor and in the gate without installing
+  packages;
 - run it from the agent stage, cache by the hash of project source files plus
   the tsconfig, and reuse the result when nothing changed;
 - a typecheck failure is a plan failure: keep the old worker, surface the
@@ -483,7 +490,7 @@ Planned manifest for the 2-file fixture:
       "slot": "main",
       "topic": "fake/tick",
       "name": "named-tick",
-      "source": { "file": "src/a.ts", "line": 47, "column": 17 },
+      "source": { "file": "src/a.ts", "line": 48, "column": 17 },
       "scopes": ["fake:read"],
       "onStale": "drop",
       "maxAgeMs": 60000
@@ -494,7 +501,7 @@ Planned manifest for the 2-file fixture:
   "timers": [
     {
       "name": "heartbeat",
-      "source": { "file": "src/a.ts", "line": 20, "column": 12 },
+      "source": { "file": "src/a.ts", "line": 21, "column": 12 },
       "onStale": "deliver",
       "maxAgeMs": 604800000
     }
@@ -502,13 +509,13 @@ Planned manifest for the 2-file fixture:
   "workflows": [
     {
       "name": "fixture-workflow",
-      "source": { "file": "src/a.ts", "line": 34, "column": 12 }
+      "source": { "file": "src/a.ts", "line": 35, "column": 12 }
     }
   ],
   "runs": [
     {
       "name": "ticker",
-      "source": { "file": "src/a.ts", "line": 27, "column": 12 }
+      "source": { "file": "src/a.ts", "line": 28, "column": 12 }
     }
   ]
 }

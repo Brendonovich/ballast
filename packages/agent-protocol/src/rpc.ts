@@ -8,8 +8,12 @@ import {
   ConnectionAuth,
   ConnectionIdRequest,
   ConnectionSummary,
+  CreateConnectionRequest,
+  DeleteConnectionRequest,
   ListConnectionsResponse,
+  ListIntegrationsResponse,
   StartConnectionAuthRequest,
+  UpdateConnectionRequest,
 } from "./connections.ts";
 import { AgentError, PermissionStatus } from "./common.ts";
 import { ServiceEvent, WatchServiceRequest } from "./events.ts";
@@ -34,6 +38,7 @@ import {
   ProjectConsentRequest,
   ProjectFileContent,
   ReadProjectFileRequest,
+  SetProjectBindingRequest,
   SetProjectEnabledRequest,
   SetProjectParamRequest,
 } from "./project.ts";
@@ -70,26 +75,13 @@ export const GetHealth = Rpc.make("GetHealth", {
 });
 
 /**
- * Ask the service to exit. In installed mode the launch agent / supervisor
- * will not restart it unless the request says `restart: true`. The service
+ * Ask the service to exit 0. Nothing respawns it; a restart is the caller
+ * (desktop app or CLI) stopping it and starting a new process. The service
  * stops workers, connections and the cloud socket first; `force` skips that.
  */
 export const ShutdownService = Rpc.make("ShutdownService", {
   payload: Schema.Struct({
     force: Schema.optionalKey(Schema.Boolean),
-  }),
-  success: Schema.Void,
-  error: AgentError,
-});
-
-/**
- * Ask the service to exit with the supervisor's restart code so launchd / the
- * Run key / the shell starts a fresh generation. Used by the shell after an
- * update and by the CLI's `service restart`.
- */
-export const RestartService = Rpc.make("RestartService", {
-  payload: Schema.Struct({
-    reason: Schema.optionalKey(Schema.String),
   }),
   success: Schema.Void,
   error: AgentError,
@@ -268,6 +260,13 @@ export const SetProjectEnabled = Rpc.make("SetProjectEnabled", {
   error: AgentError,
 });
 
+/** Bind or unbind a project requirement to a service-level connection instance. */
+export const SetProjectBinding = Rpc.make("SetProjectBinding", {
+  payload: SetProjectBindingRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
 /** Read-only project file tree and files (no write/upload RPC). */
 export const ListProjectFiles = Rpc.make("ListProjectFiles", {
   payload: ListProjectFilesRequest,
@@ -347,13 +346,36 @@ export const RejectConsent = Rpc.make("RejectConsent", {
 });
 
 /**
- * Connections. Connections are service-wide, not per project: one OBS socket
- * and one Twitch authorization are shared by every project that binds the same
- * slot. `usedBy` reports the scripts across projects. `ConfigureConnection`
- * accepts secrets, but `ConnectionSummary` never returns them.
+ * Connection instances. Instances exist at the service level and are created
+ * without a project. Projects bind their manifest slots to instances with
+ * `SetProjectBinding`; `boundBy` reports the project slots using an instance.
  */
+export const ListIntegrations = Rpc.make("ListIntegrations", {
+  success: ListIntegrationsResponse,
+  error: AgentError,
+});
+
 export const ListConnections = Rpc.make("ListConnections", {
   success: ListConnectionsResponse,
+  error: AgentError,
+});
+
+export const CreateConnection = Rpc.make("CreateConnection", {
+  payload: CreateConnectionRequest,
+  success: ConnectionSummary,
+  error: AgentError,
+});
+
+export const UpdateConnection = Rpc.make("UpdateConnection", {
+  payload: UpdateConnectionRequest,
+  success: ConnectionSummary,
+  error: AgentError,
+});
+
+/** Refuses to delete an instance while any project slot is bound to it. */
+export const DeleteConnection = Rpc.make("DeleteConnection", {
+  payload: DeleteConnectionRequest,
+  success: Schema.Void,
   error: AgentError,
 });
 
@@ -447,7 +469,6 @@ export const AgentRpcs = RpcGroup.make(
   GetServiceInfo,
   GetHealth,
   ShutdownService,
-  RestartService,
   ReportShellPermission,
   ListProjects,
   GetProject,
@@ -470,6 +491,7 @@ export const AgentRpcs = RpcGroup.make(
   RestartProject,
   SetProjectParam,
   SetProjectEnabled,
+  SetProjectBinding,
   ListProjectFiles,
   ReadProjectFile,
   GetProjectSource,
@@ -481,7 +503,11 @@ export const AgentRpcs = RpcGroup.make(
   ListConsents,
   ApproveConsent,
   RejectConsent,
+  ListIntegrations,
   ListConnections,
+  CreateConnection,
+  UpdateConnection,
+  DeleteConnection,
   GetConnection,
   ConfigureConnection,
   ConnectConnection,

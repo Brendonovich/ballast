@@ -1,6 +1,7 @@
-import { readFile, rename } from "node:fs/promises";
-import { join } from "node:path";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import type { Clock as ClockService } from "effect/Clock";
@@ -105,8 +106,8 @@ export interface TimerManager {
   readonly removeProject: (projectId: string) => Effect.Effect<void>;
 }
 
-export const timerStorePath = (projectRoot: string): string =>
-  join(projectRoot, ".ballast", STORE_FILE);
+export const timerStorePath = (path: Path.Path, projectRoot: string): string =>
+  path.join(projectRoot, ".ballast", STORE_FILE);
 
 /**
  * Timer identity is project + timer name + key. The script id stays on the
@@ -142,7 +143,7 @@ const sortTimers = (timers: Iterable<ScheduledTimer>): ReadonlyArray<ScheduledTi
 
 const payloadBytes = (payload: unknown): number => {
   try {
-    return Buffer.byteLength(JSON.stringify(payload), "utf8");
+    return new TextEncoder().encode(JSON.stringify(payload)).byteLength;
   } catch {
     return Number.POSITIVE_INFINITY;
   }
@@ -150,8 +151,20 @@ const payloadBytes = (payload: unknown): number => {
 
 export const makeTimerManager = (
   options: TimerManagerOptions,
-): Effect.Effect<TimerManager, never, Scope> =>
+): Effect.Effect<
+  TimerManager,
+  never,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope
+> =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const platform = yield* Effect.context<
+      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+    >();
+    const provide = <A, E>(
+      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+    ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const stores = yield* Ref.make<ReadonlyMap<string, ReadonlyMap<string, ScheduledTimer>>>(
       new Map(),
     );
@@ -202,10 +215,10 @@ export const makeTimerManager = (
         };
         const lock = yield* lockFor(projectId);
         yield* lock.withPermit(
-          Effect.tryPromise({
-            try: () => writeJsonAtomic(timerStorePath(root), snapshot, 0o600),
-            catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-          }).pipe(
+          provide(
+            writeJsonAtomic(timerStorePath(path, root), snapshot, 0o600),
+          ).pipe(
+            Effect.mapError((cause) => new Error(cause.message)),
             Effect.catch((error) =>
               log("error", "could not save timers: " + error.message, projectId),
             ),
@@ -387,11 +400,8 @@ export const makeTimerManager = (
             return next;
           });
 
-          const path = timerStorePath(project.root);
-          const text = yield* Effect.tryPromise({
-            try: () => readFile(path, "utf8"),
-            catch: (cause) => cause,
-          }).pipe(
+          const storePath = timerStorePath(path, project.root);
+          const text = yield* provide(fs.readFileString(storePath)).pipe(
             Effect.catch((cause) =>
               isNotFound(cause) ? Effect.succeed(undefined) : Effect.fail(cause),
             ),
@@ -414,11 +424,10 @@ export const makeTimerManager = (
               catch: (cause) => cause,
             }).pipe(Effect.exit);
             if (parsed._tag === "Failure") {
-              const quarantine = path + ".corrupt-" + Date.now();
-              yield* Effect.tryPromise({
-                try: () => rename(path, quarantine),
-                catch: (cause) => cause,
-              }).pipe(
+              const quarantine = storePath + ".corrupt-" + Date.now();
+              yield* provide(fs.rename(storePath, quarantine)).pipe(
+                Effect.catch((cause) => Effect.fail(cause)),
+              ).pipe(
                 Effect.catch((cause) =>
                   log(
                     "error",
@@ -618,7 +627,10 @@ export const makeTimerManager = (
               `Timer "${input.declaration.name}" does not match the running manifest`,
             );
           }
-          if (input.key.length === 0 || Buffer.byteLength(input.key, "utf8") > MAX_KEY_BYTES) {
+          if (
+            input.key.length === 0 ||
+            new TextEncoder().encode(input.key).byteLength > MAX_KEY_BYTES
+          ) {
             return yield* Effect.fail(
               `Timer key must be 1..${MAX_KEY_BYTES} bytes`,
             );
@@ -772,10 +784,7 @@ export const makeTimerManager = (
             return next;
           });
           if (root !== undefined) {
-            yield* Effect.tryPromise({
-              try: () => removeFile(timerStorePath(root)),
-              catch: () => undefined,
-            }).pipe(Effect.ignore);
+            yield* provide(removeFile(timerStorePath(path, root))).pipe(Effect.ignore);
           }
           yield* syncSchedulerLocked();
         }),

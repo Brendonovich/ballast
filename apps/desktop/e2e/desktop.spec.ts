@@ -20,10 +20,8 @@ interface RunResult {
 
 interface DemoStatus {
   readonly phase: string;
-  readonly installed: boolean;
   readonly running: boolean;
   readonly pid: number | null;
-  readonly supervisor: string;
   readonly permissions?: { readonly accessibility?: string };
 }
 
@@ -89,7 +87,7 @@ const parseCliJson = <A>(stdout: string): A => {
 };
 
 const runDemo = async (
-  action: "install" | "uninstall" | "status",
+  action: "start" | "stop" | "status",
   env: NodeJS.ProcessEnv,
 ): Promise<DemoPayload> => {
   const result = await run(electronPath, [".", "--ballast-demo=" + action], {
@@ -157,10 +155,9 @@ export const title = "E2E Tick";
 export default Effect.gen(function* () {
   const prefix = yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
   const fake = yield* Fake.Connection("main");
-  const echo = yield* Fake.Echo(fake);
   yield* Fake.Tick.subscribe("tick", fake, (tick) =>
     Effect.gen(function* () {
-      const { text } = yield* echo({ text: \`\${yield* prefix} tick \${tick.n}\` });
+      const { text } = yield* fake.echo({ text: \`\${yield* prefix} tick \${tick.n}\` });
       yield* Effect.log(text);
     }),
   );
@@ -168,40 +165,32 @@ export default Effect.gen(function* () {
 `;
 
 test("real service + Electron UI survives quitting the window", async ({}, testInfo) => {
-  test.skip(process.platform !== "darwin", "the LaunchAgent lifecycle E2E runs on macOS");
   test.setTimeout(240_000);
 
   const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-e2e-"));
-  const uid = process.getuid?.() ?? 0;
-  const label = "dev.ballast.agent.test";
-  expect(label).toBe("dev.ballast.agent.test");
+  const appId = "dev.ballast.agent.test";
 
   const stateDir = path.join(root, "state");
   const dataDir = path.join(root, "data");
   const logDir = path.join(root, "logs");
   const userDataDir = path.join(root, "userData");
-  const launchAgentsDir = path.join(root, "LaunchAgents");
-  const plistPath = path.join(launchAgentsDir, label + ".plist");
   const serviceLog = path.join(logDir, "service.log");
   const project = path.join(root, "project");
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    BALLAST_APP_ID: label,
-    BALLAST_SERVICE_LABEL: label,
+    BALLAST_APP_ID: appId,
     BALLAST_USER_DATA_DIR: userDataDir,
     BALLAST_STATE_DIR: stateDir,
     BALLAST_DATA_DIR: dataDir,
     BALLAST_LOG_DIR: logDir,
-    BALLAST_LAUNCH_AGENTS_DIR: launchAgentsDir,
     BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
     BALLAST_START_TIMEOUT_MS: "30000",
-    BALLAST_RESTART_THROTTLE_SECONDS: "1",
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.BALLAST_UI_URL;
   delete env.BALLAST_SERVICE_VERSION;
-  delete env.BALLAST_DEV;
+  delete env.BALLAST_AUTOSTART;
 
   let ui: ElectronApplication | undefined;
   let page: Page | undefined;
@@ -209,11 +198,6 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
 
   const cleanup = async (): Promise<void> => {
     await ui?.close().catch(() => undefined);
-    await run("launchctl", ["bootout", "gui/" + uid + "/" + label], {
-      cwd: repoRoot,
-      env,
-      timeout: 10_000,
-    }).catch(() => undefined);
     if (servicePid !== undefined && alive(servicePid)) {
       try {
         process.kill(servicePid, "SIGTERM");
@@ -230,7 +214,6 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
         }
       }
     }
-    await rm(plistPath, { force: true }).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   };
 
@@ -254,20 +237,14 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     await writeFile(path.join(project, "ballast.ts"), tickScript, "utf8");
     await stat(path.join(agentRoot, "dist-service", "main.mjs"));
 
-    // 1. Install the real service into a throwaway LaunchAgent via the same
-    // launcher the tray and IPC use.
-    const installed = await runDemo("install", env);
-    expect(installed.ok, installed.message).toBe(true);
-    expect(installed.status).toMatchObject({
-      phase: "running",
-      installed: true,
-      running: true,
-      supervisor: "launch-agent",
-    });
-    if (installed.status.pid === null) throw new Error("installed service has no pid");
-    servicePid = installed.status.pid;
+    // 1. Start the real service as a detached background process via the
+    // same launcher the tray and IPC use; the demo process exits right away.
+    const service = await runDemo("start", env);
+    expect(service.ok, service.message).toBe(true);
+    expect(service.status).toMatchObject({ phase: "running", running: true });
+    if (service.status.pid === null) throw new Error("started service has no pid");
+    servicePid = service.status.pid;
     expect(servicePid).toBeGreaterThan(0);
-    await expect(stat(plistPath)).resolves.toBeDefined();
     expect(alive(servicePid)).toBe(true);
 
     // 2. Add a project, start its script, approve consent and prove it runs.
@@ -277,6 +254,9 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       added.stdout,
     ).summary.id;
     expect(projectId.length).toBeGreaterThan(0);
+
+    const configured = await runCli(["connections", "configure", "fake/main"], env);
+    expect(configured.code, configured.stderr).toBe(0);
 
     const started = await runCli(["projects", "start", projectId], env);
     expect(started.code, started.stderr).toBe(0);
@@ -377,7 +357,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     const beforeQuit = await readFile(serviceLog, "utf8").catch(() => "");
     const ticksBeforeQuit = (beforeQuit.match(/tick \d+/g) ?? []).length;
 
-    // 4. Quit the UI; the LaunchAgent-owned service and worker must keep going.
+    // 4. Quit the UI; the detached service and worker must keep going.
     await ui.close();
     ui = undefined;
     await sleep(1_500);
@@ -393,46 +373,33 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     });
     expect(afterQuit.length).toBeGreaterThan(beforeQuit.length);
 
-    // 5. Uninstall through the launcher and prove nothing is left.
-    const uninstalled = await runDemo("uninstall", env);
-    expect(uninstalled.ok, uninstalled.message).toBe(true);
-    expect(uninstalled.status).toMatchObject({
-      phase: "not-installed",
-      installed: false,
-      running: false,
-    });
-    await expect(stat(plistPath)).rejects.toThrow();
+    // 5. Stop through the launcher and prove nothing is left.
+    const stopped = await runDemo("stop", env);
+    expect(stopped.ok, stopped.message).toBe(true);
+    expect(stopped.status).toMatchObject({ phase: "stopped", running: false });
     expect(alive(servicePid)).toBe(false);
     await expect(stat(path.join(stateDir, "service.json"))).rejects.toThrow();
-    const print = await run(
-      "launchctl",
-      ["print", "gui/" + uid + "/" + label],
-      { cwd: repoRoot, env, timeout: 10_000 },
-    );
-    expect(print.code).not.toBe(0);
   } finally {
     await cleanup();
   }
 });
 
-test("shows the bundled fallback page before the service is installed", async () => {
+test("shows the bundled fallback page while the service is not running", async () => {
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-fallback-"));
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     BALLAST_APP_ID: "dev.ballast.agent.e2e-fallback." + process.pid,
-    BALLAST_SERVICE_LABEL: "dev.ballast.agent.e2e-fallback." + process.pid,
     BALLAST_USER_DATA_DIR: path.join(root, "userData"),
     BALLAST_STATE_DIR: path.join(root, "state"),
     BALLAST_DATA_DIR: path.join(root, "data"),
     BALLAST_LOG_DIR: path.join(root, "logs"),
-    BALLAST_LAUNCH_AGENTS_DIR: path.join(root, "LaunchAgents"),
     BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
+    BALLAST_AUTOSTART: "0",
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.BALLAST_UI_URL;
   delete env.BALLAST_SERVICE_VERSION;
-  delete env.BALLAST_DEV;
 
   const ui = await electron.launch({
     executablePath: electronPath,
@@ -444,7 +411,7 @@ test("shows the bundled fallback page before the service is installed", async ()
   try {
     const page = await ui.firstWindow();
     await expect(page.getByRole("heading", { name: /Starting Ballast/ })).toBeVisible();
-    await expect(page.locator("#phase")).toHaveText("not-installed");
+    await expect(page.locator("#phase")).toHaveText("stopped");
     expect(await page.evaluate(() => globalThis.location.protocol)).toBe("file:");
     const hasBridge = await page.evaluate(() => {
       const candidate: unknown = Reflect.get(globalThis, "ballast");

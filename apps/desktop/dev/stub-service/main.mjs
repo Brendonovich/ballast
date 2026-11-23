@@ -5,8 +5,6 @@
 //   - GET /health (unauthenticated)
 //   - GET /?token=... -> HttpOnly session cookie -> redirect to /
 //   - POST /shutdown (auth) -> exit 0
-//   - POST /restart  (auth) -> exit 75, which the LaunchAgent / Scheduled Task
-//     treats as "restart this job"
 //
 // Environment: BALLAST_STATE_DIR, BALLAST_DATA_DIR, BALLAST_SERVICE_PORT.
 import { createServer } from "node:http";
@@ -140,15 +138,15 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "POST" && (url.pathname === "/shutdown" || url.pathname === "/restart")) {
+  if (request.method === "POST" && url.pathname === "/shutdown") {
     if (!authorized(request)) {
       response.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
     response.writeHead(202, { "Content-Type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ok: true, restarting: url.pathname === "/restart" }));
-    await exitSoon(url.pathname === "/restart" ? 75 : 0);
+    response.end(JSON.stringify({ ok: true }));
+    await exitSoon(0);
     return;
   }
 

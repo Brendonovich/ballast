@@ -2,8 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 /**
  * The desktop E2E builds the real agent service (`apps/agent/dist-service`)
- * and the Electron main/preload, then installs it into a throwaway LaunchAgent
- * label. It is macOS-only; the rest of the suite stays in vitest.
+ * and the Electron main/preload, then starts it as a detached background
+ * process against throwaway state/data dirs. The rest of the suite stays in vitest.
  */
 export default defineConfig({
   testDir: "./e2e",

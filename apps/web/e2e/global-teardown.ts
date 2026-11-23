@@ -52,7 +52,6 @@ export default async function globalTeardown(): Promise<void> {
   } catch {
     // Fixture already stopped.
   }
-  await rm(info.projectPath, { recursive: true, force: true });
   await rm(info.tempRoot, { recursive: true, force: true });
   await rm(realServiceInfoPath, { force: true });
   console.log("[real-service e2e] service stopped");

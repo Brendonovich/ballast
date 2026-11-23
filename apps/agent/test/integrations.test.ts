@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -27,8 +28,8 @@ import * as VTS from "@ballast/module-vtube-studio";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
-  const hotkey = yield* Ballast.Param.string("hotkey", { options: VTS.hotkeys("main"), default: "Wave" });
   const vts = yield* VTS.Connection("main");
+  const hotkey = yield* Ballast.Param.string("hotkey", { options: VTS.hotkeys(vts), default: "Wave" });
   yield* VTS.HotkeyTriggered.subscribe("hotkey", vts, (event) => Effect.log("hotkey " + event.hotkeyName), { ignoreHotkeysTriggeredByAPI: true });
   yield* Ballast.run("vts-loop", Effect.gen(function* () {
     yield* vts.HotkeyTrigger({ hotkeyID: yield* hotkey });
@@ -303,11 +304,12 @@ describe("integration drivers through the service", () => {
         const service = yield* Effect.acquireRelease(spawnService(env, false), (process) => process.kill);
         const registration = yield* waitFor(
           "service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           service.output,
         );
         const call = <A, E>(use: (client: LiveAgentClient) => Effect.Effect<A, E>): Effect.Effect<A, E | Error> =>
           withAgentClient(use, { ...env }).pipe(
+            Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
             Effect.mapError((error) => {
               if (error instanceof Error) return error;
               if (typeof error === "object" && error !== null) {
@@ -513,11 +515,12 @@ describe("integration drivers through the service", () => {
         const service = yield* Effect.acquireRelease(spawnService(env, false), (process) => process.kill);
         const registration = yield* waitFor(
           "service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           service.output,
         );
         const call = <A, E>(use: (client: LiveAgentClient) => Effect.Effect<A, E>): Effect.Effect<A, E | Error> =>
           withAgentClient(use, { ...env }).pipe(
+            Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
             Effect.mapError((error) => {
               if (error instanceof Error) return error;
               if (typeof error === "object" && error !== null) {
@@ -599,11 +602,12 @@ describe("integration drivers through the service", () => {
         const service = yield* Effect.acquireRelease(spawnService(env, true), (process) => process.kill);
         const registration = yield* waitFor(
           "service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           service.output,
         );
         const call = <A, E>(use: (client: LiveAgentClient) => Effect.Effect<A, E>): Effect.Effect<A, E | Error> =>
           withAgentClient(use, { ...env }).pipe(
+            Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
             Effect.mapError((error) => {
               if (error instanceof Error) return error;
               if (typeof error === "object" && error !== null) {

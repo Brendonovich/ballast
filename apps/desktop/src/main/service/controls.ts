@@ -11,14 +11,13 @@ import type { PermissionStatus } from "../../bridge.ts";
 import type { ServiceRegistration } from "./types.ts";
 
 /**
- * The real service's lifecycle and shell-permission calls are Effect RPCs
- * (`ShutdownService`, `RestartService`, `ReportShellPermission`) over the
- * authenticated WebSocket at /rpc. The shell still falls back to launchctl /
- * Task Scheduler when a call fails, so an older or wedged service cannot trap
- * the UI (0003 §2).
+ * The real service's shutdown and shell-permission calls are Effect RPCs
+ * (`ShutdownService`, `ReportShellPermission`) over the authenticated
+ * WebSocket at /rpc. The launcher falls back to SIGTERM/SIGKILL when a call
+ * fails, so an older or wedged service cannot trap the UI (0003 §2).
  *
  * Only this module pulls Effect into the Electron main bundle; the launcher
- * and handoff logic stay plain TypeScript.
+ * stays plain TypeScript.
  */
 type AgentRpcClient = AgentClient<RpcClientError>;
 
@@ -60,20 +59,12 @@ const runControl = async (
     ),
   );
 
-/** Ask the running service to exit 0 (stop) or 75 (supervisor restart). */
-export async function requestServiceControl(
+/** Ask the running service to shut down gracefully. */
+export async function requestServiceShutdown(
   registration: ServiceRegistration,
-  action: "shutdown" | "restart",
   timeoutMs = 3_000,
 ): Promise<boolean> {
-  return runControl(
-    registration,
-    (client) =>
-      action === "restart"
-        ? client.RestartService({ reason: "desktop" })
-        : client.ShutdownService({ force: false }),
-    timeoutMs,
-  );
+  return runControl(registration, (client) => client.ShutdownService({ force: false }), timeoutMs);
 }
 
 /** Report a shell-owned permission (macOS Accessibility) to the service. */

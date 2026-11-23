@@ -9,6 +9,7 @@ import type { CloudStatus } from "./cloud.ts";
 import { cloudUnlinked } from "./cloud.ts";
 import type { ConnectionSummary } from "./connections.ts";
 import {
+  connectionIntegrations,
   fakeFields,
   obsFields,
   twitchFields,
@@ -18,6 +19,7 @@ import { agentError } from "./common.ts";
 import type { LogEntry, EventRecord } from "./logs.ts";
 import type {
   ProjectConsentRequest,
+  ProjectRequirement,
   ProjectSummary,
   UnitSummary,
 } from "./project.ts";
@@ -275,8 +277,8 @@ const tickManifest: ScriptManifest = {
     {
       integration: "fake",
       slot: "main",
-      request: "fake/echo",
-      scopes: ["fake:write"],
+      request: "fake/*",
+      scopes: [],
     },
   ],
   unresolved: [],
@@ -455,7 +457,6 @@ const obsConnection = (input: {
 }): ConnectionSummary => ({
   id: `obs/${input.slot}`,
   integration: "obs",
-  slot: input.slot,
   title: "OBS Studio",
   label: input.label,
   location: "local",
@@ -472,13 +473,12 @@ const obsConnection = (input: {
     { key: "password", isSecret: true, isSet: input.passwordSet },
   ],
   scopes: { granted: [], required: [], missing: [] },
-  usedBy:
+  boundBy:
     input.slot === "main"
       ? [
-          { projectId: mainProject.id, scriptId: "scripts/redeem-to-scene.ts" },
-          { projectId: altProject.id, scriptId: "scripts/scene-rotation.ts" },
+          { projectId: mainProject.id, slot: "main" },
         ]
-      : [{ projectId: altProject.id, scriptId: "scripts/scene-rotation.ts" }],
+      : [{ projectId: altProject.id, slot: "secondary" }],
   ...(input.detail === undefined ? {} : { detail: input.detail }),
   ...(input.status === "connected" ? { lastConnectedAt: base + 2 * HOUR } : {}),
   requiresAuth: false,
@@ -499,7 +499,6 @@ const twitchConnection = (input: {
   return {
     id: `twitch/${input.slot}`,
     integration: "twitch",
-    slot: input.slot,
     title: "Twitch",
     label: input.label,
     location: "either",
@@ -509,17 +508,17 @@ const twitchConnection = (input: {
     values: [
       { key: "clientId", isSecret: false, isSet: input.mode === "local-app" },
       { key: "clientSecret", isSecret: true, isSet: input.mode === "local-app" },
+      { key: "connection", isSecret: false, isSet: false },
     ],
     scopes: {
       granted: [...input.granted],
       required: [...input.required],
       missing,
     },
-    usedBy:
+    boundBy:
       input.slot === "broadcaster"
         ? [
-            { projectId: mainProject.id, scriptId: "scripts/redeem-to-scene.ts" },
-            { projectId: mainProject.id, scriptId: "scripts/cheer-alert.ts" },
+            { projectId: mainProject.id, slot: "broadcaster" },
           ]
         : [],
     ...(input.login === undefined
@@ -576,7 +575,6 @@ const initialConnections = (): ReadonlyMap<string, ConnectionSummary> => {
     {
       id: "fake/main",
       integration: "fake",
-      slot: "main",
       title: "Fake",
       label: "Development",
       location: "local",
@@ -585,7 +583,7 @@ const initialConnections = (): ReadonlyMap<string, ConnectionSummary> => {
       fields: fakeFields,
       values: [],
       scopes: { granted: ["fake:read", "fake:write"], required: [], missing: [] },
-      usedBy: [{ projectId: altProject.id, scriptId: "scripts/tick-echo.ts" }],
+      boundBy: [{ projectId: altProject.id, slot: "main" }],
       detail: "In-process test driver",
       lastConnectedAt: base,
       requiresAuth: false,
@@ -917,6 +915,13 @@ const validParamValue = (
         typeof value === "string" &&
         (declared.options === undefined || declared.options.includes(value))
       );
+    case "strings":
+      return (
+        Array.isArray(value) &&
+        value.every((entry) => typeof entry === "string") &&
+        (declared.options === undefined ||
+          value.every((entry) => declared.options?.includes(entry) === true))
+      );
   }
 };
 
@@ -1033,6 +1038,43 @@ const handlers = Effect.gen(function* () {
       return project === undefined ? [] : [project];
     });
 
+  const requirementsOf = (
+    state: MockState,
+    projectId: string,
+  ): ReadonlyArray<ProjectRequirement> => {
+    const requirements: Array<ProjectRequirement> = [];
+    for (const detail of projectScripts(state, projectId)) {
+      for (const connection of detail.manifest.connections) {
+        const instances = [...state.connections.values()].filter(
+          (instance) => instance.integration === connection.integration,
+        );
+        const bound = instances.find((instance) =>
+          instance.boundBy.some(
+            (ref) => ref.projectId === projectId && ref.slot === connection.slot,
+          ),
+        );
+        requirements.push({
+          integration: connection.integration,
+          slot: connection.slot,
+          location: connection.location,
+          ...(bound === undefined ? {} : { boundInstanceId: bound.id }),
+          ...(bound === undefined && instances.length === 1 && instances[0] !== undefined
+            ? { proposedInstanceId: instances[0].id }
+            : {}),
+        });
+      }
+    }
+    return requirements;
+  };
+
+  const projectDetailOf = (state: MockState, project: ProjectSummary) => ({
+    summary: project,
+    manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+    requirements: requirementsOf(state, project.id),
+    units: unitsOf(state, project.id),
+    scripts: projectScripts(state, project.id).map((detail) => detail.summary),
+  });
+
   const unitsOf = (
     state: MockState,
     projectId: string,
@@ -1068,7 +1110,6 @@ const handlers = Effect.gen(function* () {
     GetServiceInfo: () => Effect.map(Ref.get(store.state), (state) => state.info),
     GetHealth: () => Effect.map(Ref.get(store.state), healthOf),
     ShutdownService: () => Effect.void,
-    RestartService: () => Effect.void,
     ReportShellPermission: () => Effect.void,
 
     ListProjects: () =>
@@ -1085,6 +1126,7 @@ const handlers = Effect.gen(function* () {
         return {
           summary: project,
           manifest: emptyProjectManifest(projectId, entry),
+          requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
           scripts,
         };
@@ -1097,6 +1139,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: project,
             manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
@@ -1114,6 +1157,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: next,
             manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
@@ -1131,6 +1175,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: next,
             manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
@@ -1144,6 +1189,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: project,
             manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
@@ -1157,6 +1203,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: project,
             manifest: emptyProjectManifest(request.projectId, project.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, request.projectId).map((detail) => detail.summary),
           };
@@ -1178,6 +1225,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: next,
             manifest: emptyProjectManifest(request.projectId, next.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, request.projectId).map((detail) => detail.summary),
           };
@@ -1235,6 +1283,7 @@ const handlers = Effect.gen(function* () {
               reason: consent.reason,
               summary: consent.summary,
               diff: consent.diff,
+              bindings: [],
             }),
           ),
       })),
@@ -1250,6 +1299,7 @@ const handlers = Effect.gen(function* () {
         return {
           summary: project,
           manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+          requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
           scripts: projectScripts(state, project.id).map((detail) => detail.summary),
         };
@@ -1266,6 +1316,7 @@ const handlers = Effect.gen(function* () {
           return {
             summary: project,
             manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+            requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
             scripts: projectScripts(state, project.id).map((detail) => detail.summary),
           };
@@ -1305,6 +1356,7 @@ const handlers = Effect.gen(function* () {
         return {
           summary: project,
           manifest: emptyProjectManifest(id, "ballast.ts"),
+          requirements: [],
           units: [],
           scripts: [],
         };
@@ -1322,8 +1374,12 @@ const handlers = Effect.gen(function* () {
             units: unitsOf(state, projectId),
             changes: [],
             requiresConsent: false,
-            missingConnections: [],
+            requirements: requirementsOf(state, projectId),
+            missingConnections: requirementsOf(state, projectId).filter(
+              (requirement) => requirement.boundInstanceId === undefined,
+            ),
             missingScopes: [],
+            availableConnections: [...state.connections.values()],
             diagnostics: [],
           };
         }),
@@ -1389,6 +1445,7 @@ const handlers = Effect.gen(function* () {
         return {
           summary: project,
           manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+          requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
           scripts: [],
         };
@@ -1413,7 +1470,7 @@ const handlers = Effect.gen(function* () {
             id,
             {
               ...connection,
-              usedBy: connection.usedBy.filter((ref) => ref.projectId !== projectId),
+              boundBy: connection.boundBy.filter((ref) => ref.projectId !== projectId),
             },
           ]),
         );
@@ -1670,7 +1727,7 @@ const handlers = Effect.gen(function* () {
       readonly projectId: string;
       readonly scriptId: string;
       readonly key: string;
-      readonly value: string | number | boolean;
+      readonly value: ParamValue;
     }) =>
       Effect.gen(function* () {
         const state = yield* Ref.get(store.state);
@@ -1900,6 +1957,9 @@ const handlers = Effect.gen(function* () {
         return next;
       }),
 
+    ListIntegrations: () =>
+      Effect.succeed({ integrations: connectionIntegrations }),
+
     ListConnections: () =>
       Effect.map(Ref.get(store.state), (state) => ({
         connections: state.connectionOrder.flatMap((id) => {
@@ -1907,6 +1967,125 @@ const handlers = Effect.gen(function* () {
           return connection === undefined ? [] : [connection];
         }),
       })),
+
+    CreateConnection: (request: {
+      readonly integration: string;
+      readonly label: string;
+      readonly config: Readonly<Record<string, string>>;
+      readonly mode?: ConnectionSummary["mode"];
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const template = [...state.connections.values()].find(
+          (connection) => connection.integration === request.integration,
+        );
+        if (template === undefined) {
+          return yield* fail(agentError("invalid", `Unknown integration "${request.integration}"`));
+        }
+        const id = `conn_mock_${state.connections.size + 1}`;
+        const values = template.fields.map((field) => ({
+          key: field.key,
+          isSecret: field.kind === "secret",
+          isSet: request.config[field.key] !== undefined,
+          ...(field.kind === "secret" || request.config[field.key] === undefined
+            ? {}
+            : { value: request.config[field.key] }),
+        }));
+        const connection: ConnectionSummary = {
+          ...template,
+          id,
+          label: request.label,
+          mode: request.mode ?? "auto",
+          status: "disconnected",
+          values,
+          boundBy: [],
+        };
+        const connections = new Map(state.connections);
+        connections.set(id, connection);
+        yield* Ref.set(store.state, { ...state, connections });
+        return connection;
+      }),
+
+    UpdateConnection: (request: {
+      readonly id: string;
+      readonly label?: string;
+      readonly config?: Readonly<Record<string, string>>;
+      readonly mode?: ConnectionSummary["mode"];
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const connection = yield* requireConnection(state, request.id);
+        const values = connection.values.map((value) => {
+          const next = request.config?.[value.key];
+          if (next === undefined) return value;
+          return value.isSecret
+            ? { ...value, isSet: next !== "" }
+            : { ...value, value: next, isSet: next !== "" };
+        });
+        const next: ConnectionSummary = {
+          ...connection,
+          label: request.label ?? connection.label,
+          mode: request.mode ?? connection.mode,
+          values,
+        };
+        yield* Ref.set(store.state, replaceConnection(state, next));
+        return next;
+      }),
+
+    DeleteConnection: ({ id }: { readonly id: string }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const connection = yield* requireConnection(state, id);
+        if (connection.boundBy.length > 0) {
+          return yield* fail(
+            agentError(
+              "conflict",
+              `Connection "${connection.label}" is bound to a project slot; unbind it first`,
+            ),
+          );
+        }
+        const connections = new Map(state.connections);
+        connections.delete(id);
+        yield* Ref.set(store.state, { ...state, connections });
+      }),
+
+    SetProjectBinding: (request: {
+      readonly projectId: string;
+      readonly integration: string;
+      readonly slot: string;
+      readonly instanceId: string | null;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const project = yield* requireProject(state, request.projectId);
+        const connections = new Map(
+          [...state.connections].map(([id, connection]) => [
+            id,
+            {
+              ...connection,
+              boundBy: connection.boundBy.filter(
+                (ref) => !(ref.projectId === request.projectId && ref.slot === request.slot),
+              ),
+            },
+          ]),
+        );
+        if (request.instanceId !== null) {
+          const connection = connections.get(request.instanceId);
+          if (connection === undefined) {
+            return yield* fail(agentError("not-found", `No connection "${request.instanceId}"`));
+          }
+          if (connection.integration !== request.integration) {
+            return yield* fail(agentError("invalid", "Connection integration does not match"));
+          }
+          connections.set(request.instanceId, {
+            ...connection,
+            boundBy: [...connection.boundBy, { projectId: request.projectId, slot: request.slot }],
+          });
+        }
+        const nextState = { ...state, connections };
+        yield* Ref.set(store.state, nextState);
+        return projectDetailOf(nextState, project);
+      }),
 
     GetConnection: ({ connectionId }: { readonly connectionId: string }) =>
       Effect.flatMap(Ref.get(store.state), (state) =>
@@ -1974,8 +2153,8 @@ const handlers = Effect.gen(function* () {
           level: needsAuth ? "warn" : "info",
           source: "connection",
           message: needsAuth
-            ? `${next.title} ${next.slot} needs authorization: ${connection.scopes.missing.join(", ")}`
-            : `${next.title} ${next.slot} connected`,
+            ? `${next.title} ${next.label} needs authorization: ${connection.scopes.missing.join(", ")}`
+            : `${next.title} ${next.label} connected`,
         });
         yield* publish(store, [
           { _tag: "connection", connection: next },
@@ -1997,7 +2176,7 @@ const handlers = Effect.gen(function* () {
         yield* appendLog(store, {
           level: "info",
           source: "connection",
-          message: `${next.title} ${next.slot} disconnected`,
+          message: `${next.title} ${next.label} disconnected`,
         });
         yield* publish(store, [
           { _tag: "connection", connection: next },

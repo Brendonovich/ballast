@@ -12,7 +12,10 @@
 import type { ParamOptionSource, TopicCondition } from "@ballast/core";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -63,7 +66,7 @@ import {
   errorMessage,
 } from "./errors.ts";
 import type { VTubeStudioError } from "./errors.ts";
-import { fileTokenStore, resolveDataDir } from "./token-store.ts";
+import { fileTokenStore } from "./token-store.ts";
 import type { StoredVTubeStudioToken, VTubeStudioTokenStore } from "./token-store.ts";
 
 export type VTubeStudioDriverState =
@@ -166,8 +169,11 @@ export class VTubeStudioDriver extends Context.Service<
 >()("Ballast/VTubeStudioDriver") {
   static readonly layer = (
     options: VTubeStudioDriverOptions,
-  ): Layer.Layer<VTubeStudioDriver, VTubeStudioConfigError, Socket.WebSocketConstructor> =>
-    layer(options);
+  ): Layer.Layer<
+    VTubeStudioDriver,
+    VTubeStudioConfigError,
+    Crypto.Crypto | FileSystem.FileSystem | Path.Path | Socket.WebSocketConstructor
+  > => layer(options);
 }
 
 interface NormalizedConfig {
@@ -278,7 +284,7 @@ const normalizeConfig = (options: VTubeStudioDriverOptions): NormalizedConfig =>
     ),
     pluginIcon: options.pluginIcon,
     publish: options.publish,
-    tokenStore: options.tokenStore ?? fileTokenStore(options.dataDir ?? resolveDataDir()),
+    tokenStore: options.tokenStore ?? fileTokenStore(options.dataDir),
     requestTimeout: options.requestTimeout ?? "30 seconds",
     approvalTimeout: options.approvalTimeout ?? "5 minutes",
     initialDelayMs,
@@ -381,10 +387,17 @@ type StatusPatch = Partial<
 
 export const layer = (
   options: VTubeStudioDriverOptions,
-): Layer.Layer<VTubeStudioDriver, VTubeStudioConfigError, Socket.WebSocketConstructor> =>
+): Layer.Layer<
+  VTubeStudioDriver,
+  VTubeStudioConfigError,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Socket.WebSocketConstructor
+> =>
   Layer.effect(
     VTubeStudioDriver,
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
       const config = yield* Effect.try({
         try: () => normalizeConfig(options),
         catch: (cause) =>
@@ -392,6 +405,35 @@ export const layer = (
             ? cause
             : new VTubeStudioConfigError({ message: errorMessage(cause) }),
       });
+      type ProvidedTokenStore = {
+        readonly read: (
+          slot: string,
+        ) => Effect.Effect<StoredVTubeStudioToken | undefined, VTubeStudioStorageError>;
+        readonly write: (
+          token: StoredVTubeStudioToken,
+        ) => Effect.Effect<void, VTubeStudioStorageError>;
+        readonly remove: (
+          slot: string,
+        ) => Effect.Effect<void, VTubeStudioStorageError>;
+      };
+      const tokenStore: ProvidedTokenStore = {
+        read: (slot) =>
+          config.tokenStore.read(slot).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          ),
+        write: (token) =>
+          config.tokenStore.write(token).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          ),
+        remove: (slot) =>
+          config.tokenStore.remove(slot).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          ),
+      };
       const desired = yield* parseSubscriptions(options.subscriptions ?? []);
       const ready = yield* Deferred.make<void>();
       const initialStatus: VTubeStudioDriverStatus = {
@@ -469,12 +511,12 @@ export const layer = (
             });
           }
 
-          const stored = yield* config.tokenStore.read(config.slot);
+          const stored = yield* tokenStore.read(config.slot);
           if (stored !== undefined) {
             const response = yield* authenticateWithToken(session, stored.authenticationToken);
             if (response.authenticated) return apiState;
 
-            yield* config.tokenStore.remove(config.slot).pipe(
+            yield* tokenStore.remove(config.slot).pipe(
               Effect.catch((error) =>
                 Effect.logWarning(
                   "Could not remove the rejected VTube Studio token: " + error.message,
@@ -531,7 +573,7 @@ export const layer = (
             authenticationToken: tokenResponse.authenticationToken,
             updatedAt: Date.now(),
           };
-          yield* config.tokenStore.write(storedToken).pipe(
+          yield* tokenStore.write(storedToken).pipe(
             Effect.catch((error) =>
               Effect.logWarning(
                 "Could not save the VTube Studio token (it will be requested again on reconnect): " +
@@ -679,7 +721,7 @@ export const layer = (
             failure._tag === "VTubeStudioAuthenticationError" &&
             failure.invalidatedToken
           ) {
-            yield* config.tokenStore.remove(config.slot).pipe(
+            yield* tokenStore.remove(config.slot).pipe(
               Effect.catch((error) =>
                 Effect.logWarning(
                   "Could not remove the invalid VTube Studio token: " + error.message,

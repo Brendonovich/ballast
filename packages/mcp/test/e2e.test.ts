@@ -9,7 +9,7 @@ import { ChildProcess } from "effect/process";
 import { NodeServices } from "@effect/platform-node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { cleanupService, mcpBin, mcpRoot, startService } from "./support/process.ts";
+import { cleanupService, mcpCommand, mcpRoot, startService } from "./support/process.ts";
 import type { RunningService } from "./support/process.ts";
 
 let service: RunningService | undefined;
@@ -28,7 +28,11 @@ const clientLayer = (env: Readonly<Record<string, string | undefined>>) =>
     version: "0.0.0",
     command: ChildProcess.make(
       process.execPath,
-      ["--experimental-strip-types", "--no-warnings=ExperimentalWarning", mcpBin],
+      [
+        "--experimental-strip-types",
+        "--no-warnings=ExperimentalWarning",
+        ...mcpCommand,
+      ],
       { cwd: mcpRoot, env },
     ),
     protocol: McpProtocol.v2025_11_25,
@@ -117,6 +121,35 @@ describe("real MCP stdio client against a real Ballast service", () => {
         expect(catalogText).toContain("schema:");
         expect(catalog.isError).not.toBe(true);
 
+        const filtered = yield* call(client, tools, "ballast_catalog", {
+          integration: "obs",
+          request: "SetCurrentProgramScene",
+        });
+        expect(textOf(filtered)).toContain("obs/SetCurrentProgramScene");
+        expect(textOf(filtered)).not.toContain("CreateScene");
+
+        const paged = yield* call(client, tools, "ballast_catalog", {
+          integration: "obs",
+          kind: "requests",
+          limit: 2,
+        });
+        expect(textOf(paged)).toContain("truncated");
+        const pagedData = recordOf(paged.structuredContent);
+        const pages = pagedData?.["pages"];
+        expect(Array.isArray(pages)).toBe(true);
+        if (Array.isArray(pages)) {
+          const page = recordOf(pages[0]);
+          expect(numberField(page, "requestNextOffset")).toBe(2);
+        }
+
+        const invalid = yield* call(client, tools, "ballast_catalog", {
+          integration: "obs",
+          request: "SetCurrentProgramScene",
+          bogus: true,
+        });
+        expect(invalid.isError).toBe(true);
+        expect(textOf(invalid)).toContain("Invalid arguments");
+
         const init = yield* call(client, tools, "ballast_project_init", {
           dir: projectDir,
           name: "E2E Project",
@@ -126,6 +159,7 @@ describe("real MCP stdio client against a real Ballast service", () => {
         const projectId = stringOf(project, "id");
         expect(projectId).toBeDefined();
         expect(stringOf(project, "name")).toBe("E2E Project");
+        expect(stringOf(project, "entry")).toBe("ballast.ts");
 
         const check = yield* call(client, tools, "ballast_check", { project: "E2E Project" });
         const checkData = recordOf(check.structuredContent);
@@ -133,8 +167,59 @@ describe("real MCP stdio client against a real Ballast service", () => {
         const units = checkData?.["units"];
         expect(Array.isArray(units)).toBe(true);
         if (!Array.isArray(units)) throw new Error("check units are not an array");
-        expect(units.length).toBeGreaterThanOrEqual(3);
+        expect(units.length).toBeGreaterThanOrEqual(1);
+        const sourceFiles: Array<string> = [];
+        for (const unit of units) {
+          const record = recordOf(unit);
+          const source = recordOf(record?.["source"]);
+          const file = stringOf(source, "file");
+          if (file !== undefined) {
+            expect(file.startsWith("..")).toBe(false);
+            expect(file.startsWith("/")).toBe(false);
+            sourceFiles.push(file);
+          }
+        }
+        expect(sourceFiles.length).toBeGreaterThan(0);
+        expect(sourceFiles.every((file) => file === "ballast.ts")).toBe(true);
         expect(checkData?.["diagnostics"]).toEqual([]);
+
+        const requirementDir = join(root, "requirements");
+        yield* call(client, tools, "ballast_project_init", {
+          dir: requirementDir,
+          name: "E2E Requirements",
+        });
+        yield* Effect.promise(() =>
+          writeFile(
+            join(requirementDir, "ballast.ts"),
+            [
+              'import * as Fake from "@ballast/fake";',
+              'import { Effect } from "effect";',
+              "",
+              "export default Effect.gen(function* () {",
+              '  const fake = yield* Fake.Connection("main");',
+              '  yield* Fake.Tick.subscribe("tick", fake, () => Effect.void);',
+              "});",
+              "",
+            ].join("\n"),
+            "utf8",
+          ),
+        );
+        const requirementCheck = yield* call(client, tools, "ballast_check", {
+          project: "E2E Requirements",
+        });
+        const requirementData = recordOf(requirementCheck.structuredContent);
+        expect(requirementData?.["ok"]).toBe(true);
+        expect(textOf(requirementCheck)).toContain("fake/main");
+        expect(textOf(requirementCheck)).toContain(
+          "none: user must add a fake connection in the Ballast app",
+        );
+        const requirementApply = yield* call(client, tools, "ballast_apply", {
+          project: "E2E Requirements",
+        });
+        const requirementApplyData = recordOf(requirementApply.structuredContent);
+        expect(requirementApplyData?.["state"]).toBe("waiting_for_user");
+        expect(requirementApplyData?.["reason"]).toBe("connections");
+        expect(textOf(requirementApply)).toContain("fake/main");
 
         yield* Effect.promise(() =>
           writeFile(

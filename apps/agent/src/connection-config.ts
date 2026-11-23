@@ -30,7 +30,7 @@ export const parseAssignment = (assignment: string, option: string): Assignment 
   };
 };
 
-const obsPasswordEnvKey = (slot: string): string =>
+export const obsPasswordEnvKey = (slot: string): string =>
   `BALLAST_OBS_${slot.toUpperCase().replaceAll(/[^A-Z0-9]/g, "_")}_PASSWORD`;
 
 const validateObsUrl = (slot: string, raw: string): string => {
@@ -58,7 +58,7 @@ const validateObsUrl = (slot: string, raw: string): string => {
 export const resolveObsConnectionConfig = (
   slot: string,
   options: ConnectionOptions,
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  env: Readonly<Record<string, string | undefined>>,
 ): ObsConnectionConfig => {
   const key = `obs/${slot}`;
   const url = validateObsUrl(slot, options.connections.get(key) ?? DEFAULT_OBS_URL);

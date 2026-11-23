@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeServices } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import { readStoredTwitchAccount } from "../src/twitch/config.ts";
 import { startMockObsServer } from "./mock-obs-server.ts";
@@ -321,10 +322,10 @@ describe("ballast auth twitch", () => {
             expect(result.code).toBe(0);
             expect(result.output).toContain("authorized as streamer (1337");
 
-            const stored = yield* Effect.tryPromise({
-              try: () => readStoredTwitchAccount("broadcaster", dataDir),
-              catch: (cause) => new Error(String(cause)),
-            });
+            const stored = yield* readStoredTwitchAccount("broadcaster", dataDir).pipe(
+              Effect.provide(NodeServices.layer),
+              Effect.mapError((cause) => new Error(String(cause))),
+            );
             expect(stored).toMatchObject({
               slot: "broadcaster",
               clientId: twitch.clientId,

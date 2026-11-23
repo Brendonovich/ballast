@@ -24,7 +24,7 @@ import { Lifecycle } from "./lifecycle.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ProjectRuntime } from "./project-runtime.ts";
-import { scaffoldProject } from "./scaffold.ts";
+import { ensureProjectTypes, scaffoldProject } from "./scaffold.ts";
 import { ScriptManager } from "./scripts.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
 
@@ -175,6 +175,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
             runs: [],
             unresolved: [],
           },
+          requirements: [],
           units: [],
           scripts: projectScriptSummaries,
         };
@@ -230,7 +231,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       GetServiceInfo: () => info,
       GetHealth: () => health,
       ShutdownService: () => shutdown(0),
-      RestartService: () => shutdown(75),
 
       ReportShellPermission: (request: {
         readonly permission: "accessibility";
@@ -260,9 +260,14 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         readonly directory?: string;
       }) =>
         Effect.gen(function* () {
+          const typesDir = yield* ensureProjectTypes({
+            dataDir: options.dataDir,
+            version: options.version,
+          });
           const scaffolded = yield* scaffoldProject({
             name: request.name,
             ...(request.directory === undefined ? {} : { directory: request.directory }),
+            typesDir,
           });
           const project = yield* projects.add({
             path: scaffolded.root,
@@ -307,12 +312,18 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       SetProjectParam: (request: {
         readonly projectId: string;
         readonly key: string;
-        readonly value: string | number | boolean;
+        readonly value: string | number | boolean | ReadonlyArray<string>;
       }) => runtime.setParam(request.projectId, request.key, request.value),
       SetProjectEnabled: (request: {
         readonly projectId: string;
         readonly enabled: boolean;
       }) => runtime.setEnabled(request.projectId, request.enabled),
+      SetProjectBinding: (request: {
+        readonly projectId: string;
+        readonly integration: string;
+        readonly slot: string;
+        readonly instanceId: string | null;
+      }) => runtime.setBinding(request),
       ListProjectFiles: ({ projectId }: { readonly projectId: string }) => runtime.files(projectId),
       ReadProjectFile: ({ projectId, path }: { readonly projectId: string; readonly path: string }) =>
         runtime.readFile(projectId, path),
@@ -350,7 +361,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         readonly projectId: string;
         readonly scriptId: string;
         readonly key: string;
-        readonly value: string | number | boolean;
+        readonly value: string | number | boolean | ReadonlyArray<string>;
       }) => scripts.setParam(request.projectId, request.scriptId, request.key, request.value),
 
       SetScriptEnabled: (request: {
@@ -395,10 +406,29 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       RejectConsent: (request: { readonly consentId: string; readonly reason?: string }) =>
         scripts.reject(request.consentId, request.reason),
 
+      ListIntegrations: () =>
+        Effect.succeed({ integrations: connections.integrations() }),
+
       ListConnections: () =>
         Effect.map(connections.summaries(), (list) => ({
           connections: list.map(toConnectionSummary),
         })),
+
+      CreateConnection: (request: {
+        readonly integration: string;
+        readonly label: string;
+        readonly config: Readonly<Record<string, string>>;
+        readonly mode?: ConnectionMode;
+      }) => connections.create(request),
+
+      UpdateConnection: (request: {
+        readonly id: string;
+        readonly label?: string;
+        readonly config?: Readonly<Record<string, string>>;
+        readonly mode?: ConnectionMode;
+      }) => connections.update(request),
+
+      DeleteConnection: ({ id }: { readonly id: string }) => connections.remove(id),
 
       GetConnection: ({ connectionId }: { readonly connectionId: string }) =>
         connections.require(connectionId),

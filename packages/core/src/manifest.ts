@@ -8,7 +8,13 @@ export const SourceLocationSchema = Schema.Struct({
 });
 export type SourceLocation = Schema.Schema.Type<typeof SourceLocationSchema>;
 
-export const ParamTypeSchema = Schema.Literals(["string", "number", "boolean", "enum"]);
+export const ParamTypeSchema = Schema.Literals([
+  "string",
+  "number",
+  "boolean",
+  "enum",
+  "strings",
+]);
 export type ParamType = Schema.Schema.Type<typeof ParamTypeSchema>;
 
 export const ParamOptionSourceSchema = Schema.Struct({
@@ -18,7 +24,12 @@ export const ParamOptionSourceSchema = Schema.Struct({
 });
 export type ParamOptionSource = Schema.Schema.Type<typeof ParamOptionSourceSchema>;
 
-export const ParamDefaultSchema = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
+export const ParamDefaultSchema = Schema.Union([
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Array(Schema.String),
+]);
 export type ParamDefault = Schema.Schema.Type<typeof ParamDefaultSchema>;
 
 export const ParamManifestSchema = Schema.Struct({
@@ -26,6 +37,7 @@ export const ParamManifestSchema = Schema.Struct({
   type: ParamTypeSchema,
   source: Schema.optional(SourceLocationSchema),
   title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
   default: Schema.optional(ParamDefaultSchema),
   options: Schema.optional(ParamOptionSourceSchema),
 });

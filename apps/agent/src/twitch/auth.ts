@@ -1,8 +1,14 @@
-import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import * as Config from "effect/Config";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
+import * as Stdio from "effect/Stdio";
 import type { HttpClient } from "effect/http";
+import { ChildProcess } from "effect/process";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Twitch from "@ballast/module-twitch";
 import { makeCallbackServer } from "@ballast/module-twitch/oauth/callback-server";
 
@@ -15,9 +21,19 @@ import type { StoredTwitchAccount, TwitchAppConfig } from "./config.ts";
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-const defaultOpenUrl = (url: string): Effect.Effect<void> =>
+const defaultOpenUrl = (
+  url: string,
+): Effect.Effect<void, never, ChildProcessSpawner | Stdio.Stdio> =>
   Effect.gen(function* () {
-    if (process.stdout.isTTY !== true || process.env["CI"] === "1") return;
+    const stdio = yield* Stdio.Stdio;
+    const spawner = yield* ChildProcessSpawner;
+    const isTerminal = yield* stdio.stdoutIsTerminal;
+    const ci = yield* Config.String("CI").pipe(
+      Config.option,
+      Effect.map((value) => Option.contains(value, "1")),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+    if (!isTerminal || ci) return;
     const command =
       process.platform === "darwin"
         ? "open"
@@ -25,16 +41,13 @@ const defaultOpenUrl = (url: string): Effect.Effect<void> =>
           ? "cmd"
           : "xdg-open";
     const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-    yield* Effect.tryPromise({
-      try: () =>
-        new Promise<void>((resolve, reject) => {
-          execFile(command, args, (error) => {
-            if (error === null) resolve();
-            else reject(error);
-          });
+    yield* spawner.exitCode(ChildProcess.make(command, args)).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          console.warn("Could not open the browser: " + cause.message);
         }),
-      catch: (cause) => new Error("Could not open the browser: " + errorMessage(cause)),
-    }).pipe(Effect.ignore);
+      ),
+    );
   });
 
 export interface AuthorizeTwitchAccountOptions {
@@ -62,6 +75,13 @@ export type TwitchAuthChallenge =
       readonly expiresAt: number;
     };
 
+type AuthPlatformServices =
+  | ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | Stdio.Stdio;
+
 export interface StartedTwitchAuth {
   /** The URL/code to show the user. */
   readonly auth: TwitchAuthChallenge;
@@ -76,8 +96,15 @@ export interface StartedTwitchAuth {
  */
 export const startTwitchAuth = (
   options: AuthorizeTwitchAccountOptions,
-): Effect.Effect<StartedTwitchAuth, Error, Scope.Scope | HttpClient.HttpClient> =>
+): Effect.Effect<
+  StartedTwitchAuth,
+  Error,
+  AuthPlatformServices | Scope.Scope | HttpClient.HttpClient
+> =>
   Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const oauth = yield* Twitch.OAuth.make(oauthConfigOf(options.config));
     const scopes = [...new Set(options.scopes)];
     const open = options.openUrl ?? defaultOpenUrl;
@@ -121,11 +148,15 @@ export const startTwitchAuth = (
           login: validation.login,
         };
 
-        yield* Effect.tryPromise({
-          try: () => writeStoredTwitchAccount(account, options.dataDir),
-          catch: (cause) =>
-            new Error("Could not store the Twitch token: " + errorMessage(cause)),
-        });
+        yield* writeStoredTwitchAccount(account, options.dataDir).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError(
+            (cause) =>
+              new Error("Could not store the Twitch token: " + errorMessage(cause)),
+          ),
+        );
 
         console.log(
           "[twitch:" +
@@ -176,7 +207,7 @@ export const startTwitchAuth = (
       };
     }
 
-    const state = randomUUID();
+    const state = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
     const port = options.callbackPort ?? options.config.callbackPort;
     const server = yield* makeCallbackServer({
       state,
@@ -213,7 +244,7 @@ export const startTwitchAuth = (
  */
 export const authorizeTwitchAccount = (
   options: AuthorizeTwitchAccountOptions,
-): Effect.Effect<StoredTwitchAccount, Error, HttpClient.HttpClient> =>
+): Effect.Effect<StoredTwitchAccount, Error, AuthPlatformServices | HttpClient.HttpClient> =>
   Effect.scoped(
     Effect.gen(function* () {
       const started = yield* startTwitchAuth(options);

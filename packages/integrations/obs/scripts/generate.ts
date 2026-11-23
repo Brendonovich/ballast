@@ -83,7 +83,26 @@ const NULLABLE_RESPONSE_FIELDS = new Set([
   "GetCurrentSceneTransition.transitionSettings",
 ]);
 
-const fieldSchema = (field: ProtocolField): Effect.Effect<string, GenerateError> => {
+/**
+ * obs-websocket documents nested response objects as plain `Object` /
+ * `Array<Object>`. These are the shapes the docs give for the responses
+ * scripts use most; keyed by `RequestType.fieldName`.
+ */
+const RESPONSE_FIELD_SCHEMAS: Readonly<Record<string, string>> = {
+  "GetSceneList.scenes": "Schema.Array(SceneSchema)",
+  "GetSceneItemList.sceneItems": "Schema.Array(SceneItemSchema)",
+  "GetGroupSceneItemList.sceneItems": "Schema.Array(SceneItemSchema)",
+  "GetSceneItemTransform.sceneItemTransform": "SceneItemTransformSchema",
+  "GetInputList.inputs": "Schema.Array(InputSchema)",
+  "GetSceneTransitionList.transitions": "Schema.Array(TransitionSchema)",
+  "GetMonitorList.monitors": "Schema.Array(MonitorSchema)",
+};
+
+const fieldSchema = (
+  field: ProtocolField,
+  override?: string,
+): Effect.Effect<string, GenerateError> => {
+  if (override !== undefined) return Effect.succeed(override);
   switch (field.valueType) {
     case "String":
       return Effect.succeed("Schema.String");
@@ -106,9 +125,13 @@ const fieldSchema = (field: ProtocolField): Effect.Effect<string, GenerateError>
   }
 };
 
-const property = (field: ProtocolField, nullable: boolean): Effect.Effect<string, GenerateError> =>
+const property = (
+  field: ProtocolField,
+  nullable: boolean,
+  override?: string,
+): Effect.Effect<string, GenerateError> =>
   Effect.gen(function* () {
-    const schema = yield* fieldSchema(field);
+    const schema = yield* fieldSchema(field, override);
     const nullableSchema = nullable ? "Schema.NullOr(" + schema + ")" : schema;
     const value =
       field.valueOptional === true ? "Schema.optional(" + nullableSchema + ")" : nullableSchema;
@@ -118,13 +141,14 @@ const property = (field: ProtocolField, nullable: boolean): Effect.Effect<string
 const struct = (
   fields: ReadonlyArray<ProtocolField>,
   nullableKeys: (field: ProtocolField) => boolean,
+  overrides: (field: ProtocolField) => string | undefined = () => undefined,
 ): Effect.Effect<string, GenerateError> =>
   fields.length === 0
     ? Effect.succeed("Schema.Struct({})")
     : Effect.gen(function* () {
         const properties: string[] = [];
         for (const field of fields) {
-          properties.push(yield* property(field, nullableKeys(field)));
+          properties.push(yield* property(field, nullableKeys(field), overrides(field)));
         }
         return "Schema.Struct({\n" + properties.join("\n") + "\n})";
       });
@@ -182,6 +206,82 @@ const generate = (protocol: Protocol, sourceHash: string): Effect.Effect<string,
       "/** Every non-high-volume event category, including Canvases. */",
       "export const AllEventsMask = " + nonHighVolumeMask + ";",
       "",
+      "/** A scene returned by GetSceneList. */",
+      "export const SceneSchema = Schema.Struct({",
+      '  "sceneName": Schema.String,',
+      '  "sceneUuid": Schema.String,',
+      '  "sceneIndex": Schema.Number,',
+      "});",
+      "export type Scene = Schema.Schema.Type<typeof SceneSchema>;",
+      "",
+      "/** A scene item transform, shared by Get/SetSceneItemTransform. */",
+      "export const SceneItemTransformSchema = Schema.Struct({",
+      '  "alignment": Schema.Number,',
+      '  "boundsAlignment": Schema.Number,',
+      '  "boundsHeight": Schema.Number,',
+      '  "boundsType": Schema.String,',
+      '  "boundsWidth": Schema.Number,',
+      '  "cropBottom": Schema.Number,',
+      '  "cropLeft": Schema.Number,',
+      '  "cropRight": Schema.Number,',
+      '  "cropTop": Schema.Number,',
+      '  "height": Schema.Number,',
+      '  "positionX": Schema.Number,',
+      '  "positionY": Schema.Number,',
+      '  "rotation": Schema.Number,',
+      '  "scaleX": Schema.Number,',
+      '  "scaleY": Schema.Number,',
+      '  "sourceHeight": Schema.Number,',
+      '  "sourceWidth": Schema.Number,',
+      '  "width": Schema.Number,',
+      "});",
+      "export type SceneItemTransform = Schema.Schema.Type<typeof SceneItemTransformSchema>;",
+      "",
+      "/** A scene item returned by GetSceneItemList / GetGroupSceneItemList. */",
+      "export const SceneItemSchema = Schema.Struct({",
+      '  "inputKind": Schema.NullOr(Schema.String),',
+      '  "isGroup": Schema.NullOr(Schema.Boolean),',
+      '  "sceneItemId": Schema.Number,',
+      '  "sceneItemIndex": Schema.Number,',
+      '  "sceneItemLocked": Schema.Boolean,',
+      '  "sceneItemTransform": SceneItemTransformSchema,',
+      '  "sceneItemEnabled": Schema.Boolean,',
+      '  "sceneItemBlendMode": Schema.String,',
+      '  "sourceName": Schema.String,',
+      '  "sourceUuid": Schema.String,',
+      "});",
+      "export type SceneItem = Schema.Schema.Type<typeof SceneItemSchema>;",
+      "",
+      "/** An input returned by GetInputList. */",
+      "export const InputSchema = Schema.Struct({",
+      '  "inputName": Schema.String,',
+      '  "inputUuid": Schema.String,',
+      '  "inputKind": Schema.String,',
+      '  "unversionedInputKind": Schema.String,',
+      "});",
+      "export type Input = Schema.Schema.Type<typeof InputSchema>;",
+      "",
+      "/** A transition returned by GetSceneTransitionList. */",
+      "export const TransitionSchema = Schema.Struct({",
+      '  "transitionName": Schema.String,',
+      '  "transitionUuid": Schema.String,',
+      '  "transitionKind": Schema.String,',
+      '  "transitionFixed": Schema.Boolean,',
+      '  "transitionConfigurable": Schema.Boolean,',
+      '  "transitionSettings": Schema.Record(Schema.String, Schema.Unknown),',
+      "});",
+      "export type Transition = Schema.Schema.Type<typeof TransitionSchema>;",
+      "",
+      "/** A monitor returned by GetMonitorList. */",
+      "export const MonitorSchema = Schema.Struct({",
+      '  "monitorName": Schema.String,',
+      '  "monitorUuid": Schema.String,',
+      '  "monitorIndex": Schema.Number,',
+      '  "monitorWidth": Schema.Number,',
+      '  "monitorHeight": Schema.Number,',
+      "});",
+      "export type Monitor = Schema.Schema.Type<typeof MonitorSchema>;",
+      "",
     ];
 
     for (const request of requests) {
@@ -189,10 +289,14 @@ const generate = (protocol: Protocol, sourceHash: string): Effect.Effect<string,
       const requestFields = request.requestFields ?? [];
       const responseFields = request.responseFields ?? [];
       const requestSchema = yield* struct(requestFields, () => false);
-      const responseSchema = yield* struct(
-        responseFields,
-        (field) => NULLABLE_RESPONSE_FIELDS.has(name + "." + field.valueName),
-      );
+      const responseSchema =
+        responseFields.length === 0
+          ? "Schema.Void"
+          : yield* struct(
+              responseFields,
+              (field) => NULLABLE_RESPONSE_FIELDS.has(name + "." + field.valueName),
+              (field) => RESPONSE_FIELD_SCHEMAS[name + "." + field.valueName],
+            );
       lines.push(
         "export const " + name + "RequestSchema = " + requestSchema + ";",
         "export type " + name + "Request = Schema.Schema.Type<typeof " + name + "RequestSchema>;",

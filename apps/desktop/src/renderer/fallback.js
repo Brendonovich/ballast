@@ -14,16 +14,16 @@ const text = (element, value) => {
 
 function render(status) {
   text(phase, status.phase);
-  text(version, status.runningVersion ?? status.installedVersion ?? status.builtVersion);
+  text(version, status.runningVersion ?? status.builtVersion);
   text(pid, status.pid);
   text(url, status.url);
   text(data, status.paths ? status.paths.dataDir : null);
   if (summary) {
     summary.textContent = status.running
       ? "Service is running. Opening the Ballast UI…"
-      : status.installed
-        ? "The service is installed but not answering yet."
-        : "The background service is not installed yet.";
+      : status.phase === "starting" || status.phase === "updating" || status.phase === "restarting"
+        ? "Starting the background service…"
+        : "The background service is not running.";
   }
   if (error) {
     error.hidden = !status.lastError;

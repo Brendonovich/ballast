@@ -1,6 +1,9 @@
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import { FetchHttpClient } from "effect/http";
 import type { HttpClient } from "effect/http";
@@ -9,6 +12,7 @@ import type { Manifest } from "@ballast/core";
 import * as Twitch from "@ballast/module-twitch";
 
 import type { ConnectionOptions } from "../connection-config.ts";
+import { readEnvironment } from "../service/config.ts";
 import {
   readCloudPairing,
   readStoredTwitchAccount,
@@ -113,11 +117,39 @@ const scopeError = (cause: unknown): TwitchTransportError =>
 
 export const startTwitchRuntime = (
   runtimeOptions: TwitchRuntimeOptions,
-): Effect.Effect<TwitchRuntime, never, Scope.Scope> =>
+): Effect.Effect<
+  TwitchRuntime,
+  never,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
+> =>
   Effect.gen(function* () {
     const runtimeScope = yield* Scope.Scope;
-    const env = runtimeOptions.env ?? process.env;
-    const dataDir = runtimeOptions.dataDir ?? resolveDataDir(env);
+    const path = yield* Path.Path;
+    const platform = yield* Effect.context<
+      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+    >();
+    const provide = <A, E>(
+      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+    ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
+    const env = runtimeOptions.env ?? (yield* readEnvironment([
+      "BALLAST_DATA_DIR",
+      "XDG_DATA_HOME",
+      "LOCALAPPDATA",
+      "HOME",
+      "BALLAST_TWITCH_CONNECTION",
+      "BALLAST_TWITCH_MODE",
+      "BALLAST_TWITCH_CLIENT_ID",
+      "BALLAST_TWITCH_CLIENT_SECRET",
+      "BALLAST_TWITCH_CALLBACK_PORT",
+      "BALLAST_TWITCH_AUTHORIZATION_URL",
+      "BALLAST_TWITCH_TOKEN_URL",
+      "BALLAST_TWITCH_VALIDATE_URL",
+      "BALLAST_TWITCH_DEVICE_URL",
+      "BALLAST_TWITCH_REVOKE_URL",
+      "BALLAST_TWITCH_HELIX_URL",
+      "BALLAST_TWITCH_EVENTSUB_URL",
+    ]));
+    const dataDir = runtimeOptions.dataDir ?? resolveDataDir(path, env);
     const connectionOptions = runtimeOptions.options;
 
     let states = new Map<string, SlotState>();
@@ -127,25 +159,16 @@ export const startTwitchRuntime = (
     let cloudUrl: string | undefined;
 
     const loadPairing = (): Effect.Effect<CloudPairing | undefined, TwitchTransportError> =>
-      Effect.tryPromise({
-        try: () => readCloudPairing(dataDir),
-        catch: scopeError,
-      });
+      provide(readCloudPairing(dataDir)).pipe(Effect.mapError(scopeError));
 
     const loadAccount = (
       slot: string,
     ): Effect.Effect<StoredTwitchAccount | undefined, TwitchTransportError> =>
-      Effect.tryPromise({
-        try: () => readStoredTwitchAccount(slot, dataDir),
-        catch: scopeError,
-      });
+      provide(readStoredTwitchAccount(slot, dataDir)).pipe(Effect.mapError(scopeError));
 
     const accountStore = (): TwitchAccountStore => ({
       save: (account) =>
-        Effect.tryPromise({
-          try: () => writeStoredTwitchAccount(account, dataDir),
-          catch: scopeError,
-        }),
+        provide(writeStoredTwitchAccount(account, dataDir)).pipe(Effect.mapError(scopeError)),
     });
 
     const closeStates = (reconcileRemoved = false): Effect.Effect<void> =>
@@ -276,10 +299,7 @@ export const startTwitchRuntime = (
                 bindings: { ...pairing.bindings, [slot]: connection.id },
               };
               pairing = updated;
-              yield* Effect.tryPromise({
-                try: () => writeCloudPairing(updated, dataDir),
-                catch: scopeError,
-              }).pipe(Effect.ignore);
+              yield* provide(writeCloudPairing(updated, dataDir)).pipe(Effect.ignore);
             }
             return connection.id;
           }
@@ -304,10 +324,7 @@ export const startTwitchRuntime = (
               bindings: { ...pairing.bindings, [slot]: connection.id },
             };
             pairing = updated;
-            yield* Effect.tryPromise({
-              try: () => writeCloudPairing(updated, dataDir),
-              catch: scopeError,
-            }).pipe(Effect.ignore);
+            yield* provide(writeCloudPairing(updated, dataDir)).pipe(Effect.ignore);
           }
           return connection.id;
         }

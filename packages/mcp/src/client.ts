@@ -14,6 +14,7 @@ import type {
   EventRecord,
   HealthStatus,
   LogEntry,
+  ProjectCheckResult,
   ProjectDetail,
   ProjectSummary,
   StreamEventsRequest,
@@ -81,9 +82,12 @@ export interface AgentGateway {
   readonly health: () => Effect.Effect<HealthStatus, ToolError>;
   readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, ToolError>;
   readonly getProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
-  readonly addProject: (path: string, name?: string) => Effect.Effect<ProjectDetail, ToolError>;
-  /** A non-applying plan. W4 must make PlanProject read-only and return diagnostics. */
-  readonly planProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
+  readonly createProject: (
+    name: string,
+    directory?: string,
+  ) => Effect.Effect<ProjectDetail, ToolError>;
+  /** Non-applying typecheck + bundle + plan + diff. */
+  readonly checkProject: (projectId: string) => Effect.Effect<ProjectCheckResult, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly logs: (
@@ -130,12 +134,12 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
     withAgentClient(options, (client) => client.GetProject({ projectId })).pipe(
       Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
-  addProject: (path, name) =>
+  createProject: (name, directory) =>
     withAgentClient(options, (client) =>
-      client.AddProject(name === undefined ? { path } : { path, name }),
+      client.CreateProject(directory === undefined ? { name } : { name, directory }),
     ).pipe(Effect.mapError((error) => toolError(formatUnknown(error)))),
-  planProject: (projectId) =>
-    withAgentClient(options, (client) => client.PlanProject({ projectId })).pipe(
+  checkProject: (projectId) =>
+    withAgentClient(options, (client) => client.CheckProject({ projectId })).pipe(
       Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
   restartProject: (projectId) =>

@@ -12,8 +12,8 @@ import * as OBS from "@ballast/module-obs";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
-    const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes("main") });
     const obs = yield* OBS.Connection("main");
+    const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes(obs) });
 
     yield* OBS.CurrentProgramSceneChanged.subscribe(obs, (event) =>
       Effect.log(`scene now ${event.sceneName}`),
@@ -39,9 +39,11 @@ export default Effect.gen(function* () {
 - Generated event payload types are named `<EventName>Payload` (schema
   `<EventName>PayloadSchema`) so the topic object can use the event name
   itself without collisions.
-- `OBS.scenes(slot)` records `options: { integration: "obs", slot, source:
-  "scenes" }` on a param. The agent resolves it with `GetSceneList` before
-  starting a run and validates `--param` values against it.
+- `OBS.scenes(obs)` takes the OBS connection handle and records
+  `options: { integration: "obs", slot: obs.slot, source: "scenes" }` on a
+  param. The agent resolves it with `GetSceneList` before starting a run and
+  validates `--param` values against it. The slot is resolved through the
+  project's connection binding at run time.
 
 Init only declares. Request clients acquired through `OBS.Connection` die with
 `RequestCalledDuringPlanError` if called during planning.

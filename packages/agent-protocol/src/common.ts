@@ -34,11 +34,16 @@ export const connectionId = (integration: string, slot: string): string =>
 export const Timestamp = Schema.Number;
 export type Timestamp = typeof Timestamp.Type;
 
-export const ParamType = Schema.Literals(["string", "number", "boolean", "enum"]);
+export const ParamType = Schema.Literals(["string", "number", "boolean", "enum", "strings"]);
 export type ParamType = typeof ParamType.Type;
 
 /** A parameter value that can travel over JSON without losing its type. */
-export const ParamValue = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
+export const ParamValue = Schema.Union([
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Array(Schema.String),
+]);
 export type ParamValue = typeof ParamValue.Type;
 
 export const ConnectionLocation = Schema.Literals(["local", "cloud", "either"]);

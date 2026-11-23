@@ -22,12 +22,10 @@ const Icon = (props: IconProps & { readonly children: JSX.Element }): JSX.Elemen
   </svg>
 );
 
-export const ScriptsIcon = (props: IconProps) => (
+export const ProjectsIcon = (props: IconProps) => (
   <Icon {...props}>
-    <path d="M14.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7.5L14.5 3Z" />
-    <path d="M14 3v5h5" />
-    <path d="m9.5 13-2 2 2 2" />
-    <path d="m14.5 13 2 2-2 2" />
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+    <path d="M3 11h18" />
   </Icon>
 );
 

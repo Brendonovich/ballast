@@ -21,6 +21,7 @@
   "dependencies": {
     "@ballast/agent-protocol": "workspace:*",
     "@ballast/cloud-protocol": "workspace:*",
+    "@ballast/mcp": "workspace:*",
     "@ballast/core": "workspace:*",
     "@ballast/fake": "workspace:*",
     "@ballast/module-obs": "workspace:*",

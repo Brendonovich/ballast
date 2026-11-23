@@ -1,9 +1,9 @@
 # Ballast: handoff
 
 *Last updated 2026-11-23. Status: **local agent + desktop shell work end to end**. The real
-`apps/agent` service is staged by the desktop dev/pack scripts, the Electron shell installs and
-supervises it, and the Playwright E2E proves install → fake-tick script → UI → quit UI with the
-service still running → uninstall with no LaunchAgent or process left. Phase 1 drivers (OBS,
+`apps/agent` service is staged by the desktop dev/pack scripts, the Electron shell (or CLI) starts
+it as a detached background process, and the Playwright E2E proves start → fake-tick script → UI →
+quit UI with the service still running → stop with no process left. Phase 1 drivers (OBS,
 VTube Studio, Twitch, MIDI, keyboard, WebSocket, HTTP/webhooks) are implemented and tested against
 mocks; real-world validation is the next gate.*
 
@@ -22,16 +22,23 @@ still open, and what to build next.
   commands. `plan` and `run` are in-process; the rest are clients of a running `ballast serve`.
 - **Agent service.** `ballast serve` owns projects, scripts, connections, cloud pairing, logs/events
   and consent. It writes `service.json` (0600), enforces one service per user with `service.lock`,
-  serves the Solid UI at `/`, `/health` for supervisors, and typed Effect RPC at `/rpc`.
-  `ShutdownService` exits 0; `RestartService` exits 75 for launchd/Task Scheduler.
+  serves the Solid UI at `/`, unauthenticated `/health` for discovery, and typed Effect RPC at
+  `/rpc`. `ShutdownService` exits 0; restart is stop + spawn by the caller. The CLI's
+  `ballast service start|stop|restart|status` manages it, and other service commands start it in
+  the background when none is running.
 - **Desktop shell.** One Electron window (token → HttpOnly cookie), tray/menu, versioned service
-  staging, macOS LaunchAgent / Windows Scheduled Task generation, handoff/rollback, update quiesce,
-  and a typed `window.ballast` bridge. Quitting the UI does not stop the service.
+  staging, detached `ballast serve` spawn on every launch (adopt same version, replace another
+  version with rollback), stop-before-app-update, and a typed `window.ballast` bridge. No OS
+  supervisor or start at login. Quitting the UI does not stop the service.
 - **Integrations.** OBS WebSocket, Twitch (local-app + cloud modes, EventSub, Helix), VTube Studio
   (plugin auth/events/hotkeys), keyboard (libuiohook), MIDI, WebSocket client/server, HTTP client
-  and generic local/cloud webhooks. The fake integration drives the E2E and unit suites.
-- **Durable timers.** Scripts declare `Ballast.Timer`, schedule with `after(key, duration, payload)`
-  and handle fires as events. The service persists one `<project>/.ballast/timers.json` per project
+  and generic local/cloud webhooks. Local integrations grant their whole request namespace from
+  the connection handle (for example `midi/*`, `keyboard/*`, `websocket/*`, `fake/*`);
+  per-request declarations remain only where a request carries permission scopes. The fake
+  integration drives the E2E and unit suites.
+- **Durable timers.** Scripts declare a timer with
+  `Ballast.Timer.subscribe(name, schema, handler, options)`, schedule with
+  `after(key, duration, payload)` and handle fires as events. The service persists one `<project>/.ballast/timers.json` per project
   (atomic 0600, per-project writes, corrupt-file quarantine), validates schedules against the
   applied manifest/fingerprint, applies the late policy, delivers once to the active generation,
   and keeps pending entries through stop/restart. Timer identity is project + timer name + key.
@@ -49,8 +56,7 @@ still open, and what to build next.
 - **Verification.** `pnpm typecheck` and `pnpm test` pass across the workspace. Project-bundle
   planning is also exercised from the built `apps/agent/dist-service` against a temporary project
   outside the repo. The desktop E2E
-  (`pnpm --filter @ballast/desktop test:e2e`) passes on macOS against the real service and a
-  throwaway LaunchAgent label. The black-box cloud suite (`packages/e2e`, run under fnm 24.22.2)
+  (`pnpm --filter @ballast/desktop test:e2e`) passes on macOS against the real service. The black-box cloud suite (`packages/e2e`, run under fnm 24.22.2)
   passes Twitch cloud mode (pairing, signed EventSub delivery to a worker, relay buffering/replay,
   owner-keyed reconcile) and cloud webhooks; its local-app/Twitch-CLI scenario is skipped because
   Twitch CLI's mock API is not a drop-in Helix/OAuth server.
@@ -61,7 +67,7 @@ still open, and what to build next.
 |---|---|---|
 | 0001 | Alchemy as the script framework (Plan/Binding/RuntimeContext shape) | **Superseded by 0004**; kept for history and cloud deployment context |
 | 0002 | Twitch auth modes (local-app and cloud) + cloud OAuth vault/EventSub/relay | Implemented; local and cloud paths tested with mocks |
-| 0003 | Desktop shell, background agent service and local API (AgentRpcs, `service.json`, `/health`, LaunchAgent/Task, staging/handoff, quit-UI vs stop-service) | Implemented; E2E covers the macOS lifecycle |
+| 0003 | Desktop shell, background agent service and local API (AgentRpcs, `service.json`, `/health`, detached background process, versioned stages, quit-UI vs stop-service) | Implemented; E2E covers the lifecycle on macOS |
 | 0004 | Drop Alchemy from the script runtime; Ballast plan/runtime layers, Effect only in core | Implemented |
 | 0005 | Generic webhooks through the cloud relay, plus local webhook transport, verification and limits | Implemented; real provider validation pending |
 | 0006 | Durable timers as declared, schema-typed events persisted per project; no resumable `sleep` | Core, planner and service integration implemented and tested; recurring/cron remains future work |
@@ -87,7 +93,7 @@ still open, and what to build next.
 | `packages/e2e` | Cross-package protocol tests (no product UI) |
 | `apps/agent` | `ballast` CLI + `ballast serve` service + `dist-service` build |
 | `apps/web` | Solid web UI served by the agent (scripts, source, logs, connections, settings) |
-| `apps/desktop` | Electron shell: launcher, LaunchAgent/Task, tray, bridge, updater |
+| `apps/desktop` | Electron shell: service launcher, tray, bridge, updater |
 | `apps/cloud` | Cloudflare Worker: OAuth vault, Twitch EventSub, webhooks, machine relay |
 | `examples` | Example scripts (tick, OBS, Twitch, VTS, MIDI, keyboard, WebSocket, webhook) |
 
@@ -103,6 +109,7 @@ pnpm test
 # Local service + CLI
 pnpm --filter @ballast/agent serve
 node --experimental-strip-types --no-warnings=ExperimentalWarning apps/agent/src/bin.ts status
+# or start/stop it in the background: ... bin.ts service start|stop|restart|status
 node --experimental-strip-types --no-warnings=ExperimentalWarning \
   apps/agent/src/bin.ts projects add ./examples --name Examples
 
@@ -110,11 +117,12 @@ node --experimental-strip-types --no-warnings=ExperimentalWarning \
 pnpm --filter @ballast/web dev
 pnpm --filter @ballast/web build
 
-# Desktop (builds web + agent dist-service, then Electron)
+# Desktop (builds web + agent dist-service, then Electron). A rebuilt service gets a new
+# content-hashed dev version, so dev replaces the running service with it.
 pnpm --filter @ballast/desktop dev
 BALLAST_UI_URL=http://localhost:5173 pnpm --filter @ballast/desktop dev
 
-# Real Electron E2E: real service, throwaway LaunchAgent, real UI + screenshot
+# Real Electron E2E: real service, real UI + screenshot, service outlives the UI
 pnpm --filter @ballast/desktop test:e2e
 
 # Package (unsigned local build; Resources/service is outside app.asar)
@@ -159,8 +167,8 @@ existing `dist-service`.
    decisions, especially for webhooks and Twitch.
 4. **Script isolation.** `worker_threads` is not a security boundary. Decide on disabling Node
    built-ins/using isolates before distributing scripts written by others.
-5. **Windows support.** Generate/build/test the Scheduled Task path on a real Windows machine,
-   including the VBS exit-code propagation and launch-at-login.
+5. **Windows support.** Run the detached service spawn, stop and app update on a real Windows
+   machine (no console window, survives the app quitting).
 6. **Signing/notarization/update feed.** Decide the release channel and whether the service and
    app update independently or together.
 7. **Input Monitoring.** Electron exposes Accessibility but not Input Monitoring; decide whether a
@@ -184,7 +192,7 @@ existing `dist-service`.
   connection status; a dedicated approval call-to-action is still needed.
 - **Source-change events** are emitted by the service's one-second project sync, not an OS file
   watcher. That is adequate for the UI refetch but adds up to ~1 s latency.
-- **Windows** task/wrapper generation is unit-tested only; the E2E is macOS-only.
+- **Windows** has not been exercised; the E2E has only been run on macOS.
 - **App updater** is wired through electron-updater but an unsigned local build has no feed; a
   signed app-update run is untested.
 - **Cloud deployment** has unit/protocol tests and a local demo path, but no deployed
@@ -212,7 +220,7 @@ existing `dist-service`.
    `window.ballast.permissions.requestAccessibility()` button, VTS approval copy,
    `script-source-changed` refetch, and the durable-timer list/countdown/cancel plus
    `timer-fired` event (the protocol and service APIs exist).
-3. **Windows + release packaging**: run the Scheduled Task path on Windows, add icon/signing and a
+3. **Windows + release packaging**: run the desktop lifecycle on Windows, add icon/signing and a
    real electron-updater feed, then exercise app-update quiesce/rollback.
 4. **Cloud end-to-end**: deploy the Worker, pair a real machine, run a Twitch EventSub and a webhook
    through the relay, and verify reconnects/revocations.
@@ -224,7 +232,8 @@ existing `dist-service`.
 - `docs/PLAN.md` — product/architecture plan and phases.
 - `docs/decisions/0001`–`0005` — the decision record (0001 superseded).
 - `apps/agent/src/service/` — service, RPC, connections, scripts, timers, HTTP/auth, lifecycle.
-- `apps/desktop/src/main/service/` — launcher, stage/handoff, LaunchAgent/Windows task, controls.
+- `apps/desktop/src/main/service/` — launcher (spawn/adopt/replace/stop), stage, registration, process, controls.
+- `apps/agent/src/service/background.ts` — CLI background spawn/stop.
 - `apps/desktop/src/bridge.ts` — the renderer contract (`service.*`, `permissions.*`, `update.*`).
-- `apps/desktop/e2e/desktop.spec.ts` — the real Electron/LaunchAgent E2E.
+- `apps/desktop/e2e/desktop.spec.ts` — the real Electron + service lifecycle E2E.
 - `packages/agent-protocol/src/` — RPC/schema/event source of truth.

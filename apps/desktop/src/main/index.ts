@@ -1,7 +1,5 @@
 import { app, dialog, shell } from "electron";
-import { existsSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { AppInfo, ServiceAction, ServiceStatus, UpdateState } from "../bridge.ts";
 import { resolveConfig } from "./config.ts";
@@ -15,7 +13,7 @@ import { createTray, type TrayController } from "./tray.ts";
 import { createUpdateManager } from "./update.ts";
 import { createWindowController, type WindowController } from "./window.ts";
 
-const demoActions: ReadonlyArray<DemoAction> = ["status", "install", "start", "restart", "stop", "uninstall"];
+const demoActions: ReadonlyArray<DemoAction> = ["status", "start", "restart", "stop"];
 
 const readFlag = (prefix: string): string | undefined => {
   const found = process.argv.find((argument) => argument.startsWith(prefix));
@@ -25,8 +23,8 @@ const readFlag = (prefix: string): string | undefined => {
 const demoRaw = readFlag("--ballast-demo=");
 const demo: DemoAction | undefined = demoActions.find((action) => action === demoRaw);
 const background = process.argv.includes("--background");
-/** dev.mjs sets this: a dev launch installs/starts the built service automatically. */
-const dev = process.env["BALLAST_DEV"] === "1" && !app.isPackaged;
+/** Every launch starts (or updates) the background service unless BALLAST_AUTOSTART=0. */
+const autostart = process.env["BALLAST_AUTOSTART"] !== "0";
 const quitAfterRaw = readFlag("--ballast-quit-after-ms=");
 const quitAfterMs = quitAfterRaw === undefined ? undefined : Number(quitAfterRaw);
 
@@ -51,14 +49,6 @@ if (!hasLock) {
   });
 }
 
-const userName = (): string => {
-  try {
-    return os.userInfo().username;
-  } catch {
-    return process.env["USER"] ?? "user";
-  }
-};
-
 async function start(): Promise<void> {
   await app.whenReady();
 
@@ -66,7 +56,6 @@ async function start(): Promise<void> {
     env: process.env,
     platform: process.platform,
     arch: process.arch,
-    uid: typeof process.getuid === "function" ? process.getuid() : 0,
     isPackaged: app.isPackaged,
     execPath: process.execPath,
     appPath: app.getAppPath(),
@@ -74,8 +63,6 @@ async function start(): Promise<void> {
     homeDir: app.getPath("home"),
     userDataDir: app.getPath("userData"),
     appVersion: app.getVersion(),
-    userName: userName(),
-    userDomain: process.env["USERDOMAIN"],
   });
 
   if (path.resolve(app.getPath("userData")) !== config.userDataDir) {
@@ -87,7 +74,6 @@ async function start(): Promise<void> {
   logger.info("desktop starting", {
     version: app.getVersion(),
     packaged: app.isPackaged,
-    label: config.label,
     userDataDir: config.userDataDir,
     stateDir: config.stateDir,
   });
@@ -155,12 +141,6 @@ async function start(): Promise<void> {
     }
   };
 
-  const relaunchMarker = path.join(config.userDataDir, "update-relaunch.json");
-  const writeRelaunchMarker = async (): Promise<void> => {
-    await mkdir(config.userDataDir, { recursive: true, mode: 0o700 });
-    await writeFile(relaunchMarker, JSON.stringify({ at: Date.now() }) + "\n", { mode: 0o600 });
-  };
-
   update = createUpdateManager({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -168,10 +148,7 @@ async function start(): Promise<void> {
     feedUrl: process.env["BALLAST_UPDATE_URL"],
     logger,
     onState: broadcastUpdate,
-    beforeInstall: async () => {
-      await launcher.prepareForAppUpdate();
-      await writeRelaunchMarker();
-    },
+    beforeInstall: () => launcher.prepareForAppUpdate(),
   });
 
   const windowsController = createWindowController({
@@ -199,8 +176,8 @@ async function start(): Promise<void> {
     showLogs: () => {
       void showLogs();
     },
-    installService: () => {
-      void perform("Install background service", () => launcher.install());
+    startService: () => {
+      void perform("Start Ballast", () => launcher.start());
     },
     restartService: () => {
       void perform("Restart Ballast", () => launcher.restart());
@@ -224,8 +201,8 @@ async function start(): Promise<void> {
     stopService: () => {
       void perform("Stop Ballast", () => launcher.stop());
     },
-    installService: () => {
-      void perform("Install background service", () => launcher.install());
+    startService: () => {
+      void perform("Start Ballast", () => launcher.start());
     },
     checkForUpdates,
     installUpdate,
@@ -253,7 +230,7 @@ async function start(): Promise<void> {
   app.on("activate", () => windowsController.show());
   app.on("window-all-closed", () => {
     // The window is not the service: Ballast stays in the tray and the
-    // LaunchAgent/Scheduled Task keeps running (0003 §2).
+    // detached background service keeps running (0003 §2).
   });
   app.on("before-quit", () => {
     logger.info("desktop quitting; background service is not stopped");
@@ -262,19 +239,16 @@ async function start(): Promise<void> {
   const initialStatus = await refreshStatus();
   if (!background) windowsController.show();
 
-  // In dev, bring the freshly built service up without a manual tray click.
-  // install() reuses the running stage when nothing changed and hands off when
-  // the built version differs; start() only covers an installed-but-stopped one.
-  if (dev && (!initialStatus.running || initialStatus.updateAvailable)) {
-    const needsInstall = !initialStatus.installed || initialStatus.updateAvailable;
-    logger.info("dev: starting background service", {
+  // Like the OpenCode background service: adopt a running service of the
+  // shipped version, replace one of another version, or spawn a new one.
+  // A relaunch after an app update lands here too.
+  if (autostart && (!initialStatus.running || initialStatus.updateAvailable)) {
+    logger.info("starting background service", {
       phase: initialStatus.phase,
-      installedVersion: initialStatus.installedVersion,
+      runningVersion: initialStatus.runningVersion,
       builtVersion: initialStatus.builtVersion,
     });
-    await perform(needsInstall ? "Install background service" : "Start background service", () =>
-      needsInstall ? launcher.install() : launcher.start(),
-    );
+    await perform("Start Ballast", () => launcher.start());
   }
 
   const timer = setInterval(() => {
@@ -286,12 +260,6 @@ async function start(): Promise<void> {
 
   // Stage the shipped service and clean old versions in the background.
   void launcher.prepare().then(() => refreshStatus()).catch(() => undefined);
-
-  if (existsSync(relaunchMarker)) {
-    await rm(relaunchMarker, { force: true });
-    const status = await launcher.status();
-    if (status.installed) void perform("Restart Ballast after update", () => launcher.start());
-  }
 
   if (quitAfterMs !== undefined && Number.isFinite(quitAfterMs)) {
     setTimeout(() => {

@@ -16,6 +16,7 @@
     "ws-bridge.ts",
     "timer-cooldown.ts",
     "redeem-takeover.ts",
+    "param-strings-project/ballast.ts",
     "stream"
   ],
   "references": [

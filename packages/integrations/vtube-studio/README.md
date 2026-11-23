@@ -10,10 +10,10 @@ import * as VTS from "@ballast/module-vtube-studio";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
-    const hotkey = yield* Ballast.Param.string("hotkey", {
-      options: VTS.hotkeys("main"),
-    });
     const vts = yield* VTS.Connection("main");
+    const hotkey = yield* Ballast.Param.string("hotkey", {
+      options: VTS.hotkeys(vts),
+    });
 
     yield* VTS.HotkeyTriggered.subscribe(
       vts,
@@ -57,11 +57,11 @@ export default Effect.gen(function* () {
   `VTS.ArtMeshTracking.subscribe(vts, handler, { trackingPoints, frequency })`,
   and so on.
 - Param option sources:
-  - `VTS.models(slot)` -> `AvailableModels`, values are `modelID` (what
+  - `VTS.models(vts)` -> `AvailableModels`, values are `modelID` (what
     `ModelLoad` needs).
-  - `VTS.hotkeys(slot)` -> `HotkeysInCurrentModel`, values are hotkey names
+  - `VTS.hotkeys(vts)` -> `HotkeysInCurrentModel`, values are hotkey names
     (or the ID for a name-less hotkey); `HotkeyTrigger` accepts either.
-  - `VTS.expressions(slot)` -> `ExpressionState`, values are `.exp3.json`
+  - `VTS.expressions(vts)` -> `ExpressionState`, values are `.exp3.json`
     files as `ExpressionActivation` needs.
 
 Init only declares; a request client called during planning dies with

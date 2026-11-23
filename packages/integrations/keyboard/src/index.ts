@@ -1,5 +1,6 @@
 import * as Ballast from "@ballast/core";
 import * as Effect from "effect/Effect";
+import type * as Schema from "effect/Schema";
 import { INTEGRATION } from "./constants.ts";
 import {
   hotkeyCondition,
@@ -64,14 +65,54 @@ export type { HotkeyFilter, HotkeyParse, HotkeyState } from "./hotkey.ts";
 
 export type Integration = typeof INTEGRATION;
 
-/** Declare a global keyboard connection slot. */
+export interface KeyboardClient extends Ballast.ConnectionRef<Integration> {
+  /** Tap a key once, optionally holding modifiers, on the streamer's machine. */
+  readonly tap: (input: TapInput) => Effect.Effect<RequestOutput>;
+  /** Press or release a key without a matching tap, for push-to-talk style keys. */
+  readonly toggle: (input: ToggleInput) => Effect.Effect<RequestOutput>;
+}
+
+const call = <A, B>(
+  host: Ballast.RequestHostService,
+  connection: Ballast.ConnectionRef<Integration>,
+  request: string,
+  inputSchema: Schema.Codec<A, unknown, never, never>,
+  outputSchema: Schema.Codec<B, unknown, never, never>,
+  input: A,
+): Effect.Effect<B> =>
+  host.granted<A, B>({
+    integration: INTEGRATION,
+    slot: connection.slot,
+    request,
+    scopes: [],
+    key: INTEGRATION + "/" + connection.slot + "/" + request,
+    inputSchema,
+    outputSchema,
+  })(input);
+
+/**
+ * Declare a global keyboard connection slot. The connection grants the whole
+ * `keyboard/*` request namespace; synthetic key actions are methods on the
+ * returned handle. The OS Accessibility permission is connection-wide.
+ */
 export const Connection = (
   slot: string,
-): Effect.Effect<Ballast.ConnectionRef<Integration>> =>
-  Ballast.Connection<Integration>({
-    integration: INTEGRATION,
-    slot,
-    location: "local",
+): Effect.Effect<KeyboardClient, never, Ballast.RequestHost> =>
+  Effect.gen(function* () {
+    const connection = yield* Ballast.Connection<Integration>({
+      integration: INTEGRATION,
+      slot,
+      location: "local",
+      requests: ["*"],
+    });
+    const host = yield* Ballast.RequestHost;
+    return {
+      ...connection,
+      tap: (input) =>
+        call(host, connection, "keyboard/tap", TapInputSchema, RequestOutputSchema, input),
+      toggle: (input) =>
+        call(host, connection, "keyboard/toggle", ToggleInputSchema, RequestOutputSchema, input),
+    };
   });
 
 /**
@@ -146,36 +187,14 @@ export const Hotkey: Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions> = 
   },
 };
 
-/** Tap a key once, optionally holding modifiers, on the streamer's machine. */
-export const Tap = (
-  connection: Ballast.ConnectionRef<Integration>,
-): Effect.Effect<Ballast.RequestClient<TapInput, RequestOutput>, never, Ballast.RequestHost> =>
-  Ballast.Request<TapInput, RequestOutput>({
-    integration: INTEGRATION,
-    slot: connection.slot,
-    request: "keyboard/tap",
-    inputSchema: TapInputSchema,
-    outputSchema: RequestOutputSchema,
-  });
-
-/** Press or release a key without a matching tap, for push-to-talk style keys. */
-export const Toggle = (
-  connection: Ballast.ConnectionRef<Integration>,
-): Effect.Effect<Ballast.RequestClient<ToggleInput, RequestOutput>, never, Ballast.RequestHost> =>
-  Ballast.Request<ToggleInput, RequestOutput>({
-    integration: INTEGRATION,
-    slot: connection.slot,
-    request: "keyboard/toggle",
-    inputSchema: ToggleInputSchema,
-    outputSchema: RequestOutputSchema,
-  });
-
 /**
  * Dynamic string options for a key picker. The agent resolves them from
  * `Keyboard.keyNames`; useful for a settings UI that edits hotkey options.
  */
-export const keys = (slot: string): Ballast.ParamOptionSource => ({
+export const keys = (
+  connection: Ballast.ConnectionRef<Integration>,
+): Ballast.ParamOptionSource => ({
   integration: INTEGRATION,
-  slot,
+  slot: connection.slot,
   source: "keys",
 });

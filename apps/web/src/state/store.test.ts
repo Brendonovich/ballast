@@ -6,10 +6,6 @@ import { createAgentStore } from "./store.ts";
 import type { AgentStore } from "./store.ts";
 
 const main = "proj_main";
-const alt = "proj_alt";
-const redeem = "scripts/redeem-to-scene.ts";
-const cheer = "scripts/cheer-alert.ts";
-const tick = "scripts/tick-echo.ts";
 
 interface Harness {
   readonly runtime: AgentRuntime;
@@ -49,7 +45,7 @@ afterEach(async () => {
 });
 
 describe("agent store against MockAgentLayer", () => {
-  it("loads the snapshot and selects the default project", async () => {
+  it("loads the snapshot and project list", async () => {
     const { store } = await setup();
 
     expect(store.watchStatus()).toBe("live");
@@ -59,44 +55,24 @@ describe("agent store against MockAgentLayer", () => {
       "Main Channel",
       "Second Channel",
     ]);
-    expect(store.selectedProjectId()).toBe(main);
-    expect(store.visibleScripts().map((script) => script.name)).toEqual([
-      "Cheer Alert",
-      "Redeem to Scene",
-    ]);
-    expect(store.health()?.scripts.total).toBe(4);
-    expect(store.consents().map((consent) => consent.id)).toEqual(["consent-cheer"]);
+    expect(store.project(main)?.status).toBe("running");
+    expect(store.health()?.projects.total).toBe(2);
   });
 
-  it("switches between one project and all projects", async () => {
+  it("creates, adds and removes projects", async () => {
     const { store } = await setup();
 
-    store.selectProject(alt);
-    expect(store.currentProject()?.name).toBe("Second Channel");
-    expect(store.visibleScripts().map((script) => script.id)).toEqual([
-      "scripts/scene-rotation.ts",
-      tick,
-    ]);
+    const created = await store.createProject("Guest Channel", "/Users/streamer/Ballast/guest");
+    expect(created?.summary.status).toBe("stopped");
+    expect(created?.summary.unitCount).toBe(0);
+    expect(store.project(created?.summary.id ?? "")?.name).toBe("Guest Channel");
 
-    store.selectProject("all");
-    expect(store.currentProject()).toBeUndefined();
-    expect(store.visibleScripts()).toHaveLength(4);
-  });
+    const added = await store.addProject("/Users/streamer/Ballast/other", "Other");
+    expect(added?.summary.id).toBe("proj_4");
+    expect(store.projects().map((project) => project.name)).toContain("Other");
 
-  it("adds and removes projects, leaving files alone", async () => {
-    const { store } = await setup();
-
-    const added = await store.addProject("/Users/streamer/Ballast/guest", "Guest");
-    expect(added?.summary.id).toBe("proj_3");
-    expect(store.projects().map((project) => project.name)).toContain("Guest");
-    expect(store.projectScriptCount("proj_3")).toBe(0);
-
-    store.selectProject("proj_3");
-    expect(store.selectedProjectId()).toBe("proj_3");
-
-    expect(await store.removeProject("proj_3")).toBe(true);
-    expect(store.projects().map((project) => project.name)).not.toContain("Guest");
-    expect(store.selectedProjectId()).toBe(main);
+    expect(await store.removeProject(added?.summary.id ?? "")).toBe(true);
+    expect(store.projects().map((project) => project.name)).not.toContain("Other");
   });
 
   it("surfaces project path validation errors", async () => {
@@ -107,99 +83,101 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.lastActionError()).toContain("must be absolute");
   });
 
-  it("reads a manifest, edits params and validates values", async () => {
+  it("loads project detail, units and starts/stops the worker", async () => {
     const { store } = await setup();
 
-    const detail = await store.fetchScript(main, redeem, true);
-    expect(detail?.manifest.params.map((param) => param.key)).toEqual([
-      "rewardTitle",
-      "scene",
-      "holdSeconds",
-    ]);
-    expect(detail?.manifest.params.find((param) => param.key === "scene")?.options).toContain(
-      "BRB",
-    );
+    const detail = await store.fetchProject(main, true);
+    expect(detail?.summary.id).toBe(main);
+    expect(detail?.units.length).toBeGreaterThan(0);
+    expect(store.projectDetail(main)?.units.length).toBe(detail?.units.length);
 
-    const updated = await store.setScriptParam(main, redeem, "scene", "BRB");
-    expect(updated?.summary.generation).toBe(4);
-    expect(updated?.manifest.params.find((param) => param.key === "scene")?.value).toBe("BRB");
-    expect(store.detail(main, redeem)?.manifest.params[1]?.value).toBe("BRB");
+    const stopped = await store.stopProject(main);
+    expect(stopped?.summary.status).toBe("stopped");
+    expect(store.project(main)?.status).toBe("stopped");
 
-    const invalid = await store.setScriptParam(main, redeem, "scene", 42);
-    expect(invalid).toBeUndefined();
-    expect(store.lastActionError()).toContain("expects enum");
+    const started = await store.startProject(main);
+    expect(started?.summary.status).toBe("running");
+    expect(store.project(main)?.status).toBe("running");
   });
 
-  it("approves and rejects consent", async () => {
-    const { store } = await setup();
-
-    const pending = await store.fetchScript(main, cheer, true);
-    expect(pending?.pendingConsent?.diff.added.scopes).toEqual([
-      "bits:read",
-      "user:write:chat",
-    ]);
-
-    const approved = await store.approveConsent("consent-cheer");
-    expect(approved?.summary.status).toBe("running");
-    expect(approved?.pendingConsent).toBeUndefined();
-    expect(store.consents()).toHaveLength(0);
-    expect(store.script(main, cheer)?.enabled).toBe(true);
-
-    const detail = await store.fetchScript(main, cheer, true);
-    expect(detail?.pendingConsent).toBeUndefined();
-  });
-
-  it("applies WatchService changes made by another client", async () => {
+  it("applies project changes made by another client", async () => {
     const { runtime, store } = await setup();
 
-    expect(store.script(main, redeem)?.status).toBe("running");
-    await runtime.run(runtime.client.StopScript({ projectId: main, scriptId: redeem }));
+    expect(store.project(main)).not.toBeUndefined();
+    await runtime.run(runtime.client.RemoveProject({ projectId: main }));
     await waitFor(
-      () => store.script(main, redeem)?.status === "stopped",
-      "the stopped script event",
+      () => store.project(main) === undefined,
+      "the project-removed event",
     );
-    expect(store.script(main, redeem)?.enabled).toBe(false);
+    expect(store.projects().map((project) => project.id)).not.toContain(main);
   });
 
-  it("streams logs live for a script", async () => {
+  it("lists and reads project files", async () => {
     const { store } = await setup();
 
-    await waitFor(() => store.logStatus() === "live", "initial log history");
-    const started = await store.startScript(alt, tick);
-    expect(started?.summary.status).toBe("running");
+    const tree = await store.listProjectFiles(main);
+    expect(tree?.entry).toBe("ballast.ts");
+    expect(tree?.files.some((file) => file.path === "ballast.ts")).toBe(true);
 
-    await waitFor(
-      () =>
-        store
-          .logs()
-          .some(
-            (entry) =>
-              entry.scriptId === tick &&
-              entry.message.includes("started generation 2"),
-          ),
-      "the live start log",
-    );
+    const file = await store.readProjectFile(main, "ballast.ts");
+    expect(file?.path).toBe("ballast.ts");
+    expect(file?.language).toBe("typescript");
+    expect(file?.content).toContain("mock source");
+    expect(file?.sha256).toMatch(/^[0-9a-f]{64}$/);
+
   });
 
-  it("keeps enabled tied to explicit start and stop", async () => {
+  it("creates, updates and deletes connection instances", async () => {
     const { store } = await setup();
 
-    const started = await store.startScript(alt, tick);
-    expect(started?.summary.status).toBe("running");
-    expect(started?.summary.enabled).toBe(true);
+    const created = await store.createConnection({
+      integration: "fake",
+      label: "New Fake",
+      config: { prefix: ">>" },
+    });
+    expect(created?.label).toBe("New Fake");
+    expect(store.connections().some((connection) => connection.id === created?.id)).toBe(true);
 
-    const stopped = await store.stopScript(alt, tick);
-    expect(stopped?.summary.status).toBe("stopped");
-    expect(stopped?.summary.enabled).toBe(false);
-    expect(store.script(alt, tick)?.enabled).toBe(false);
+    const updated = await store.updateConnection({
+      id: created?.id ?? "",
+      label: "Renamed Fake",
+    });
+    expect(updated?.label).toBe("Renamed Fake");
+    expect(store.connection(created?.id ?? "")?.label).toBe("Renamed Fake");
 
-    const disabled = await store.setScriptEnabled(alt, tick, false);
-    expect(disabled?.summary.status).toBe("stopped");
-    expect(disabled?.summary.enabled).toBe(false);
+    expect(await store.deleteConnection(created?.id ?? "")).toBe(true);
+    expect(store.connection(created?.id ?? "")).toBeUndefined();
+  });
 
-    const resumed = await store.setScriptEnabled(alt, tick, true);
-    expect(resumed?.summary.status).toBe("running");
-    expect(resumed?.summary.enabled).toBe(true);
+  it("binds requirements and refuses deleting a bound instance", async () => {
+    const { store } = await setup();
+    const instance = await store.createConnection({
+      integration: "obs",
+      label: "Test OBS",
+      config: { url: "ws://127.0.0.1:4455" },
+    });
+    if (instance === undefined) throw new Error("Expected a created OBS instance");
+
+    const bound = await store.setProjectBinding(main, "obs", "main", instance.id);
+    expect(
+      bound?.requirements.find(
+        (requirement) => requirement.integration === "obs" && requirement.slot === "main",
+      )?.boundInstanceId,
+    ).toBe(instance.id);
+    expect(
+      store.connection(instance.id)?.boundBy.some((ref) => ref.projectId === main),
+    ).toBe(true);
+
+    expect(await store.deleteConnection(instance.id)).toBe(false);
+    expect(store.lastActionError()).toContain("unbind");
+
+    const unbound = await store.setProjectBinding(main, "obs", "main", null);
+    expect(
+      unbound?.requirements.find(
+        (requirement) => requirement.integration === "obs" && requirement.slot === "main",
+      )?.boundInstanceId,
+    ).toBeUndefined();
+    expect(await store.deleteConnection(instance.id)).toBe(true);
   });
 
   it("configures, connects and authorizes connections", async () => {
@@ -243,21 +221,6 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.cloud()?.account?.login).toBe("streamer");
   });
 
-  it("reads a script's source and its content hash", async () => {
-    const { store } = await setup();
-
-    const source = await store.fetchScriptSource(main, redeem);
-    expect(source?.path).toBe(redeem);
-    expect(source?.language).toBe("typescript");
-    expect(source?.content).toContain("Effect.gen");
-    expect(source?.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(store.scriptSourceRevision(main, redeem)).toBe(0);
-
-    const missing = await store.fetchScriptSource(main, "scripts/nope.ts");
-    expect(missing).toBeUndefined();
-    expect(store.lastActionError()).toContain("No script");
-  });
-
   it("reports a shell permission to the service", async () => {
     const { store } = await setup();
     expect(await store.reportShellPermission("accessibility", "denied")).toBe(true);
@@ -266,7 +229,6 @@ describe("agent store against MockAgentLayer", () => {
   it("calls service lifecycle RPCs and refreshes all state", async () => {
     const { store } = await setup();
 
-    expect(await store.restartService("test")).toBe(true);
     expect(await store.shutdownService()).toBe(true);
     expect(await store.refresh()).toBe(true);
     expect(store.health()?.ok).toBe(true);

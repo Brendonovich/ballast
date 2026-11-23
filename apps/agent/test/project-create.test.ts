@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import { withAgentClient } from "../src/service/client.ts";
 import { readServiceRegistration } from "../src/service/config.ts";
@@ -33,7 +34,9 @@ const asError = (error: unknown): Error => {
 };
 
 const call = <A, E>(root: string, use: (client: import("../src/service/client.ts").LiveAgentClient) => Effect.Effect<A, E>): Effect.Effect<A, E | Error> =>
-  withAgentClient(use, { BALLAST_STATE_DIR: join(root, "state"), BALLAST_DATA_DIR: join(root, "data") }).pipe(Effect.mapError(asError));
+  withAgentClient(use, { BALLAST_STATE_DIR: join(root, "state"), BALLAST_DATA_DIR: join(root, "data") }).pipe(
+    Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
+    Effect.mapError(asError));
 
 interface Service {
   readonly child: ChildProcess;
@@ -57,7 +60,7 @@ const startService = (root: string): Effect.Effect<Service, Error> =>
     });
     yield* waitFor("service", () =>
       Effect.promise(async () => {
-        const registration = await readServiceRegistration(join(root, "state"));
+        const registration = await Effect.runPromise(readServiceRegistration(join(root, "state")).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)));
         return registration?.pid === child.pid ? registration : undefined;
       }),
     );
@@ -93,6 +96,23 @@ describe("project scaffolding and checks", () => {
       expect((yield* Effect.promise(() => stat(join(projectRoot, "ballast.ts")))).isFile()).toBe(true);
       expect(yield* Effect.promise(() => readFile(join(projectRoot, "AGENTS.md"), "utf8"))).toContain("ballast_guide");
       expect(yield* Effect.promise(() => readFile(join(projectRoot, "package.json"), "utf8"))).toContain("ballast.ts");
+      const scaffold = yield* Effect.promise(() => readFile(join(projectRoot, "ballast.ts"), "utf8"));
+      expect(scaffold).toContain("Ballast.Param.string");
+      expect(scaffold).toContain('Ballast.run("ready"');
+      expect(scaffold).not.toContain("Ballast.Timer");
+      expect(scaffold).not.toContain("Timer.");
+      const tsconfig = JSON.parse(
+        yield* Effect.promise(() => readFile(join(projectRoot, "tsconfig.json"), "utf8")),
+      ) as {
+        compilerOptions: {
+          paths: Record<string, ReadonlyArray<string>>;
+          typeRoots: ReadonlyArray<string>;
+        };
+      };
+      expect(tsconfig.compilerOptions.paths["@ballast/*"]?.[0]).toContain(
+        "/types/current/@ballast/*/src/index.ts",
+      );
+      expect(tsconfig.compilerOptions.typeRoots[0]).toContain("/types/current/@types");
 
       const duplicate = yield* call(root, (client) =>
         client.CreateProject({ name: "New Stream" }),
@@ -124,8 +144,15 @@ describe("project scaffolding and checks", () => {
       expect(needsConsent.requiresConsent).toBe(true);
       expect(needsConsent.missingScopes).toContain("fake:read");
       expect(needsConsent.changes.some((change) => change.kind === "topic" && change.change === "added")).toBe(true);
-      expect(needsConsent.pendingConsent).toBeUndefined();
       expect(needsConsent.appliedManifest?.topics).toEqual([]);
+
+      const planned = yield* call(root, (client) =>
+        client.PlanProject({ projectId: created.summary.id }),
+      );
+      expect(planned.pendingConsent).toBeDefined();
+      const health = yield* call(root, (client) => client.GetHealth());
+      expect(health.projects.needsConsent).toBe(1);
+      expect((yield* call(root, (client) => client.ListProjectConsents({ projectId: created.summary.id }))).consents).toHaveLength(1);
 
       yield* Effect.promise(() =>
         writeFile(join(projectRoot, "ballast.ts"), "const broken: number = \"nope\";\n", "utf8"),
@@ -137,6 +164,30 @@ describe("project scaffolding and checks", () => {
       expect(broken.diagnostics[0]?.code).toBe("TS2322");
       expect(broken.diagnostics[0]?.file).toBe("ballast.ts");
       expect(broken.appliedManifest?.project.entry).toBe("ballast.ts");
+
+      const failedPlan = yield* call(root, (client) =>
+        client.PlanProject({ projectId: created.summary.id }),
+      ).pipe(Effect.exit);
+      expect(failedPlan._tag).toBe("Failure");
+      const withPlanError = yield* call(root, (client) =>
+        client.GetProject({ projectId: created.summary.id }),
+      );
+      expect(withPlanError.summary.lastError).toBeDefined();
+      expect(withPlanError.summary.status).toBe("error");
+
+      yield* Effect.promise(() =>
+        writeFile(
+          join(projectRoot, "ballast.ts"),
+          'import { Effect } from "effect";\n\nexport default Effect.gen(function* () {\n  yield* Effect.log("ok");\n});\n',
+          "utf8",
+        ),
+      );
+      const repaired = yield* call(root, (client) =>
+        client.CheckProject({ projectId: created.summary.id }),
+      );
+      expect(repaired.ok).toBe(true);
+      expect(repaired.summary.lastError).toBeUndefined();
+      expect(repaired.summary.status).not.toBe("error");
     }),
     120_000,
   );

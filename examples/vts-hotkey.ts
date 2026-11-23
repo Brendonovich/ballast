@@ -3,11 +3,11 @@ import * as VTS from "@ballast/module-vtube-studio";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
+  const vts = yield* VTS.Connection("main");
   const hotkey = yield* Ballast.Param.string("hotkey", {
     title: "Hotkey",
-    options: VTS.hotkeys("main"),
+    options: VTS.hotkeys(vts),
   });
-  const vts = yield* VTS.Connection("main");
 
   yield* VTS.HotkeyTriggered.subscribe(
     "hotkey-triggered",

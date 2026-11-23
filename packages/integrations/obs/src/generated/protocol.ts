@@ -31,11 +31,87 @@ export type EventSubscriptionName = keyof typeof EventSubscriptionBits;
 /** Every non-high-volume event category, including Canvases. */
 export const AllEventsMask = 4095;
 
+/** A scene returned by GetSceneList. */
+export const SceneSchema = Schema.Struct({
+  "sceneName": Schema.String,
+  "sceneUuid": Schema.String,
+  "sceneIndex": Schema.Number,
+});
+export type Scene = Schema.Schema.Type<typeof SceneSchema>;
+
+/** A scene item transform, shared by Get/SetSceneItemTransform. */
+export const SceneItemTransformSchema = Schema.Struct({
+  "alignment": Schema.Number,
+  "boundsAlignment": Schema.Number,
+  "boundsHeight": Schema.Number,
+  "boundsType": Schema.String,
+  "boundsWidth": Schema.Number,
+  "cropBottom": Schema.Number,
+  "cropLeft": Schema.Number,
+  "cropRight": Schema.Number,
+  "cropTop": Schema.Number,
+  "height": Schema.Number,
+  "positionX": Schema.Number,
+  "positionY": Schema.Number,
+  "rotation": Schema.Number,
+  "scaleX": Schema.Number,
+  "scaleY": Schema.Number,
+  "sourceHeight": Schema.Number,
+  "sourceWidth": Schema.Number,
+  "width": Schema.Number,
+});
+export type SceneItemTransform = Schema.Schema.Type<typeof SceneItemTransformSchema>;
+
+/** A scene item returned by GetSceneItemList / GetGroupSceneItemList. */
+export const SceneItemSchema = Schema.Struct({
+  "inputKind": Schema.NullOr(Schema.String),
+  "isGroup": Schema.NullOr(Schema.Boolean),
+  "sceneItemId": Schema.Number,
+  "sceneItemIndex": Schema.Number,
+  "sceneItemLocked": Schema.Boolean,
+  "sceneItemTransform": SceneItemTransformSchema,
+  "sceneItemEnabled": Schema.Boolean,
+  "sceneItemBlendMode": Schema.String,
+  "sourceName": Schema.String,
+  "sourceUuid": Schema.String,
+});
+export type SceneItem = Schema.Schema.Type<typeof SceneItemSchema>;
+
+/** An input returned by GetInputList. */
+export const InputSchema = Schema.Struct({
+  "inputName": Schema.String,
+  "inputUuid": Schema.String,
+  "inputKind": Schema.String,
+  "unversionedInputKind": Schema.String,
+});
+export type Input = Schema.Schema.Type<typeof InputSchema>;
+
+/** A transition returned by GetSceneTransitionList. */
+export const TransitionSchema = Schema.Struct({
+  "transitionName": Schema.String,
+  "transitionUuid": Schema.String,
+  "transitionKind": Schema.String,
+  "transitionFixed": Schema.Boolean,
+  "transitionConfigurable": Schema.Boolean,
+  "transitionSettings": Schema.Record(Schema.String, Schema.Unknown),
+});
+export type Transition = Schema.Schema.Type<typeof TransitionSchema>;
+
+/** A monitor returned by GetMonitorList. */
+export const MonitorSchema = Schema.Struct({
+  "monitorName": Schema.String,
+  "monitorUuid": Schema.String,
+  "monitorIndex": Schema.Number,
+  "monitorWidth": Schema.Number,
+  "monitorHeight": Schema.Number,
+});
+export type Monitor = Schema.Schema.Type<typeof MonitorSchema>;
+
 export const BroadcastCustomEventRequestSchema = Schema.Struct({
   "eventData": Schema.Record(Schema.String, Schema.Unknown),
 });
 export type BroadcastCustomEventRequest = Schema.Schema.Type<typeof BroadcastCustomEventRequestSchema>;
-export const BroadcastCustomEventResponseSchema = Schema.Struct({});
+export const BroadcastCustomEventResponseSchema = Schema.Void;
 export type BroadcastCustomEventResponse = Schema.Schema.Type<typeof BroadcastCustomEventResponseSchema>;
 
 export const CallVendorRequestRequestSchema = Schema.Struct({
@@ -71,14 +147,14 @@ export const CreateProfileRequestSchema = Schema.Struct({
   "profileName": Schema.String,
 });
 export type CreateProfileRequest = Schema.Schema.Type<typeof CreateProfileRequestSchema>;
-export const CreateProfileResponseSchema = Schema.Struct({});
+export const CreateProfileResponseSchema = Schema.Void;
 export type CreateProfileResponse = Schema.Schema.Type<typeof CreateProfileResponseSchema>;
 
 export const CreateRecordChapterRequestSchema = Schema.Struct({
   "chapterName": Schema.optional(Schema.String),
 });
 export type CreateRecordChapterRequest = Schema.Schema.Type<typeof CreateRecordChapterRequestSchema>;
-export const CreateRecordChapterResponseSchema = Schema.Struct({});
+export const CreateRecordChapterResponseSchema = Schema.Void;
 export type CreateRecordChapterResponse = Schema.Schema.Type<typeof CreateRecordChapterResponseSchema>;
 
 export const CreateSceneRequestSchema = Schema.Struct({
@@ -95,7 +171,7 @@ export const CreateSceneCollectionRequestSchema = Schema.Struct({
   "sceneCollectionName": Schema.String,
 });
 export type CreateSceneCollectionRequest = Schema.Schema.Type<typeof CreateSceneCollectionRequestSchema>;
-export const CreateSceneCollectionResponseSchema = Schema.Struct({});
+export const CreateSceneCollectionResponseSchema = Schema.Void;
 export type CreateSceneCollectionResponse = Schema.Schema.Type<typeof CreateSceneCollectionResponseSchema>;
 
 export const CreateSceneItemRequestSchema = Schema.Struct({
@@ -121,7 +197,7 @@ export const CreateSourceFilterRequestSchema = Schema.Struct({
   "filterSettings": Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 export type CreateSourceFilterRequest = Schema.Schema.Type<typeof CreateSourceFilterRequestSchema>;
-export const CreateSourceFilterResponseSchema = Schema.Struct({});
+export const CreateSourceFilterResponseSchema = Schema.Void;
 export type CreateSourceFilterResponse = Schema.Schema.Type<typeof CreateSourceFilterResponseSchema>;
 
 export const DuplicateSceneItemRequestSchema = Schema.Struct({
@@ -199,7 +275,7 @@ export const GetGroupSceneItemListRequestSchema = Schema.Struct({
 });
 export type GetGroupSceneItemListRequest = Schema.Schema.Type<typeof GetGroupSceneItemListRequestSchema>;
 export const GetGroupSceneItemListResponseSchema = Schema.Struct({
-  "sceneItems": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  "sceneItems": Schema.Array(SceneItemSchema),
 });
 export type GetGroupSceneItemListResponse = Schema.Schema.Type<typeof GetGroupSceneItemListResponseSchema>;
 
@@ -293,7 +369,7 @@ export const GetInputListRequestSchema = Schema.Struct({
 });
 export type GetInputListRequest = Schema.Schema.Type<typeof GetInputListRequestSchema>;
 export const GetInputListResponseSchema = Schema.Struct({
-  "inputs": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  "inputs": Schema.Array(InputSchema),
 });
 export type GetInputListResponse = Schema.Schema.Type<typeof GetInputListResponseSchema>;
 
@@ -362,7 +438,7 @@ export type GetMediaInputStatusResponse = Schema.Schema.Type<typeof GetMediaInpu
 export const GetMonitorListRequestSchema = Schema.Struct({});
 export type GetMonitorListRequest = Schema.Schema.Type<typeof GetMonitorListRequestSchema>;
 export const GetMonitorListResponseSchema = Schema.Struct({
-  "monitors": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  "monitors": Schema.Array(MonitorSchema),
 });
 export type GetMonitorListResponse = Schema.Schema.Type<typeof GetMonitorListResponseSchema>;
 
@@ -516,7 +592,7 @@ export const GetSceneItemListRequestSchema = Schema.Struct({
 });
 export type GetSceneItemListRequest = Schema.Schema.Type<typeof GetSceneItemListRequestSchema>;
 export const GetSceneItemListResponseSchema = Schema.Struct({
-  "sceneItems": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  "sceneItems": Schema.Array(SceneItemSchema),
 });
 export type GetSceneItemListResponse = Schema.Schema.Type<typeof GetSceneItemListResponseSchema>;
 
@@ -553,7 +629,7 @@ export const GetSceneItemTransformRequestSchema = Schema.Struct({
 });
 export type GetSceneItemTransformRequest = Schema.Schema.Type<typeof GetSceneItemTransformRequestSchema>;
 export const GetSceneItemTransformResponseSchema = Schema.Struct({
-  "sceneItemTransform": Schema.Record(Schema.String, Schema.Unknown),
+  "sceneItemTransform": SceneItemTransformSchema,
 });
 export type GetSceneItemTransformResponse = Schema.Schema.Type<typeof GetSceneItemTransformResponseSchema>;
 
@@ -566,7 +642,7 @@ export const GetSceneListResponseSchema = Schema.Struct({
   "currentProgramSceneUuid": Schema.NullOr(Schema.String),
   "currentPreviewSceneName": Schema.NullOr(Schema.String),
   "currentPreviewSceneUuid": Schema.NullOr(Schema.String),
-  "scenes": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  "scenes": Schema.Array(SceneSchema),
 });
 export type GetSceneListResponse = Schema.Schema.Type<typeof GetSceneListResponseSchema>;
 
@@ -588,7 +664,7 @@ export const GetSceneTransitionListResponseSchema = Schema.Struct({
   "currentSceneTransitionName": Schema.NullOr(Schema.String),
   "currentSceneTransitionUuid": Schema.NullOr(Schema.String),
   "currentSceneTransitionKind": Schema.NullOr(Schema.String),
-  "transitions": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  "transitions": Schema.Array(TransitionSchema),
 });
 export type GetSceneTransitionListResponse = Schema.Schema.Type<typeof GetSceneTransitionListResponseSchema>;
 
@@ -764,7 +840,7 @@ export const OffsetMediaInputCursorRequestSchema = Schema.Struct({
   "mediaCursorOffset": Schema.Number,
 });
 export type OffsetMediaInputCursorRequest = Schema.Schema.Type<typeof OffsetMediaInputCursorRequestSchema>;
-export const OffsetMediaInputCursorResponseSchema = Schema.Struct({});
+export const OffsetMediaInputCursorResponseSchema = Schema.Void;
 export type OffsetMediaInputCursorResponse = Schema.Schema.Type<typeof OffsetMediaInputCursorResponseSchema>;
 
 export const OpenInputFiltersDialogRequestSchema = Schema.Struct({
@@ -772,7 +848,7 @@ export const OpenInputFiltersDialogRequestSchema = Schema.Struct({
   "inputUuid": Schema.optional(Schema.String),
 });
 export type OpenInputFiltersDialogRequest = Schema.Schema.Type<typeof OpenInputFiltersDialogRequestSchema>;
-export const OpenInputFiltersDialogResponseSchema = Schema.Struct({});
+export const OpenInputFiltersDialogResponseSchema = Schema.Void;
 export type OpenInputFiltersDialogResponse = Schema.Schema.Type<typeof OpenInputFiltersDialogResponseSchema>;
 
 export const OpenInputInteractDialogRequestSchema = Schema.Struct({
@@ -780,7 +856,7 @@ export const OpenInputInteractDialogRequestSchema = Schema.Struct({
   "inputUuid": Schema.optional(Schema.String),
 });
 export type OpenInputInteractDialogRequest = Schema.Schema.Type<typeof OpenInputInteractDialogRequestSchema>;
-export const OpenInputInteractDialogResponseSchema = Schema.Struct({});
+export const OpenInputInteractDialogResponseSchema = Schema.Void;
 export type OpenInputInteractDialogResponse = Schema.Schema.Type<typeof OpenInputInteractDialogResponseSchema>;
 
 export const OpenInputPropertiesDialogRequestSchema = Schema.Struct({
@@ -788,7 +864,7 @@ export const OpenInputPropertiesDialogRequestSchema = Schema.Struct({
   "inputUuid": Schema.optional(Schema.String),
 });
 export type OpenInputPropertiesDialogRequest = Schema.Schema.Type<typeof OpenInputPropertiesDialogRequestSchema>;
-export const OpenInputPropertiesDialogResponseSchema = Schema.Struct({});
+export const OpenInputPropertiesDialogResponseSchema = Schema.Void;
 export type OpenInputPropertiesDialogResponse = Schema.Schema.Type<typeof OpenInputPropertiesDialogResponseSchema>;
 
 export const OpenSourceProjectorRequestSchema = Schema.Struct({
@@ -799,7 +875,7 @@ export const OpenSourceProjectorRequestSchema = Schema.Struct({
   "projectorGeometry": Schema.optional(Schema.String),
 });
 export type OpenSourceProjectorRequest = Schema.Schema.Type<typeof OpenSourceProjectorRequestSchema>;
-export const OpenSourceProjectorResponseSchema = Schema.Struct({});
+export const OpenSourceProjectorResponseSchema = Schema.Void;
 export type OpenSourceProjectorResponse = Schema.Schema.Type<typeof OpenSourceProjectorResponseSchema>;
 
 export const OpenVideoMixProjectorRequestSchema = Schema.Struct({
@@ -808,12 +884,12 @@ export const OpenVideoMixProjectorRequestSchema = Schema.Struct({
   "projectorGeometry": Schema.optional(Schema.String),
 });
 export type OpenVideoMixProjectorRequest = Schema.Schema.Type<typeof OpenVideoMixProjectorRequestSchema>;
-export const OpenVideoMixProjectorResponseSchema = Schema.Struct({});
+export const OpenVideoMixProjectorResponseSchema = Schema.Void;
 export type OpenVideoMixProjectorResponse = Schema.Schema.Type<typeof OpenVideoMixProjectorResponseSchema>;
 
 export const PauseRecordRequestSchema = Schema.Struct({});
 export type PauseRecordRequest = Schema.Schema.Type<typeof PauseRecordRequestSchema>;
-export const PauseRecordResponseSchema = Schema.Struct({});
+export const PauseRecordResponseSchema = Schema.Void;
 export type PauseRecordResponse = Schema.Schema.Type<typeof PauseRecordResponseSchema>;
 
 export const PressInputPropertiesButtonRequestSchema = Schema.Struct({
@@ -822,7 +898,7 @@ export const PressInputPropertiesButtonRequestSchema = Schema.Struct({
   "propertyName": Schema.String,
 });
 export type PressInputPropertiesButtonRequest = Schema.Schema.Type<typeof PressInputPropertiesButtonRequestSchema>;
-export const PressInputPropertiesButtonResponseSchema = Schema.Struct({});
+export const PressInputPropertiesButtonResponseSchema = Schema.Void;
 export type PressInputPropertiesButtonResponse = Schema.Schema.Type<typeof PressInputPropertiesButtonResponseSchema>;
 
 export const RemoveInputRequestSchema = Schema.Struct({
@@ -830,14 +906,14 @@ export const RemoveInputRequestSchema = Schema.Struct({
   "inputUuid": Schema.optional(Schema.String),
 });
 export type RemoveInputRequest = Schema.Schema.Type<typeof RemoveInputRequestSchema>;
-export const RemoveInputResponseSchema = Schema.Struct({});
+export const RemoveInputResponseSchema = Schema.Void;
 export type RemoveInputResponse = Schema.Schema.Type<typeof RemoveInputResponseSchema>;
 
 export const RemoveProfileRequestSchema = Schema.Struct({
   "profileName": Schema.String,
 });
 export type RemoveProfileRequest = Schema.Schema.Type<typeof RemoveProfileRequestSchema>;
-export const RemoveProfileResponseSchema = Schema.Struct({});
+export const RemoveProfileResponseSchema = Schema.Void;
 export type RemoveProfileResponse = Schema.Schema.Type<typeof RemoveProfileResponseSchema>;
 
 export const RemoveSceneRequestSchema = Schema.Struct({
@@ -846,7 +922,7 @@ export const RemoveSceneRequestSchema = Schema.Struct({
   "sceneUuid": Schema.optional(Schema.String),
 });
 export type RemoveSceneRequest = Schema.Schema.Type<typeof RemoveSceneRequestSchema>;
-export const RemoveSceneResponseSchema = Schema.Struct({});
+export const RemoveSceneResponseSchema = Schema.Void;
 export type RemoveSceneResponse = Schema.Schema.Type<typeof RemoveSceneResponseSchema>;
 
 export const RemoveSceneItemRequestSchema = Schema.Struct({
@@ -856,7 +932,7 @@ export const RemoveSceneItemRequestSchema = Schema.Struct({
   "sceneItemId": Schema.Number,
 });
 export type RemoveSceneItemRequest = Schema.Schema.Type<typeof RemoveSceneItemRequestSchema>;
-export const RemoveSceneItemResponseSchema = Schema.Struct({});
+export const RemoveSceneItemResponseSchema = Schema.Void;
 export type RemoveSceneItemResponse = Schema.Schema.Type<typeof RemoveSceneItemResponseSchema>;
 
 export const RemoveSourceFilterRequestSchema = Schema.Struct({
@@ -866,17 +942,17 @@ export const RemoveSourceFilterRequestSchema = Schema.Struct({
   "filterName": Schema.String,
 });
 export type RemoveSourceFilterRequest = Schema.Schema.Type<typeof RemoveSourceFilterRequestSchema>;
-export const RemoveSourceFilterResponseSchema = Schema.Struct({});
+export const RemoveSourceFilterResponseSchema = Schema.Void;
 export type RemoveSourceFilterResponse = Schema.Schema.Type<typeof RemoveSourceFilterResponseSchema>;
 
 export const ResumeRecordRequestSchema = Schema.Struct({});
 export type ResumeRecordRequest = Schema.Schema.Type<typeof ResumeRecordRequestSchema>;
-export const ResumeRecordResponseSchema = Schema.Struct({});
+export const ResumeRecordResponseSchema = Schema.Void;
 export type ResumeRecordResponse = Schema.Schema.Type<typeof ResumeRecordResponseSchema>;
 
 export const SaveReplayBufferRequestSchema = Schema.Struct({});
 export type SaveReplayBufferRequest = Schema.Schema.Type<typeof SaveReplayBufferRequestSchema>;
-export const SaveReplayBufferResponseSchema = Schema.Struct({});
+export const SaveReplayBufferResponseSchema = Schema.Void;
 export type SaveReplayBufferResponse = Schema.Schema.Type<typeof SaveReplayBufferResponseSchema>;
 
 export const SaveSourceScreenshotRequestSchema = Schema.Struct({
@@ -890,14 +966,14 @@ export const SaveSourceScreenshotRequestSchema = Schema.Struct({
   "imageCompressionQuality": Schema.optional(Schema.Number),
 });
 export type SaveSourceScreenshotRequest = Schema.Schema.Type<typeof SaveSourceScreenshotRequestSchema>;
-export const SaveSourceScreenshotResponseSchema = Schema.Struct({});
+export const SaveSourceScreenshotResponseSchema = Schema.Void;
 export type SaveSourceScreenshotResponse = Schema.Schema.Type<typeof SaveSourceScreenshotResponseSchema>;
 
 export const SendStreamCaptionRequestSchema = Schema.Struct({
   "captionText": Schema.String,
 });
 export type SendStreamCaptionRequest = Schema.Schema.Type<typeof SendStreamCaptionRequestSchema>;
-export const SendStreamCaptionResponseSchema = Schema.Struct({});
+export const SendStreamCaptionResponseSchema = Schema.Void;
 export type SendStreamCaptionResponse = Schema.Schema.Type<typeof SendStreamCaptionResponseSchema>;
 
 export const SetCurrentPreviewSceneRequestSchema = Schema.Struct({
@@ -905,14 +981,14 @@ export const SetCurrentPreviewSceneRequestSchema = Schema.Struct({
   "sceneUuid": Schema.optional(Schema.String),
 });
 export type SetCurrentPreviewSceneRequest = Schema.Schema.Type<typeof SetCurrentPreviewSceneRequestSchema>;
-export const SetCurrentPreviewSceneResponseSchema = Schema.Struct({});
+export const SetCurrentPreviewSceneResponseSchema = Schema.Void;
 export type SetCurrentPreviewSceneResponse = Schema.Schema.Type<typeof SetCurrentPreviewSceneResponseSchema>;
 
 export const SetCurrentProfileRequestSchema = Schema.Struct({
   "profileName": Schema.String,
 });
 export type SetCurrentProfileRequest = Schema.Schema.Type<typeof SetCurrentProfileRequestSchema>;
-export const SetCurrentProfileResponseSchema = Schema.Struct({});
+export const SetCurrentProfileResponseSchema = Schema.Void;
 export type SetCurrentProfileResponse = Schema.Schema.Type<typeof SetCurrentProfileResponseSchema>;
 
 export const SetCurrentProgramSceneRequestSchema = Schema.Struct({
@@ -920,28 +996,28 @@ export const SetCurrentProgramSceneRequestSchema = Schema.Struct({
   "sceneUuid": Schema.optional(Schema.String),
 });
 export type SetCurrentProgramSceneRequest = Schema.Schema.Type<typeof SetCurrentProgramSceneRequestSchema>;
-export const SetCurrentProgramSceneResponseSchema = Schema.Struct({});
+export const SetCurrentProgramSceneResponseSchema = Schema.Void;
 export type SetCurrentProgramSceneResponse = Schema.Schema.Type<typeof SetCurrentProgramSceneResponseSchema>;
 
 export const SetCurrentSceneCollectionRequestSchema = Schema.Struct({
   "sceneCollectionName": Schema.String,
 });
 export type SetCurrentSceneCollectionRequest = Schema.Schema.Type<typeof SetCurrentSceneCollectionRequestSchema>;
-export const SetCurrentSceneCollectionResponseSchema = Schema.Struct({});
+export const SetCurrentSceneCollectionResponseSchema = Schema.Void;
 export type SetCurrentSceneCollectionResponse = Schema.Schema.Type<typeof SetCurrentSceneCollectionResponseSchema>;
 
 export const SetCurrentSceneTransitionRequestSchema = Schema.Struct({
   "transitionName": Schema.String,
 });
 export type SetCurrentSceneTransitionRequest = Schema.Schema.Type<typeof SetCurrentSceneTransitionRequestSchema>;
-export const SetCurrentSceneTransitionResponseSchema = Schema.Struct({});
+export const SetCurrentSceneTransitionResponseSchema = Schema.Void;
 export type SetCurrentSceneTransitionResponse = Schema.Schema.Type<typeof SetCurrentSceneTransitionResponseSchema>;
 
 export const SetCurrentSceneTransitionDurationRequestSchema = Schema.Struct({
   "transitionDuration": Schema.Number,
 });
 export type SetCurrentSceneTransitionDurationRequest = Schema.Schema.Type<typeof SetCurrentSceneTransitionDurationRequestSchema>;
-export const SetCurrentSceneTransitionDurationResponseSchema = Schema.Struct({});
+export const SetCurrentSceneTransitionDurationResponseSchema = Schema.Void;
 export type SetCurrentSceneTransitionDurationResponse = Schema.Schema.Type<typeof SetCurrentSceneTransitionDurationResponseSchema>;
 
 export const SetCurrentSceneTransitionSettingsRequestSchema = Schema.Struct({
@@ -949,7 +1025,7 @@ export const SetCurrentSceneTransitionSettingsRequestSchema = Schema.Struct({
   "overlay": Schema.optional(Schema.Boolean),
 });
 export type SetCurrentSceneTransitionSettingsRequest = Schema.Schema.Type<typeof SetCurrentSceneTransitionSettingsRequestSchema>;
-export const SetCurrentSceneTransitionSettingsResponseSchema = Schema.Struct({});
+export const SetCurrentSceneTransitionSettingsResponseSchema = Schema.Void;
 export type SetCurrentSceneTransitionSettingsResponse = Schema.Schema.Type<typeof SetCurrentSceneTransitionSettingsResponseSchema>;
 
 export const SetInputAudioBalanceRequestSchema = Schema.Struct({
@@ -958,7 +1034,7 @@ export const SetInputAudioBalanceRequestSchema = Schema.Struct({
   "inputAudioBalance": Schema.Number,
 });
 export type SetInputAudioBalanceRequest = Schema.Schema.Type<typeof SetInputAudioBalanceRequestSchema>;
-export const SetInputAudioBalanceResponseSchema = Schema.Struct({});
+export const SetInputAudioBalanceResponseSchema = Schema.Void;
 export type SetInputAudioBalanceResponse = Schema.Schema.Type<typeof SetInputAudioBalanceResponseSchema>;
 
 export const SetInputAudioMonitorTypeRequestSchema = Schema.Struct({
@@ -967,7 +1043,7 @@ export const SetInputAudioMonitorTypeRequestSchema = Schema.Struct({
   "monitorType": Schema.String,
 });
 export type SetInputAudioMonitorTypeRequest = Schema.Schema.Type<typeof SetInputAudioMonitorTypeRequestSchema>;
-export const SetInputAudioMonitorTypeResponseSchema = Schema.Struct({});
+export const SetInputAudioMonitorTypeResponseSchema = Schema.Void;
 export type SetInputAudioMonitorTypeResponse = Schema.Schema.Type<typeof SetInputAudioMonitorTypeResponseSchema>;
 
 export const SetInputAudioSyncOffsetRequestSchema = Schema.Struct({
@@ -976,7 +1052,7 @@ export const SetInputAudioSyncOffsetRequestSchema = Schema.Struct({
   "inputAudioSyncOffset": Schema.Number,
 });
 export type SetInputAudioSyncOffsetRequest = Schema.Schema.Type<typeof SetInputAudioSyncOffsetRequestSchema>;
-export const SetInputAudioSyncOffsetResponseSchema = Schema.Struct({});
+export const SetInputAudioSyncOffsetResponseSchema = Schema.Void;
 export type SetInputAudioSyncOffsetResponse = Schema.Schema.Type<typeof SetInputAudioSyncOffsetResponseSchema>;
 
 export const SetInputAudioTracksRequestSchema = Schema.Struct({
@@ -985,7 +1061,7 @@ export const SetInputAudioTracksRequestSchema = Schema.Struct({
   "inputAudioTracks": Schema.Record(Schema.String, Schema.Unknown),
 });
 export type SetInputAudioTracksRequest = Schema.Schema.Type<typeof SetInputAudioTracksRequestSchema>;
-export const SetInputAudioTracksResponseSchema = Schema.Struct({});
+export const SetInputAudioTracksResponseSchema = Schema.Void;
 export type SetInputAudioTracksResponse = Schema.Schema.Type<typeof SetInputAudioTracksResponseSchema>;
 
 export const SetInputDeinterlaceFieldOrderRequestSchema = Schema.Struct({
@@ -994,7 +1070,7 @@ export const SetInputDeinterlaceFieldOrderRequestSchema = Schema.Struct({
   "inputDeinterlaceFieldOrder": Schema.String,
 });
 export type SetInputDeinterlaceFieldOrderRequest = Schema.Schema.Type<typeof SetInputDeinterlaceFieldOrderRequestSchema>;
-export const SetInputDeinterlaceFieldOrderResponseSchema = Schema.Struct({});
+export const SetInputDeinterlaceFieldOrderResponseSchema = Schema.Void;
 export type SetInputDeinterlaceFieldOrderResponse = Schema.Schema.Type<typeof SetInputDeinterlaceFieldOrderResponseSchema>;
 
 export const SetInputDeinterlaceModeRequestSchema = Schema.Struct({
@@ -1003,7 +1079,7 @@ export const SetInputDeinterlaceModeRequestSchema = Schema.Struct({
   "inputDeinterlaceMode": Schema.String,
 });
 export type SetInputDeinterlaceModeRequest = Schema.Schema.Type<typeof SetInputDeinterlaceModeRequestSchema>;
-export const SetInputDeinterlaceModeResponseSchema = Schema.Struct({});
+export const SetInputDeinterlaceModeResponseSchema = Schema.Void;
 export type SetInputDeinterlaceModeResponse = Schema.Schema.Type<typeof SetInputDeinterlaceModeResponseSchema>;
 
 export const SetInputMuteRequestSchema = Schema.Struct({
@@ -1012,7 +1088,7 @@ export const SetInputMuteRequestSchema = Schema.Struct({
   "inputMuted": Schema.Boolean,
 });
 export type SetInputMuteRequest = Schema.Schema.Type<typeof SetInputMuteRequestSchema>;
-export const SetInputMuteResponseSchema = Schema.Struct({});
+export const SetInputMuteResponseSchema = Schema.Void;
 export type SetInputMuteResponse = Schema.Schema.Type<typeof SetInputMuteResponseSchema>;
 
 export const SetInputNameRequestSchema = Schema.Struct({
@@ -1021,7 +1097,7 @@ export const SetInputNameRequestSchema = Schema.Struct({
   "newInputName": Schema.String,
 });
 export type SetInputNameRequest = Schema.Schema.Type<typeof SetInputNameRequestSchema>;
-export const SetInputNameResponseSchema = Schema.Struct({});
+export const SetInputNameResponseSchema = Schema.Void;
 export type SetInputNameResponse = Schema.Schema.Type<typeof SetInputNameResponseSchema>;
 
 export const SetInputSettingsRequestSchema = Schema.Struct({
@@ -1031,7 +1107,7 @@ export const SetInputSettingsRequestSchema = Schema.Struct({
   "overlay": Schema.optional(Schema.Boolean),
 });
 export type SetInputSettingsRequest = Schema.Schema.Type<typeof SetInputSettingsRequestSchema>;
-export const SetInputSettingsResponseSchema = Schema.Struct({});
+export const SetInputSettingsResponseSchema = Schema.Void;
 export type SetInputSettingsResponse = Schema.Schema.Type<typeof SetInputSettingsResponseSchema>;
 
 export const SetInputVolumeRequestSchema = Schema.Struct({
@@ -1041,7 +1117,7 @@ export const SetInputVolumeRequestSchema = Schema.Struct({
   "inputVolumeDb": Schema.optional(Schema.Number),
 });
 export type SetInputVolumeRequest = Schema.Schema.Type<typeof SetInputVolumeRequestSchema>;
-export const SetInputVolumeResponseSchema = Schema.Struct({});
+export const SetInputVolumeResponseSchema = Schema.Void;
 export type SetInputVolumeResponse = Schema.Schema.Type<typeof SetInputVolumeResponseSchema>;
 
 export const SetMediaInputCursorRequestSchema = Schema.Struct({
@@ -1050,7 +1126,7 @@ export const SetMediaInputCursorRequestSchema = Schema.Struct({
   "mediaCursor": Schema.Number,
 });
 export type SetMediaInputCursorRequest = Schema.Schema.Type<typeof SetMediaInputCursorRequestSchema>;
-export const SetMediaInputCursorResponseSchema = Schema.Struct({});
+export const SetMediaInputCursorResponseSchema = Schema.Void;
 export type SetMediaInputCursorResponse = Schema.Schema.Type<typeof SetMediaInputCursorResponseSchema>;
 
 export const SetOutputSettingsRequestSchema = Schema.Struct({
@@ -1058,7 +1134,7 @@ export const SetOutputSettingsRequestSchema = Schema.Struct({
   "outputSettings": Schema.Record(Schema.String, Schema.Unknown),
 });
 export type SetOutputSettingsRequest = Schema.Schema.Type<typeof SetOutputSettingsRequestSchema>;
-export const SetOutputSettingsResponseSchema = Schema.Struct({});
+export const SetOutputSettingsResponseSchema = Schema.Void;
 export type SetOutputSettingsResponse = Schema.Schema.Type<typeof SetOutputSettingsResponseSchema>;
 
 export const SetPersistentDataRequestSchema = Schema.Struct({
@@ -1067,7 +1143,7 @@ export const SetPersistentDataRequestSchema = Schema.Struct({
   "slotValue": Schema.Unknown,
 });
 export type SetPersistentDataRequest = Schema.Schema.Type<typeof SetPersistentDataRequestSchema>;
-export const SetPersistentDataResponseSchema = Schema.Struct({});
+export const SetPersistentDataResponseSchema = Schema.Void;
 export type SetPersistentDataResponse = Schema.Schema.Type<typeof SetPersistentDataResponseSchema>;
 
 export const SetProfileParameterRequestSchema = Schema.Struct({
@@ -1076,14 +1152,14 @@ export const SetProfileParameterRequestSchema = Schema.Struct({
   "parameterValue": Schema.String,
 });
 export type SetProfileParameterRequest = Schema.Schema.Type<typeof SetProfileParameterRequestSchema>;
-export const SetProfileParameterResponseSchema = Schema.Struct({});
+export const SetProfileParameterResponseSchema = Schema.Void;
 export type SetProfileParameterResponse = Schema.Schema.Type<typeof SetProfileParameterResponseSchema>;
 
 export const SetRecordDirectoryRequestSchema = Schema.Struct({
   "recordDirectory": Schema.String,
 });
 export type SetRecordDirectoryRequest = Schema.Schema.Type<typeof SetRecordDirectoryRequestSchema>;
-export const SetRecordDirectoryResponseSchema = Schema.Struct({});
+export const SetRecordDirectoryResponseSchema = Schema.Void;
 export type SetRecordDirectoryResponse = Schema.Schema.Type<typeof SetRecordDirectoryResponseSchema>;
 
 export const SetSceneItemBlendModeRequestSchema = Schema.Struct({
@@ -1094,7 +1170,7 @@ export const SetSceneItemBlendModeRequestSchema = Schema.Struct({
   "sceneItemBlendMode": Schema.String,
 });
 export type SetSceneItemBlendModeRequest = Schema.Schema.Type<typeof SetSceneItemBlendModeRequestSchema>;
-export const SetSceneItemBlendModeResponseSchema = Schema.Struct({});
+export const SetSceneItemBlendModeResponseSchema = Schema.Void;
 export type SetSceneItemBlendModeResponse = Schema.Schema.Type<typeof SetSceneItemBlendModeResponseSchema>;
 
 export const SetSceneItemEnabledRequestSchema = Schema.Struct({
@@ -1105,7 +1181,7 @@ export const SetSceneItemEnabledRequestSchema = Schema.Struct({
   "sceneItemEnabled": Schema.Boolean,
 });
 export type SetSceneItemEnabledRequest = Schema.Schema.Type<typeof SetSceneItemEnabledRequestSchema>;
-export const SetSceneItemEnabledResponseSchema = Schema.Struct({});
+export const SetSceneItemEnabledResponseSchema = Schema.Void;
 export type SetSceneItemEnabledResponse = Schema.Schema.Type<typeof SetSceneItemEnabledResponseSchema>;
 
 export const SetSceneItemIndexRequestSchema = Schema.Struct({
@@ -1116,7 +1192,7 @@ export const SetSceneItemIndexRequestSchema = Schema.Struct({
   "sceneItemIndex": Schema.Number,
 });
 export type SetSceneItemIndexRequest = Schema.Schema.Type<typeof SetSceneItemIndexRequestSchema>;
-export const SetSceneItemIndexResponseSchema = Schema.Struct({});
+export const SetSceneItemIndexResponseSchema = Schema.Void;
 export type SetSceneItemIndexResponse = Schema.Schema.Type<typeof SetSceneItemIndexResponseSchema>;
 
 export const SetSceneItemLockedRequestSchema = Schema.Struct({
@@ -1127,7 +1203,7 @@ export const SetSceneItemLockedRequestSchema = Schema.Struct({
   "sceneItemLocked": Schema.Boolean,
 });
 export type SetSceneItemLockedRequest = Schema.Schema.Type<typeof SetSceneItemLockedRequestSchema>;
-export const SetSceneItemLockedResponseSchema = Schema.Struct({});
+export const SetSceneItemLockedResponseSchema = Schema.Void;
 export type SetSceneItemLockedResponse = Schema.Schema.Type<typeof SetSceneItemLockedResponseSchema>;
 
 export const SetSceneItemTransformRequestSchema = Schema.Struct({
@@ -1138,7 +1214,7 @@ export const SetSceneItemTransformRequestSchema = Schema.Struct({
   "sceneItemTransform": Schema.Record(Schema.String, Schema.Unknown),
 });
 export type SetSceneItemTransformRequest = Schema.Schema.Type<typeof SetSceneItemTransformRequestSchema>;
-export const SetSceneItemTransformResponseSchema = Schema.Struct({});
+export const SetSceneItemTransformResponseSchema = Schema.Void;
 export type SetSceneItemTransformResponse = Schema.Schema.Type<typeof SetSceneItemTransformResponseSchema>;
 
 export const SetSceneNameRequestSchema = Schema.Struct({
@@ -1148,7 +1224,7 @@ export const SetSceneNameRequestSchema = Schema.Struct({
   "newSceneName": Schema.String,
 });
 export type SetSceneNameRequest = Schema.Schema.Type<typeof SetSceneNameRequestSchema>;
-export const SetSceneNameResponseSchema = Schema.Struct({});
+export const SetSceneNameResponseSchema = Schema.Void;
 export type SetSceneNameResponse = Schema.Schema.Type<typeof SetSceneNameResponseSchema>;
 
 export const SetSceneSceneTransitionOverrideRequestSchema = Schema.Struct({
@@ -1159,7 +1235,7 @@ export const SetSceneSceneTransitionOverrideRequestSchema = Schema.Struct({
   "transitionDuration": Schema.optional(Schema.Number),
 });
 export type SetSceneSceneTransitionOverrideRequest = Schema.Schema.Type<typeof SetSceneSceneTransitionOverrideRequestSchema>;
-export const SetSceneSceneTransitionOverrideResponseSchema = Schema.Struct({});
+export const SetSceneSceneTransitionOverrideResponseSchema = Schema.Void;
 export type SetSceneSceneTransitionOverrideResponse = Schema.Schema.Type<typeof SetSceneSceneTransitionOverrideResponseSchema>;
 
 export const SetSourceFilterEnabledRequestSchema = Schema.Struct({
@@ -1170,7 +1246,7 @@ export const SetSourceFilterEnabledRequestSchema = Schema.Struct({
   "filterEnabled": Schema.Boolean,
 });
 export type SetSourceFilterEnabledRequest = Schema.Schema.Type<typeof SetSourceFilterEnabledRequestSchema>;
-export const SetSourceFilterEnabledResponseSchema = Schema.Struct({});
+export const SetSourceFilterEnabledResponseSchema = Schema.Void;
 export type SetSourceFilterEnabledResponse = Schema.Schema.Type<typeof SetSourceFilterEnabledResponseSchema>;
 
 export const SetSourceFilterIndexRequestSchema = Schema.Struct({
@@ -1181,7 +1257,7 @@ export const SetSourceFilterIndexRequestSchema = Schema.Struct({
   "filterIndex": Schema.Number,
 });
 export type SetSourceFilterIndexRequest = Schema.Schema.Type<typeof SetSourceFilterIndexRequestSchema>;
-export const SetSourceFilterIndexResponseSchema = Schema.Struct({});
+export const SetSourceFilterIndexResponseSchema = Schema.Void;
 export type SetSourceFilterIndexResponse = Schema.Schema.Type<typeof SetSourceFilterIndexResponseSchema>;
 
 export const SetSourceFilterNameRequestSchema = Schema.Struct({
@@ -1192,7 +1268,7 @@ export const SetSourceFilterNameRequestSchema = Schema.Struct({
   "newFilterName": Schema.String,
 });
 export type SetSourceFilterNameRequest = Schema.Schema.Type<typeof SetSourceFilterNameRequestSchema>;
-export const SetSourceFilterNameResponseSchema = Schema.Struct({});
+export const SetSourceFilterNameResponseSchema = Schema.Void;
 export type SetSourceFilterNameResponse = Schema.Schema.Type<typeof SetSourceFilterNameResponseSchema>;
 
 export const SetSourceFilterSettingsRequestSchema = Schema.Struct({
@@ -1204,7 +1280,7 @@ export const SetSourceFilterSettingsRequestSchema = Schema.Struct({
   "overlay": Schema.optional(Schema.Boolean),
 });
 export type SetSourceFilterSettingsRequest = Schema.Schema.Type<typeof SetSourceFilterSettingsRequestSchema>;
-export const SetSourceFilterSettingsResponseSchema = Schema.Struct({});
+export const SetSourceFilterSettingsResponseSchema = Schema.Void;
 export type SetSourceFilterSettingsResponse = Schema.Schema.Type<typeof SetSourceFilterSettingsResponseSchema>;
 
 export const SetStreamServiceSettingsRequestSchema = Schema.Struct({
@@ -1212,14 +1288,14 @@ export const SetStreamServiceSettingsRequestSchema = Schema.Struct({
   "streamServiceSettings": Schema.Record(Schema.String, Schema.Unknown),
 });
 export type SetStreamServiceSettingsRequest = Schema.Schema.Type<typeof SetStreamServiceSettingsRequestSchema>;
-export const SetStreamServiceSettingsResponseSchema = Schema.Struct({});
+export const SetStreamServiceSettingsResponseSchema = Schema.Void;
 export type SetStreamServiceSettingsResponse = Schema.Schema.Type<typeof SetStreamServiceSettingsResponseSchema>;
 
 export const SetStudioModeEnabledRequestSchema = Schema.Struct({
   "studioModeEnabled": Schema.Boolean,
 });
 export type SetStudioModeEnabledRequest = Schema.Schema.Type<typeof SetStudioModeEnabledRequestSchema>;
-export const SetStudioModeEnabledResponseSchema = Schema.Struct({});
+export const SetStudioModeEnabledResponseSchema = Schema.Void;
 export type SetStudioModeEnabledResponse = Schema.Schema.Type<typeof SetStudioModeEnabledResponseSchema>;
 
 export const SetTBarPositionRequestSchema = Schema.Struct({
@@ -1227,7 +1303,7 @@ export const SetTBarPositionRequestSchema = Schema.Struct({
   "release": Schema.optional(Schema.Boolean),
 });
 export type SetTBarPositionRequest = Schema.Schema.Type<typeof SetTBarPositionRequestSchema>;
-export const SetTBarPositionResponseSchema = Schema.Struct({});
+export const SetTBarPositionResponseSchema = Schema.Void;
 export type SetTBarPositionResponse = Schema.Schema.Type<typeof SetTBarPositionResponseSchema>;
 
 export const SetVideoSettingsRequestSchema = Schema.Struct({
@@ -1239,7 +1315,7 @@ export const SetVideoSettingsRequestSchema = Schema.Struct({
   "outputHeight": Schema.optional(Schema.Number),
 });
 export type SetVideoSettingsRequest = Schema.Schema.Type<typeof SetVideoSettingsRequestSchema>;
-export const SetVideoSettingsResponseSchema = Schema.Struct({});
+export const SetVideoSettingsResponseSchema = Schema.Void;
 export type SetVideoSettingsResponse = Schema.Schema.Type<typeof SetVideoSettingsResponseSchema>;
 
 export const SleepRequestSchema = Schema.Struct({
@@ -1247,46 +1323,46 @@ export const SleepRequestSchema = Schema.Struct({
   "sleepFrames": Schema.optional(Schema.Number),
 });
 export type SleepRequest = Schema.Schema.Type<typeof SleepRequestSchema>;
-export const SleepResponseSchema = Schema.Struct({});
+export const SleepResponseSchema = Schema.Void;
 export type SleepResponse = Schema.Schema.Type<typeof SleepResponseSchema>;
 
 export const SplitRecordFileRequestSchema = Schema.Struct({});
 export type SplitRecordFileRequest = Schema.Schema.Type<typeof SplitRecordFileRequestSchema>;
-export const SplitRecordFileResponseSchema = Schema.Struct({});
+export const SplitRecordFileResponseSchema = Schema.Void;
 export type SplitRecordFileResponse = Schema.Schema.Type<typeof SplitRecordFileResponseSchema>;
 
 export const StartOutputRequestSchema = Schema.Struct({
   "outputName": Schema.String,
 });
 export type StartOutputRequest = Schema.Schema.Type<typeof StartOutputRequestSchema>;
-export const StartOutputResponseSchema = Schema.Struct({});
+export const StartOutputResponseSchema = Schema.Void;
 export type StartOutputResponse = Schema.Schema.Type<typeof StartOutputResponseSchema>;
 
 export const StartRecordRequestSchema = Schema.Struct({});
 export type StartRecordRequest = Schema.Schema.Type<typeof StartRecordRequestSchema>;
-export const StartRecordResponseSchema = Schema.Struct({});
+export const StartRecordResponseSchema = Schema.Void;
 export type StartRecordResponse = Schema.Schema.Type<typeof StartRecordResponseSchema>;
 
 export const StartReplayBufferRequestSchema = Schema.Struct({});
 export type StartReplayBufferRequest = Schema.Schema.Type<typeof StartReplayBufferRequestSchema>;
-export const StartReplayBufferResponseSchema = Schema.Struct({});
+export const StartReplayBufferResponseSchema = Schema.Void;
 export type StartReplayBufferResponse = Schema.Schema.Type<typeof StartReplayBufferResponseSchema>;
 
 export const StartStreamRequestSchema = Schema.Struct({});
 export type StartStreamRequest = Schema.Schema.Type<typeof StartStreamRequestSchema>;
-export const StartStreamResponseSchema = Schema.Struct({});
+export const StartStreamResponseSchema = Schema.Void;
 export type StartStreamResponse = Schema.Schema.Type<typeof StartStreamResponseSchema>;
 
 export const StartVirtualCamRequestSchema = Schema.Struct({});
 export type StartVirtualCamRequest = Schema.Schema.Type<typeof StartVirtualCamRequestSchema>;
-export const StartVirtualCamResponseSchema = Schema.Struct({});
+export const StartVirtualCamResponseSchema = Schema.Void;
 export type StartVirtualCamResponse = Schema.Schema.Type<typeof StartVirtualCamResponseSchema>;
 
 export const StopOutputRequestSchema = Schema.Struct({
   "outputName": Schema.String,
 });
 export type StopOutputRequest = Schema.Schema.Type<typeof StopOutputRequestSchema>;
-export const StopOutputResponseSchema = Schema.Struct({});
+export const StopOutputResponseSchema = Schema.Void;
 export type StopOutputResponse = Schema.Schema.Type<typeof StopOutputResponseSchema>;
 
 export const StopRecordRequestSchema = Schema.Struct({});
@@ -1298,17 +1374,17 @@ export type StopRecordResponse = Schema.Schema.Type<typeof StopRecordResponseSch
 
 export const StopReplayBufferRequestSchema = Schema.Struct({});
 export type StopReplayBufferRequest = Schema.Schema.Type<typeof StopReplayBufferRequestSchema>;
-export const StopReplayBufferResponseSchema = Schema.Struct({});
+export const StopReplayBufferResponseSchema = Schema.Void;
 export type StopReplayBufferResponse = Schema.Schema.Type<typeof StopReplayBufferResponseSchema>;
 
 export const StopStreamRequestSchema = Schema.Struct({});
 export type StopStreamRequest = Schema.Schema.Type<typeof StopStreamRequestSchema>;
-export const StopStreamResponseSchema = Schema.Struct({});
+export const StopStreamResponseSchema = Schema.Void;
 export type StopStreamResponse = Schema.Schema.Type<typeof StopStreamResponseSchema>;
 
 export const StopVirtualCamRequestSchema = Schema.Struct({});
 export type StopVirtualCamRequest = Schema.Schema.Type<typeof StopVirtualCamRequestSchema>;
-export const StopVirtualCamResponseSchema = Schema.Struct({});
+export const StopVirtualCamResponseSchema = Schema.Void;
 export type StopVirtualCamResponse = Schema.Schema.Type<typeof StopVirtualCamResponseSchema>;
 
 export const ToggleInputMuteRequestSchema = Schema.Struct({
@@ -1339,7 +1415,7 @@ export type ToggleRecordResponse = Schema.Schema.Type<typeof ToggleRecordRespons
 
 export const ToggleRecordPauseRequestSchema = Schema.Struct({});
 export type ToggleRecordPauseRequest = Schema.Schema.Type<typeof ToggleRecordPauseRequestSchema>;
-export const ToggleRecordPauseResponseSchema = Schema.Struct({});
+export const ToggleRecordPauseResponseSchema = Schema.Void;
 export type ToggleRecordPauseResponse = Schema.Schema.Type<typeof ToggleRecordPauseResponseSchema>;
 
 export const ToggleReplayBufferRequestSchema = Schema.Struct({});
@@ -1372,7 +1448,7 @@ export const TriggerHotkeyByKeySequenceRequestSchema = Schema.Struct({
   "keyModifiers.command": Schema.optional(Schema.Boolean),
 });
 export type TriggerHotkeyByKeySequenceRequest = Schema.Schema.Type<typeof TriggerHotkeyByKeySequenceRequestSchema>;
-export const TriggerHotkeyByKeySequenceResponseSchema = Schema.Struct({});
+export const TriggerHotkeyByKeySequenceResponseSchema = Schema.Void;
 export type TriggerHotkeyByKeySequenceResponse = Schema.Schema.Type<typeof TriggerHotkeyByKeySequenceResponseSchema>;
 
 export const TriggerHotkeyByNameRequestSchema = Schema.Struct({
@@ -1380,7 +1456,7 @@ export const TriggerHotkeyByNameRequestSchema = Schema.Struct({
   "contextName": Schema.optional(Schema.String),
 });
 export type TriggerHotkeyByNameRequest = Schema.Schema.Type<typeof TriggerHotkeyByNameRequestSchema>;
-export const TriggerHotkeyByNameResponseSchema = Schema.Struct({});
+export const TriggerHotkeyByNameResponseSchema = Schema.Void;
 export type TriggerHotkeyByNameResponse = Schema.Schema.Type<typeof TriggerHotkeyByNameResponseSchema>;
 
 export const TriggerMediaInputActionRequestSchema = Schema.Struct({
@@ -1389,12 +1465,12 @@ export const TriggerMediaInputActionRequestSchema = Schema.Struct({
   "mediaAction": Schema.String,
 });
 export type TriggerMediaInputActionRequest = Schema.Schema.Type<typeof TriggerMediaInputActionRequestSchema>;
-export const TriggerMediaInputActionResponseSchema = Schema.Struct({});
+export const TriggerMediaInputActionResponseSchema = Schema.Void;
 export type TriggerMediaInputActionResponse = Schema.Schema.Type<typeof TriggerMediaInputActionResponseSchema>;
 
 export const TriggerStudioModeTransitionRequestSchema = Schema.Struct({});
 export type TriggerStudioModeTransitionRequest = Schema.Schema.Type<typeof TriggerStudioModeTransitionRequestSchema>;
-export const TriggerStudioModeTransitionResponseSchema = Schema.Struct({});
+export const TriggerStudioModeTransitionResponseSchema = Schema.Void;
 export type TriggerStudioModeTransitionResponse = Schema.Schema.Type<typeof TriggerStudioModeTransitionResponseSchema>;
 
 export const CanvasCreatedPayloadSchema = Schema.Struct({

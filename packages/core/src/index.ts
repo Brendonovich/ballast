@@ -89,7 +89,6 @@ export type {
   TimerOptions,
   TimerRuntimeService,
   TimerSpec,
-  UnitTimer,
 } from "./timer.ts";
 export {
   TimerCalledDuringPlanError,

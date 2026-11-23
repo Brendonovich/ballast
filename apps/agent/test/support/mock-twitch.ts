@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { NodeServices } from "@effect/platform-node";
+import * as Effect from "effect/Effect";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
@@ -374,18 +376,20 @@ export const seedMockTwitchAccount = async (input: {
   readonly slot: string;
   readonly server: MockTwitchServer;
 }): Promise<void> => {
-  await writeStoredTwitchAccount(
-    {
-      version: 1,
-      slot: input.slot,
-      clientId: input.server.clientId,
-      accessToken: "mock-access-token",
-      refreshToken: "mock-refresh-token",
-      expiresAt: Date.now() + 3_600_000,
-      scopes: input.server.scopes,
-      userId: input.server.userId,
-      login: input.server.login,
-    },
-    input.dataDir,
+  await Effect.runPromise(
+    writeStoredTwitchAccount(
+      {
+        version: 1,
+        slot: input.slot,
+        clientId: input.server.clientId,
+        accessToken: "mock-access-token",
+        refreshToken: "mock-refresh-token",
+        expiresAt: Date.now() + 3_600_000,
+        scopes: input.server.scopes,
+        userId: input.server.userId,
+        login: input.server.login,
+      },
+      input.dataDir,
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 };

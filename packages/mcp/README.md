@@ -3,20 +3,31 @@
 A local stdio MCP server that lets a coding agent author Ballast projects and
 then verify and run them. It is an MCP **client of the running Ballast
 service**: it discovers `service.json`, reuses the service bearer token, and
-proxies runtime calls over the same WebSocket RPC (`AgentRpcs`) as the CLI.
+proxies every project/tool call over the same WebSocket RPC (`AgentRpcs`) as
+the CLI.
 
 The server does not start Ballast. If no service is running, every project tool
 returns a clear "Ballast is not running" error.
 
 ## Run
 
-```sh
-# from the repo
-node --experimental-strip-types --no-warnings=ExperimentalWarning \
-  packages/mcp/src/bin.ts [--state-dir <dir>] [--data-dir <dir>] [--url <url> --token <token>]
+Dev, through the agent CLI (the supported path):
 
-# once installed/linked
-ballast-mcp
+```sh
+node --experimental-strip-types --no-warnings=ExperimentalWarning \
+  apps/agent/src/bin.ts mcp [--state-dir <dir>] [--data-dir <dir>] [--url <url> --token <token>]
+```
+
+The standalone bin (also useful for testing the package alone) is
+`node packages/mcp/src/bin.ts` or `ballast-mcp`.
+
+Shipped, from a staged service build:
+
+```sh
+node /path/to/Ballast/service/<version>/main.mjs mcp
+# or, when running the Electron Node:
+ELECTRON_RUN_AS_NODE=1 /Applications/Ballast.app/Contents/MacOS/Ballast \
+  /path/to/Ballast/service/<version>/main.mjs mcp
 ```
 
 Discovery order:
@@ -38,6 +49,8 @@ unauthenticated `/health` endpoint before use, so a crash leaves a stale
 
 ## OpenCode configuration (V2)
 
+Dev, from a checkout:
+
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
@@ -49,7 +62,8 @@ unauthenticated `/health` endpoint before use, so a crash leaves a stale
           "node",
           "--experimental-strip-types",
           "--no-warnings=ExperimentalWarning",
-          "/absolute/path/to/ballast/packages/mcp/src/bin.ts"
+          "/absolute/path/to/ballast/apps/agent/src/bin.ts",
+          "mcp"
         ],
         "timeout": {
           "startup": 20000
@@ -60,47 +74,62 @@ unauthenticated `/health` endpoint before use, so a crash leaves a stale
 }
 ```
 
+Shipped: point at the staged service's `main.mjs` (or use `ballast mcp` when
+the CLI is on `PATH`). The desktop app stages the same file under
+`<userData>/service/<version>/main.mjs`.
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "ballast": {
+        "type": "local",
+        "command": [
+          "node",
+          "/Users/you/Library/Application Support/dev.ballast.agent/service/0.1.0/main.mjs",
+          "mcp"
+        ],
+        "timeout": {
+          "startup": 30000
+        }
+      }
+    }
+  }
+}
+```
+
 Set `BALLAST_STATE_DIR` / `BALLAST_DATA_DIR` under `environment` only when
-using a non-default install. In a packaged build the command becomes
-`["ballast", "mcp"]` after the follow-up wiring below.
+using a non-default install. For an Electron-shipped start, set
+`ELECTRON_RUN_AS_NODE=1` and use the app binary as the executable.
 
 ## Tools
 
 | Tool | Input | What it does |
 | --- | --- | --- |
 | `ballast_guide` | none | The authoring contract: imports, entry and modules, params, connections, named subscribe/run, Twitch scopes, durable timers, init/handlers, plan/apply/consent, an example. |
-| `ballast_catalog` | `integration?`, `kind?`, `search?`, `includeSchemas?`, `limit?` | Integration index by default; topics (event JSON Schemas), requests (input/output schemas and scopes) and connection kinds when narrowed. Schemas come from the integration packages' exported Effect Schemas. |
-| `ballast_project_init` | `dir`, `name?` | Scaffolds `ballast.ts`, `package.json`, `tsconfig.json` and `AGENTS.md`, then registers the folder with the service. Never overwrites existing files. |
-| `ballast_check` | `project` | Typecheck + bundle + plan **without applying**. Returns structured diagnostics (`file`, `line`, `column`, TS code, message), units with project-relative sources, diff against applied, `requiresConsent`, missing connections and scopes. |
-| `ballast_apply` | `project` | Requests a reload of a running, already-approved project. Consent, missing connections/scopes and the first Start are user-only; returns `waiting_for_user` with the action. Never calls approve/start. |
-| `ballast_status` | `project?` | Service health and project state: running, waiting for consent, previous-version-running-latest-failed, error, stopped; per-unit status/source; missing connections/scopes. |
-| `ballast_logs` | `project`, `unit?`, `since?`, `limit?` | A bounded log snapshot; `since` is epoch ms, ISO, or `10m`/`2h`. |
-| `ballast_events` | `project`, `unit?`, `integration?`, `topic?`, `since?`, `limit?` | A bounded inbound/outbound event snapshot with truncated payloads. |
+| `ballast_catalog` | `integration?`, `kind?`, `search?`, `topic?`, `request?`, `includeSchemas?`, `limit?`, `offset?` | Integration index by default; topics (event JSON Schemas), requests (input/output schemas and scopes) and connection kinds when narrowed. Results state when they are truncated and page with `offset`. Schemas come from the integration packages' exported Effect Schemas. |
+| `ballast_project_init` | `name`, `dir?` | Calls the service's `CreateProject`: writes `ballast.ts`, `package.json` and `AGENTS.md`. The service refuses a non-empty folder. Does not start it. |
+| `ballast_check` | `project` | Calls the service's non-applying `CheckProject`. Returns structured diagnostics (`file`, `line`, `column`, code, message), units with project-relative sources, changes, `requiresConsent`, every requirement as bound/proposed/unbound/missing, missing scopes, `appliedManifest` and pending consent. |
+| `ballast_apply` | `project` | Requests a reload of a running, already-approved project. Consent, connection bindings and the first Start are user-only; returns `waiting_for_user` with `reason: "connections"` and the unbound slots when requirements are not bound. Never binds, approves or starts. |
+| `ballast_status` | `project?` | Service health and project state: `running`, `waiting_for_user` (with reason), `previous_version_running_latest_failed`, `error`, `stopped`; per-unit status/source; requirements (bound/proposed/unbound/missing) and missing scopes. |
+| `ballast_logs` | `project`, `unit?`, `since?`, `limit?` | A bounded log snapshot. `unit` accepts `name` or `kind:name`; the RPC receives both `unitKind` and `unitName`. |
+| `ballast_events` | `project`, `unit?`, `integration?`, `topic?`, `since?`, `limit?` | A bounded inbound/outbound event snapshot with truncated payloads; same project/unit filters. |
 
 `project` accepts a project id, a display name, or an absolute folder path.
 Results are compact text plus `structuredContent` JSON.
 
-## Adapter contract for W4
+## Adapter
 
-The project tools sit behind `ProjectAdapter` in `src/adapter.ts`. The current
-implementation resolves the project and runtime state over RPC, then runs the
-**non-applying** planner locally (`planProject`, `typecheckProject`,
-`diffProject`) so `ballast_check` has structured diagnostics and cannot apply
-anything.
-
-If the service is remote (`BALLAST_SERVICE_URL`) and the project root is not
-readable by the MCP process, `check` falls back to the `PlanProject` RPC. W4
-must make that RPC read-only before that path is used in practice.
-
-The final service API should satisfy this shape (or the equivalent RPCs):
+All project work is service-side; the MCP has no planner dependency:
 
 ```ts
 interface ProjectAdapter {
   listProjects(): Effect<ProjectSummary[], ToolError>;
   resolveProject(ref: string): Effect<ProjectSummary, ToolError>;
   getProject(projectId: string): Effect<ProjectDetail, ToolError>;
-  registerProject(path: string, name?: string): Effect<ProjectDetail, ToolError>;
-  checkProject(project: ProjectSummary): Effect<CheckResult, ToolError>;
+  createProject(name: string, directory?: string): Effect<ProjectDetail, ToolError>;
+  checkProject(projectId: string): Effect<ProjectCheckResult, ToolError>;
   restartProject(projectId: string): Effect<ProjectDetail, ToolError>;
   listConnections(): Effect<ConnectionSummary[], ToolError>;
   health(): Effect<HealthStatus, ToolError>;
@@ -109,67 +138,36 @@ interface ProjectAdapter {
 }
 ```
 
-`checkProject` must be read-only and return:
+`createProject` maps to `CreateProject({ name, directory })`;
+`checkProject` maps to `CheckProject({ projectId })`. Slots are project-local;
+connection instances are service-level. The MCP never calls `StartProject`,
+`ApproveProjectConsent` or `SetProjectBinding`.
 
-```ts
-interface CheckResult {
-  project: ProjectSummary;
-  entry: string;
-  ok: boolean;
-  error?: string;
-  diagnostics: { file; line; column; code?; message }[];
-  units: { kind; name; source?; detail }[];
-  changes: { kind; name; change: "added" | "removed" | "changed"; source? }[];
-  requiresConsent: boolean;
-  missingConnections: { integration; slot; location; connectionId?; status? }[];
-  missingScopes: { integration; slot; connectionId?; scopes }[];
-  appliedAt?: number;
-  pendingConsent?: { id; reason; summary };
-}
-```
+## CLI wiring
 
-Specifically, W4 should:
-
-- make `PlanProject` non-applying and add diagnostics (or add a
-  `CheckProject`/`PlanProjectPreview` RPC);
-- always return `appliedManifest` in `ProjectDetail` (today the MCP falls back
-  to `manifest` when `appliedAt` is set);
-- expose project/unit `source` locations that are project-relative; core frames
-  such as `../../core/src/timer.ts` are currently filtered out by the MCP;
-- keep `StartProject`/`ApproveProjectConsent` user-only. The MCP deliberately
-  never calls them.
-
-Swapping the local planner for the final RPC is a single change in
-`makeProjectAdapter`'s `checkProject`; the tool layer does not change.
-
-## Wiring `ballast mcp` into the agent CLI (not done this round)
-
-`packages/mcp` exports `runMcpCli` for exactly this. The change in
-`apps/agent/src/bin.ts` is:
-
-1. Add to `usage`: `ballast mcp [--state-dir <dir>] [--data-dir <dir>]`.
-2. Add a branch before `serve`:
+`ballast mcp` is wired in `apps/agent/src/bin.ts`:
 
 ```ts
 if (command === "mcp") {
   yield* Effect.tryPromise({
-    try: () => runMcpCli({
-      args: rest,
-      env: process.env,
-      platform: process.platform,
-      home: process.env["HOME"] ?? process.cwd(),
-    }),
+    try: async () => {
+      const mcp = await import("@ballast/mcp");
+      await mcp.runMcpCli({
+        args: rest,
+        env: process.env,
+        platform: process.platform,
+        home: process.env["HOME"] ?? process.cwd(),
+      });
+    },
     catch: (cause) => new Error(formatError(cause)),
   });
   return;
 }
 ```
 
-3. Import `runMcpCli` from `@ballast/mcp` and add
-   `"@ballast/mcp": "workspace:*"` to `apps/agent/package.json`.
-
-The MCP server must own stdout, so the CLI must not print a banner before it.
-The `ballast-mcp` bin stays available for direct use and tests.
+The MCP owns stdout, so the CLI prints no banner before it. The service build
+(`pnpm --filter @ballast/agent build:service`) bundles the MCP into
+`dist-service/main.mjs`, so `main.mjs mcp` works from the staged service.
 
 ## Tests
 
@@ -179,6 +177,7 @@ pnpm --filter @ballast/mcp test
 ```
 
 The E2E test starts the real `ballast serve` with throwaway state/data
-directories, spawns the real MCP server over stdio, and calls `ballast_catalog`,
-`ballast_project_init`, `ballast_check` (including a deliberate
-`ballast.ts:3:7 TS2322`), `ballast_apply`, `ballast_status`, logs and events.
+directories, spawns `apps/agent/src/bin.ts mcp` over stdio, and calls
+`ballast_catalog`, `ballast_project_init`, `ballast_check` (including a
+deliberate `ballast.ts:3:7 TS2322`), `ballast_apply`, `ballast_status`,
+logs and events.

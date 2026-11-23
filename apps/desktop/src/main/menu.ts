@@ -5,7 +5,7 @@ export interface MenuActions {
   readonly showLogs: () => void;
   readonly restartService: () => void;
   readonly stopService: () => void;
-  readonly installService: () => void;
+  readonly startService: () => void;
   readonly checkForUpdates: () => void;
   readonly installUpdate: () => void;
 }
@@ -34,9 +34,9 @@ export function installApplicationMenu(actions: MenuActions): void {
       submenu: [
         { label: "Open Ballast", accelerator: "CmdOrCtrl+O", click: actions.show },
         { type: "separator" },
+        { label: "Start Ballast Service", click: actions.startService },
         { label: "Restart Ballast Service", click: actions.restartService },
         { label: "Stop Ballast Service", click: actions.stopService },
-        { label: "Install Background Service…", click: actions.installService },
         { type: "separator" },
         { label: "Show Logs", click: actions.showLogs },
         { label: "Check for Updates…", click: actions.checkForUpdates },

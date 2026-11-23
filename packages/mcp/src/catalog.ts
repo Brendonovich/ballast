@@ -27,6 +27,11 @@ export interface CatalogRequest {
   readonly name: string;
   readonly description: string;
   readonly scopes: ReadonlyArray<string>;
+  /**
+   * How the request is granted. Namespace integrations use the connection
+   * handle; permissioned requests name the declaration that records scopes.
+   */
+  readonly grantedBy?: string | undefined;
   readonly input?: JsonSchemaObject | undefined;
   readonly output?: JsonSchemaObject | undefined;
   readonly method?: string | undefined;
@@ -206,6 +211,7 @@ const requestsFromSchemas = (
   integration: string,
   schemas: object,
   prefix = "",
+  grantedBy?: string,
 ): ReadonlyArray<CatalogRequest> =>
   Object.entries(schemas).flatMap(([name, value]) => {
     if (!isRequestSchemas(value)) return [];
@@ -217,6 +223,7 @@ const requestsFromSchemas = (
         name: integration + "/" + prefix + name,
         description: integration + " request " + humanize(name),
         scopes: [],
+        ...(grantedBy === undefined ? {} : { grantedBy }),
         ...(input === undefined ? {} : { input }),
         ...(output === undefined ? {} : { output }),
       },
@@ -247,6 +254,7 @@ const twitchRequests: ReadonlyArray<CatalogRequest> = Object.entries(
       name: "helix/" + name,
       description: "Twitch Helix " + value.method + " " + value.path + " via account.helix",
       scopes: [...value.scopes],
+      grantedBy: "Twitch.Account(slot).helix(name)",
       ...(input === undefined ? {} : { input }),
       ...(output === undefined ? {} : { output }),
       method: value.method,
@@ -262,6 +270,7 @@ const midiRequests: ReadonlyArray<CatalogRequest> = [
     name: "midi/noteOn",
     description: "Send a MIDI Note On message.",
     scopes: [],
+    grantedBy: "Midi.Connection(slot) grants midi/*; call midi.noteOn",
     input: toJsonSchema(Midi.NoteOnInputSchema),
     output: toJsonSchema(Midi.RequestOutputSchema),
   },
@@ -270,6 +279,7 @@ const midiRequests: ReadonlyArray<CatalogRequest> = [
     name: "midi/noteOff",
     description: "Send a MIDI Note Off message.",
     scopes: [],
+    grantedBy: "Midi.Connection(slot) grants midi/*; call midi.noteOff",
     input: toJsonSchema(Midi.NoteOffInputSchema),
     output: toJsonSchema(Midi.RequestOutputSchema),
   },
@@ -278,6 +288,7 @@ const midiRequests: ReadonlyArray<CatalogRequest> = [
     name: "midi/controlChange",
     description: "Send a MIDI Control Change message.",
     scopes: [],
+    grantedBy: "Midi.Connection(slot) grants midi/*; call midi.controlChange",
     input: toJsonSchema(Midi.ControlChangeInputSchema),
     output: toJsonSchema(Midi.RequestOutputSchema),
   },
@@ -286,6 +297,7 @@ const midiRequests: ReadonlyArray<CatalogRequest> = [
     name: "midi/programChange",
     description: "Send a MIDI Program Change message.",
     scopes: [],
+    grantedBy: "Midi.Connection(slot) grants midi/*; call midi.programChange",
     input: toJsonSchema(Midi.ProgramChangeInputSchema),
     output: toJsonSchema(Midi.RequestOutputSchema),
   },
@@ -294,6 +306,7 @@ const midiRequests: ReadonlyArray<CatalogRequest> = [
     name: "midi/pitchBend",
     description: "Send a signed MIDI pitch bend (-8192 to 8191).",
     scopes: [],
+    grantedBy: "Midi.Connection(slot) grants midi/*; call midi.pitchBend",
     input: toJsonSchema(Midi.PitchBendInputSchema),
     output: toJsonSchema(Midi.RequestOutputSchema),
   },
@@ -302,6 +315,7 @@ const midiRequests: ReadonlyArray<CatalogRequest> = [
     name: "midi/raw",
     description: "Send a complete raw MIDI message; the first byte must be a status byte.",
     scopes: [],
+    grantedBy: "Midi.Connection(slot) grants midi/*; call midi.raw",
     input: toJsonSchema(Midi.RawInputSchema),
     output: toJsonSchema(Midi.RequestOutputSchema),
   },
@@ -313,6 +327,7 @@ const keyboardRequests: ReadonlyArray<CatalogRequest> = [
     name: "keyboard/tap",
     description: "Tap a key once, optionally holding modifiers, on the streamer's machine.",
     scopes: [],
+    grantedBy: "Keyboard.Connection(slot) grants keyboard/*; call keyboard.tap",
     input: toJsonSchema(Keyboard.TapInputSchema),
     output: toJsonSchema(Keyboard.RequestOutputSchema),
   },
@@ -321,6 +336,7 @@ const keyboardRequests: ReadonlyArray<CatalogRequest> = [
     name: "keyboard/toggle",
     description: "Press or release a key without a matching tap (push-to-talk).",
     scopes: [],
+    grantedBy: "Keyboard.Connection(slot) grants keyboard/*; call keyboard.toggle",
     input: toJsonSchema(Keyboard.ToggleInputSchema),
     output: toJsonSchema(Keyboard.RequestOutputSchema),
   },
@@ -332,6 +348,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     name: "websocket/connect",
     description: "Declare permission for the client slot to connect to its configured URL.",
     scopes: ["ws:connect:<host>"],
+    grantedBy: "WebSocket.Client(slot, { url? })",
     input: { type: "object", properties: {} },
   },
   {
@@ -339,6 +356,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     name: "websocket/listen",
     description: "Declare permission for the server slot to listen on its configured host and port.",
     scopes: ["ws:listen:<host>:<port><path>"],
+    grantedBy: "WebSocket.Server(slot, { host?, port?, path? })",
     input: { type: "object", properties: {} },
   },
   {
@@ -346,6 +364,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     name: "websocket/send",
     description: "Send a text, binary (base64) or JSON frame on a client slot.",
     scopes: [],
+    grantedBy: "WebSocket.Client(slot) grants websocket/*; call client.send",
     input: {
       type: "object",
       oneOf: [
@@ -360,6 +379,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     name: "websocket/sendToClient",
     description: "Send a frame to one connected client of a server slot.",
     scopes: [],
+    grantedBy: "WebSocket.Server(slot) grants websocket/*; call server.send",
     input: {
       type: "object",
       properties: { clientId: { type: "string" }, message: { type: "object" } },
@@ -371,6 +391,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     name: "websocket/broadcast",
     description: "Broadcast a frame to every connected client of a server slot.",
     scopes: [],
+    grantedBy: "WebSocket.Server(slot) grants websocket/*; call server.broadcast",
     input: { type: "object" },
     output: {
       type: "object",
@@ -386,6 +407,7 @@ const httpRequests: ReadonlyArray<CatalogRequest> = [
     description:
       "Send an HTTP request to a host the connection is allowed to reach. Hosts become http:host:<host> scopes.",
     scopes: ["http:host:<host>"],
+    grantedBy: "Http.Client(slot, { hosts })",
     input: {
       type: "object",
       properties: {
@@ -432,7 +454,8 @@ const integrationCatalog: ReadonlyArray<CatalogIntegrationInput> = [
         integration: "fake",
         name: "fake/echo",
         description: "Echo text back. The plan client dies if called during init.",
-        scopes: ["fake:write"],
+        scopes: [],
+        grantedBy: "Fake.Connection(slot) grants fake/*; call fake.echo",
         input: toJsonSchema(Fake.EchoInputSchema),
         output: toJsonSchema(Fake.EchoOutputSchema),
       },
@@ -447,7 +470,12 @@ const integrationCatalog: ReadonlyArray<CatalogIntegrationInput> = [
     connectionKinds: ["local-socket"],
     connection: { location: "local", auth: "none", notes: "WebSocket URL and password; the connection grants obs/*." },
     topics: topicsFromModule("obs", OBS),
-    requests: requestsFromSchemas("obs", OBS.RequestSchemas),
+    requests: requestsFromSchemas(
+      "obs",
+      OBS.RequestSchemas,
+      "",
+      "OBS.Connection(slot) grants obs/*",
+    ),
   },
   {
     id: "twitch",
@@ -477,7 +505,12 @@ const integrationCatalog: ReadonlyArray<CatalogIntegrationInput> = [
       notes: "The user approves the Ballast plugin in VTube Studio; no OAuth.",
     },
     topics: topicsFromRecord("vts", VTS.namedTopics),
-    requests: requestsFromSchemas("vts", VTS.RequestSchemas),
+    requests: requestsFromSchemas(
+      "vts",
+      VTS.RequestSchemas,
+      "",
+      "VTS.Connection(slot) grants vts/*",
+    ),
   },
   {
     id: "keyboard",
@@ -560,13 +593,32 @@ export interface CatalogFilter {
   readonly integration?: string | undefined;
   readonly kind?: "topics" | "requests" | "connections" | "all" | undefined;
   readonly search?: string | undefined;
+  /** Match a topic by name or topic key. */
+  readonly topic?: string | undefined;
+  /** Match a request by name or description. */
+  readonly request?: string | undefined;
   readonly includeSchemas?: boolean | undefined;
   readonly limit?: number | undefined;
+  /** Skip this many matching topics/requests in each selected integration. */
+  readonly offset?: number | undefined;
+}
+
+export interface CatalogPage {
+  readonly integration: string;
+  readonly topicsRequested: boolean;
+  readonly requestsRequested: boolean;
+  readonly topicMatches: number;
+  readonly requestMatches: number;
+  readonly topicOffset: number;
+  readonly requestOffset: number;
+  readonly topicNextOffset?: number | undefined;
+  readonly requestNextOffset?: number | undefined;
 }
 
 export interface CatalogSelection {
   readonly integrations: ReadonlyArray<CatalogIntegration>;
   readonly connectionKinds: ReadonlyArray<ConnectionKind>;
+  readonly pages: ReadonlyArray<CatalogPage>;
 }
 
 const matchesIntegration = (integration: CatalogIntegration, filter: string): boolean => {
@@ -584,16 +636,22 @@ const matchesText = (value: string, search: string): boolean =>
 export const selectCatalog = (filter: CatalogFilter = {}): CatalogSelection => {
   const includeSchemas = filter.includeSchemas === true;
   const kind = filter.kind ?? "all";
-  const limit = Math.max(1, Math.min(filter.limit ?? 50, 200));
+  const limit = Math.max(1, Math.min(Math.trunc(filter.limit ?? 50), 200));
+  const offset = Math.max(0, Math.trunc(filter.offset ?? 0));
   const search = filter.search?.trim();
+  const topicNeedle = filter.topic?.trim();
+  const requestNeedle = filter.request?.trim();
   // A bare catalog call is an index. Topics and requests (especially OBS's
   // hundreds) appear only when the caller narrows the query.
   const detailed =
     (filter.integration !== undefined && filter.integration !== "") ||
     (search !== undefined && search !== "") ||
+    (topicNeedle !== undefined && topicNeedle !== "") ||
+    (requestNeedle !== undefined && requestNeedle !== "") ||
     kind === "topics" ||
     kind === "requests";
 
+  const pages: Array<CatalogPage> = [];
   const selected = catalog.integrations
     .filter((integration) =>
       filter.integration === undefined || filter.integration === ""
@@ -601,55 +659,95 @@ export const selectCatalog = (filter: CatalogFilter = {}): CatalogSelection => {
         : matchesIntegration(integration, filter.integration),
     )
     .map((integration) => {
-      const showTopics = detailed && kind !== "requests" && kind !== "connections";
-      const showRequests = detailed && kind !== "topics" && kind !== "connections";
-      const topics = showTopics
-        ? integration.topics
-            .filter((topic) =>
-              search === undefined || search === ""
-                ? true
-                : matchesText(topic.name, search) ||
+      const showTopics =
+        detailed &&
+        kind !== "requests" &&
+        kind !== "connections" &&
+        (requestNeedle === undefined || requestNeedle === "");
+      const showRequests =
+        detailed &&
+        kind !== "topics" &&
+        kind !== "connections" &&
+        (topicNeedle === undefined || topicNeedle === "");
+      const matchedTopics = showTopics
+        ? integration.topics.filter((topic) => {
+            if (topicNeedle !== undefined && topicNeedle !== "") {
+              if (
+                !matchesText(topic.name, topicNeedle) &&
+                !matchesText(topic.topic, topicNeedle)
+              ) {
+                return false;
+              }
+            }
+            return search === undefined || search === ""
+              ? true
+              : matchesText(topic.name, search) ||
                   matchesText(topic.topic, search) ||
-                  matchesText(topic.description, search),
-            )
-            .slice(0, limit)
-            .map((topic) =>
-              includeSchemas
-                ? topic
-                : {
-                    integration: topic.integration,
-                    name: topic.name,
-                    topic: topic.topic,
-                    description: topic.description,
-                    scopes: topic.scopes,
-                    onStale: topic.onStale,
-                    maxAgeMs: topic.maxAgeMs,
-                  },
-            )
+                  matchesText(topic.description, search);
+          })
         : [];
-      const requests = showRequests
-        ? integration.requests
-            .filter((request) =>
-              search === undefined || search === ""
-                ? true
-                : matchesText(request.name, search) ||
-                  matchesText(request.description, search),
-            )
-            .slice(0, limit)
-            .map((request) =>
-              includeSchemas
-                ? request
-                : {
-                    integration: request.integration,
-                    name: request.name,
-                    description: request.description,
-                    scopes: request.scopes,
-                    ...(request.method === undefined ? {} : { method: request.method }),
-                    ...(request.path === undefined ? {} : { path: request.path }),
-                    ...(request.docsUrl === undefined ? {} : { docsUrl: request.docsUrl }),
-                  },
-            )
+      const matchedRequests = showRequests
+        ? integration.requests.filter((request) => {
+            if (requestNeedle !== undefined && requestNeedle !== "") {
+              if (
+                !matchesText(request.name, requestNeedle) &&
+                !matchesText(request.description, requestNeedle)
+              ) {
+                return false;
+              }
+            }
+            return search === undefined || search === ""
+              ? true
+              : matchesText(request.name, search) ||
+                  matchesText(request.description, search);
+          })
         : [];
+      const topicPage = matchedTopics.slice(offset, offset + limit);
+      const requestPage = matchedRequests.slice(offset, offset + limit);
+      const nextTopic = offset + topicPage.length < matchedTopics.length
+        ? offset + topicPage.length
+        : undefined;
+      const nextRequest = offset + requestPage.length < matchedRequests.length
+        ? offset + requestPage.length
+        : undefined;
+      pages.push({
+        integration: integration.id,
+        topicsRequested: showTopics,
+        requestsRequested: showRequests,
+        topicMatches: matchedTopics.length,
+        requestMatches: matchedRequests.length,
+        topicOffset: offset,
+        requestOffset: offset,
+        ...(nextTopic === undefined ? {} : { topicNextOffset: nextTopic }),
+        ...(nextRequest === undefined ? {} : { requestNextOffset: nextRequest }),
+      });
+      const topics = topicPage.map((topic) =>
+        includeSchemas
+          ? topic
+          : {
+              integration: topic.integration,
+              name: topic.name,
+              topic: topic.topic,
+              description: topic.description,
+              scopes: topic.scopes,
+              onStale: topic.onStale,
+              maxAgeMs: topic.maxAgeMs,
+            },
+      );
+      const requests = requestPage.map((request) =>
+        includeSchemas
+          ? request
+          : {
+              integration: request.integration,
+              name: request.name,
+              description: request.description,
+              scopes: request.scopes,
+              ...(request.grantedBy === undefined ? {} : { grantedBy: request.grantedBy }),
+              ...(request.method === undefined ? {} : { method: request.method }),
+              ...(request.path === undefined ? {} : { path: request.path }),
+              ...(request.docsUrl === undefined ? {} : { docsUrl: request.docsUrl }),
+            },
+      );
       return { ...integration, topics, requests };
     });
 
@@ -659,6 +757,7 @@ export const selectCatalog = (filter: CatalogFilter = {}): CatalogSelection => {
       kind === "connections" || (kind === "all" && !detailed)
         ? catalog.connectionKinds
         : [],
+    pages,
   };
 };
 
@@ -687,12 +786,50 @@ export const formatCatalog = (selection: CatalogSelection): string => {
         integration.connection.auth,
     );
     lines.push("  " + integration.description);
-    lines.push(
-      "  topics: " +
-        integration.topicCount +
-        " · requests: " +
-        integration.requestCount,
-    );
+    const page = selection.pages.find((candidate) => candidate.integration === integration.id);
+    const detailed = page !== undefined && (page.topicsRequested || page.requestsRequested);
+    if (!detailed) {
+      lines.push(
+        "  topics: " +
+          integration.topicCount +
+          " · requests: " +
+          integration.requestCount,
+      );
+    } else {
+      const topicShown = integration.topics.length;
+      const requestShown = integration.requests.length;
+      const topicStart = page.topicOffset + 1;
+      const requestStart = page.requestOffset + 1;
+      lines.push(
+        "  topics: " +
+          (page.topicMatches === 0
+            ? "no matches"
+            : "showing " +
+              (topicShown === 0 ? 0 : topicStart) +
+              "-" +
+              (page.topicOffset + topicShown) +
+              " of " +
+              page.topicMatches +
+              (page.topicNextOffset === undefined
+                ? ""
+                : " · next offset " + page.topicNextOffset)) +
+          " · requests: " +
+          (page.requestMatches === 0
+            ? "no matches"
+            : "showing " +
+              (requestShown === 0 ? 0 : requestStart) +
+              "-" +
+              (page.requestOffset + requestShown) +
+              " of " +
+              page.requestMatches +
+              (page.requestNextOffset === undefined
+                ? ""
+                : " · next offset " + page.requestNextOffset)),
+      );
+      if (page.topicNextOffset !== undefined || page.requestNextOffset !== undefined) {
+        lines.push("  truncated; pass offset next, or use search/topic/request to narrow.");
+      }
+    }
     if (integration.topics.length > 0) {
       lines.push("  topics:");
       for (const topic of integration.topics) {
@@ -707,7 +844,15 @@ export const formatCatalog = (selection: CatalogSelection): string => {
       lines.push("  requests:");
       for (const request of integration.requests) {
         const scopes = request.scopes.length === 0 ? "no scopes" : request.scopes.join(", ");
-        lines.push("    - " + request.name + " (" + scopes + ") — " + request.description);
+        lines.push(
+          "    - " +
+            request.name +
+            " (" +
+            scopes +
+            (request.grantedBy === undefined ? "" : "; granted by " + request.grantedBy) +
+            ") — " +
+            request.description,
+        );
         if (request.input !== undefined) {
           lines.push("      input: " + truncate(JSON.stringify(request.input), 600));
         }

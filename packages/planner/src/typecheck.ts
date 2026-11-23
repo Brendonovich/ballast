@@ -184,7 +184,7 @@ const generatedConfig = (projectRoot: string): string => {
 
 const ensureConfig = async (projectRoot: string): Promise<string> => {
   const projectConfig = join(projectRoot, "tsconfig.json");
-  const hasProjectConfig = existsSync(projectConfig);
+  if (existsSync(projectConfig)) return projectConfig;
   const configPath = generatedConfig(projectRoot);
   await mkdir(dirname(configPath), { recursive: true });
   const packagePaths = [
@@ -212,24 +212,17 @@ const ensureConfig = async (projectRoot: string): Promise<string> => {
     configPath,
     JSON.stringify(
       {
-        ...(hasProjectConfig
-          ? { extends: relative(dirname(configPath), projectConfig).split("\\").join("/") }
-          : {}),
         compilerOptions: {
-          ...(hasProjectConfig
-            ? {}
-            : {
-                target: "ES2024",
-                module: "ESNext",
-                moduleResolution: "bundler",
-                lib: ["ES2024"],
-                strict: true,
-                exactOptionalPropertyTypes: true,
-                noUncheckedIndexedAccess: true,
-                noUnusedLocals: true,
-                noUnusedParameters: true,
-                verbatimModuleSyntax: true,
-              }),
+          target: "ES2024",
+          module: "ESNext",
+          moduleResolution: "bundler",
+          lib: ["ES2024"],
+          strict: true,
+          exactOptionalPropertyTypes: true,
+          noUncheckedIndexedAccess: true,
+          noUnusedLocals: true,
+          noUnusedParameters: true,
+          verbatimModuleSyntax: true,
           declaration: false,
           declarationMap: false,
           sourceMap: false,

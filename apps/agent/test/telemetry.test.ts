@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { NodeCrypto } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -10,7 +11,10 @@ import {
   EventRouterLive,
 } from "../src/service/telemetry.ts";
 
-const RouterLive = EventRouterLive.pipe(Layer.provideMerge(EventLogLive));
+const RouterLive = EventRouterLive.pipe(
+  Layer.provideMerge(EventLogLive),
+  Layer.provide(NodeCrypto.layer),
+);
 
 describe("service telemetry", () => {
   it.effect("stores decoded payload Dates and bytes as JSON", () =>
@@ -70,6 +74,44 @@ describe("service telemetry", () => {
 
       yield* router.register({ projectId: "project", scriptId: "script", session });
       expect(delivered).toEqual([{ id: "redemption-1" }]);
+    }).pipe(Effect.provide(RouterLive)),
+  );
+
+  it.effect("holds startup events until a bound generation announces its topics", () =>
+    Effect.gen(function* () {
+      const router = yield* EventRouter;
+      const key = "twitch/broadcaster/twitch/channel.channel_points_custom_reward_redemption.add";
+      const delivered: Array<unknown> = [];
+      const session: RuntimeSession = {
+        generation: 1,
+        subscriptions: new Set([key]),
+        ready: Effect.void,
+        deliver: (_key, payload) => {
+          delivered.push(payload);
+        },
+        deliverTimer: () => undefined,
+        close: Effect.void,
+      };
+
+      yield* router.beginWarmup;
+      yield* router.publishInbound({
+        integration: "twitch",
+        slot: "broadcaster",
+        topic: "twitch/channel.channel_points_custom_reward_redemption.add",
+        connectionId: "conn_twitch",
+        payload: { id: "redemption-startup" },
+      });
+      expect(delivered).toEqual([]);
+
+      yield* router.expectSubscriptions({
+        projectId: "project",
+        scriptId: "script",
+        subscriptions: [key],
+        bindings: new Map([["twitch/broadcaster", "conn_twitch"]]),
+      });
+      yield* router.register({ projectId: "project", scriptId: "script", session });
+      yield* router.finishWarmup;
+      expect(delivered).toEqual([{ id: "redemption-startup" }]);
     }).pipe(Effect.provide(RouterLive)),
   );
 

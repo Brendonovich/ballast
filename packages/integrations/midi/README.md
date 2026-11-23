@@ -8,15 +8,14 @@ MIDI input and output for devices attached to the streamer's machine.
 import * as Midi from "@ballast/module-midi";
 
 const midi = yield* Midi.Connection("controller");
-const output = yield* Ballast.Param.string("output", { options: Midi.outputs("controller") });
+const output = yield* Ballast.Param.string("output", { options: Midi.outputs(midi) });
 
-yield* Midi.NoteOn.subscribe(midi, (event) =>
+yield* Midi.NoteOn.subscribe("note-on", midi, (event) =>
   Effect.log(`note ${event.note} on channel ${event.channel}`),
 );
-yield* Midi.RawMessage.subscribe(midi, (event) => Effect.log(event.data));
+yield* Midi.RawMessage.subscribe("raw", midi, (event) => Effect.log(event.data));
 
-const sendNote = yield* Midi.SendNoteOn(midi);
-yield* sendNote({ device: yield* output, channel: 1, note: 60, velocity: 100 });
+yield* midi.noteOn({ device: yield* output, channel: 1, note: 60, velocity: 100 });
 ```
 
 Topics: `NoteOn`, `NoteOff`, `ControlChange`, `ProgramChange`, `PitchBend`,
@@ -25,14 +24,15 @@ standard running-status form). Pitch bend is signed (-8192..8191, 0 center).
 Raw messages always include their status byte; running-status input is
 normalized by `MidiDecoder`.
 
-Requests: `SendNoteOn`, `SendNoteOff`, `SendControlChange`,
-`SendProgramChange`, `SendPitchBend`, `SendRaw`. Each accepts an optional
-`device` output-port name; without it the driver uses the connection's
-configured output. `SendRaw` requires a status byte and validates every byte.
+`Midi.Connection` grants the whole `midi/*` namespace. Output methods on the
+handle are `noteOn`, `noteOff`, `controlChange`, `programChange`,
+`pitchBend` and `raw`. Each accepts an optional `device` output-port name;
+without it the driver uses the connection's configured output. `raw` requires a
+status byte and validates every byte.
 
-`Midi.inputs(slot)` and `Midi.outputs(slot)` are `ParamOptionSource`s backed by
-the live port list, for a device picker. Duplicate port names get ` #2`,
-` #3`, ... so they stay addressable.
+`Midi.inputs(midi)` and `Midi.outputs(midi)` take the MIDI connection handle
+and return `ParamOptionSource`s backed by the live port list, for a device
+picker. Duplicate port names get ` #2`, ` #3`, ... so they stay addressable.
 
 ## Driver (`@ballast/module-midi/driver`)
 

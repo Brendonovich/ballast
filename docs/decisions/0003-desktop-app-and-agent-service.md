@@ -3,6 +3,12 @@
 *Status: accepted for Phase 1 (v1 desktop) · 2026-11-22, revised 2026-11-23 · effect `4.0.6` ·
 Electron `44.9.1` as shipped by OpenCode Desktop · Rune `dev@e501fe1a` inspected, no releases*
 
+> **2026-11-23: no OS supervisor.** The macOS LaunchAgent / Windows Scheduled Task (and any login
+> item) were dropped. Like OpenCode's background service, the desktop app and the CLI spawn
+> `ballast serve` as a plain detached process that outlives them. Configuring launchd and Task
+> Scheduler (plists, VBS wrappers, exit-code propagation, restart throttling) was too much
+> complexity for what it bought. The sections below describe the current model.
+
 ## Context
 
 `docs/PLAN.md` and D8 say the desktop shell is **Rune + CEF**, the same approach as the
@@ -13,8 +19,8 @@ needs a different shape:
 
 - one long-running, per-user **background service** that owns many scripts, connections, cloud
   pairing, params, consent, logs and event history;
-- a **desktop app** that ships and supervises that service, starts at login, stays in the tray
-  when the window closes, and updates itself;
+- a **desktop app** that ships and starts that service, stays in the tray when the window
+  closes, and updates itself;
 - a **web UI** for Connections, Cloud, Scripts (manifest/params/logs/events) and Settings;
 - one **local API** that the UI, the CLI and (later) MCP and other tools share.
 
@@ -41,8 +47,8 @@ Claims marked **[repo]**, **[source]** (installed Effect), **[measured]**, **[do
 | Question | Decision |
 |---|---|
 | Shell | Electron for v1; Rune + CEF deferred until the triggers in §1. |
-| Service lifetime | Independent of the Electron app. Installed mode uses a macOS LaunchAgent / per-user Windows Scheduled Task (Run key alternative) that runs the app binary with `ELECTRON_RUN_AS_NODE=1`; quitting the UI does not stop the service. Explicit stop/restart from tray, UI and CLI via service RPC + OS supervisor. |
-| Updates | Service stages are versioned and never overwritten; the login item points at a stage; handoff stops/restarts and rolls back on failure. |
+| Service lifetime | Independent of the Electron app. The app (or CLI) spawns `ballast serve` as a detached process, run with the app binary and `ELECTRON_RUN_AS_NODE=1`; quitting the UI does not stop the service. No OS supervisor and no start at login: the service starts when the app or CLI is opened. Explicit stop/restart from tray, UI and CLI. |
+| Updates | Service stages are versioned and never overwritten; on launch the app replaces a running service of another version (stop → spawn new stage → verify), and respawns the previous stage on failure. |
 | Secrets | `0600` file in v1 (`secrets.json`); OS keychain later. |
 | Logs/events | In-memory ring buffers only in v1. |
 | New scripts | Always stop and wait for an explicit Start, even with no new permissions. `enabled: true` (set by Start) means resume after a service restart; Stop sets it false. |
@@ -121,7 +127,7 @@ Why not Rune now:
 
 1. **The shell APIs Ballast needs do not exist yet.** Rune has no tray/status item, login item,
    notification or updater API. Building them is framework work, and it is on the critical path
-   (tray + start at login are v1 requirements, not later polish).
+   (tray is a v1 requirement, not later polish).
 2. **CEF is a separate downloaded product.** A 128–142 MB engine with a trust/unpack/update
    pipeline, no Linux source, and a pane abstraction designed for browsing. Using it as the UI
    host means shipping the same web UI *plus* the sidecar lifecycle.
@@ -140,8 +146,8 @@ Why not Rune now:
 | A required agent native module cannot load in Electron's Node (N-API should prevent this) | Ship stock Node as the service runtime (112 MB) instead of `ELECTRON_RUN_AS_NODE`; no protocol changes. |
 | Electron signing/notarization or `electron-updater` fails on Windows in the release spike | Tauri 2 becomes primary; do not hand-roll an updater. |
 
-The shell owns only: window, tray, menu, login item, update, service discovery/supervision, OS
-dialogs and keychain access. It holds no product state. The UI always loads from the service
+The shell owns only: window, tray, menu, update, service discovery/spawn/stop, OS dialogs and
+keychain access. It holds no product state. The UI always loads from the service
 origin and speaks the RPC group, so a future Rune/Tauri shell is a shell-only change.
 
 ---
@@ -151,8 +157,8 @@ origin and speaks the RPC group, so a future Rune/Tauri shell is a shell-only ch
 ### Process model
 
 ```
-Electron main (tray, updates, installer)
-  │  reads service.json; installs/updates/starts/adopts
+Electron main (tray, updates)
+  │  reads service.json; spawns/replaces/adopts/stops
   ▼
 ballast-agent service (one per user, independent of the UI; Node via ELECTRON_RUN_AS_NODE)
   ├─ HTTP + WebSocket on 127.0.0.1:<random>   (UI, CLI, MCP later)
@@ -200,27 +206,28 @@ ballast-agent service (one per user, independent of the UI; Node via ELECTRON_RU
 - **CloudLink** is the single outbound machine WebSocket from decision 0002. Twitch cloud mode is
   a connection transport over it; local-app mode keeps its own EventSub socket and token refresh.
 - **The service lifecycle is independent of the Electron app.** Closing the window or quitting
-  the UI does not stop the service. The shell installs, starts, adopts and updates it, but does
-  not own its lifetime:
+  the UI does not stop the service. There is no OS supervisor (no LaunchAgent, Scheduled Task or
+  login item); the shell and the CLI start it as a plain detached process, as OpenCode does:
 
-  | Platform | Installed-mode startup | Stop / restart |
+  | Started by | How | Stop / restart |
   |---|---|---|
-  | macOS | Per-user LaunchAgent `~/Library/LaunchAgents/stream.ballast.agent.plist` (`RunAtLoad`, `KeepAlive` on non-zero exit, `EnvironmentVariables.ELECTRON_RUN_AS_NODE=1`) runs the app binary with the staged `main.mjs serve --standalone` | `launchctl bootout` + `ShutdownService` for stop; `RestartService` exits 75 and launchd restarts; `launchctl kickstart -k` after a plist update |
-  | Windows | Per-user Scheduled Task at logon (or `HKCU\…\Run`) runs a generated `ballast-service.vbs`/`.cmd` in the service stage; the wrapper sets `ELECTRON_RUN_AS_NODE=1`, starts the app binary with `main.mjs serve` hidden, **waits for it**, and propagates its exit code (so the task's restart-on-failure sees 75) | `schtasks /End` + `ShutdownService` for stop; `RestartService` exits 75 and the task restarts; the shell rewrites the task/wrapper on update |
-  | Dev / standalone | `ballast serve` from a terminal, or the unpackaged shell spawning it with `--supervised` | Ctrl-C / explicit RPC |
+  | Desktop app (every launch) | `spawn(<electron>, [<userData>/service/<version>/main.mjs, "serve"], { detached: true, stdio: [ignore, service.log, service.err.log], windowsHide: true })` with `ELECTRON_RUN_AS_NODE=1`, then `unref()` | Tray/Settings: `ShutdownService` → wait for exit → `SIGTERM` → `SIGKILL`; restart = stop + spawn |
+  | CLI | `ballast service start` (or any service command when none is running) re-runs its own runtime + entry with `serve`, detached the same way | `ballast service stop` / `restart`, same sequence |
+  | Dev | `ballast serve` in a terminal; `--supervised` exits when the parent closes stdin | Ctrl-C / explicit RPC |
 
-  The LaunchAgent/Scheduled Task is the **primary** startup path once the app is installed; the
-  shell's own spawn is for development and for adopting an installed service. The service writes a
-  parent-death pipe only in `--supervised` mode; installed mode ignores the shell process.
-- **Explicit stop/restart everywhere.** Tray, UI Settings and CLI all call the same service RPCs:
-  `ShutdownService` stops (and the shell removes the login item only on uninstall), `RestartService`
-  exits with code 75 so the OS supervisor starts a fresh generation. CLI also has
-  `ballast service install|start|stop|restart|uninstall` for the login item. Quitting the UI is
-  separate from stopping Ballast: the tray menu offers “Quit Ballast UI” (service stays) and
-  “Stop Ballast” (explicit stop).
-- **No OS system service / admin daemon.** Everything is per-user: LaunchAgent / per-user Task,
-  no admin, no session-0 service. That matches streamers' desktop tools and keeps OBS access in
-  the user session.
+  The service has no idle exit and keeps running until stopped, logout or reboot. There is no
+  start at login: the service starts when the app or CLI is next opened. `BALLAST_AUTOSTART=0`
+  stops the app from starting it on launch (tests).
+- **Every app launch calls `start()`.** Adopt a running service of the shipped version; replace a
+  running service of any other version (stop → spawn the new stage → verify `/health` version →
+  clean old stages; on failure respawn the previous stage = rollback); otherwise spawn.
+- **Explicit stop/restart everywhere.** Tray, UI Settings and CLI all stop through
+  `ShutdownService` (exit 0) with `SIGTERM`/`SIGKILL` fallbacks; restart is stop + spawn by the
+  caller, so a browser-only UI can stop but not restart. CLI: `ballast service
+  start|stop|restart|status`. Quitting the UI is separate from stopping Ballast: the tray menu
+  offers “Quit Ballast UI” (service stays) and “Stop Ballast” (explicit stop).
+- **No OS system service / admin daemon.** Everything is per-user: no admin, no session-0
+  service. That matches streamers' desktop tools and keeps OBS access in the user session.
 
 ### Packaging the service
 
@@ -262,39 +269,34 @@ Rolldown must emit stable chunks (`codeSplitting: true`, fixed entry names) so
 still generated per generation into a temp directory (as today), so they are unaffected.
 
 **Staging and updates.** The app carries `resources/service/<version>`; on first run it copies the
-tree to `<userData>/service/<version>` and writes `service.json`. The running service keeps its
-version on disk; the app cleans old stages on launch, keeping the running one (the opencode
-`cleanStages` pattern). The launch agent/task points at the **stage path**, not at the app's
-resources, so an app update never mutates a running service.
+tree to `<userData>/service/<version>`; the service writes `service.json`. The running service
+keeps its version on disk; the app cleans old stages on launch, keeping the running one (the
+opencode `cleanStages` pattern). The service runs from the **stage path**, not from the app's
+resources, so an app update never mutates a running service. Development builds get a
+content-hashed version, so a rebuilt service is a new stage and `dev` replaces the running one.
 
-App update / service handoff:
+App update:
 
 1. Stage the new `service/<newVersion>` and UI. Do not delete the old stage.
-2. If `apiVersion` is compatible, the shell may adopt the running service and show “restart to
-   update”; if not, it must hand off before opening the UI.
-3. **Quiesce the service before replacing the app binary.** Windows locks a running `.exe`, and
-   electron-updater replaces the macOS bundle too, so the installed service cannot keep running
-   while the app is replaced. Call `ShutdownService` (exit 0, no auto-restart) or unload the
-   LaunchAgent/task, wait for exit, then install the app update. This is the one planned pause;
-   scripts resume from `enabled` state when the new service starts.
-4. Write the new LaunchAgent plist / Scheduled Task atomically to the new stage
-   (temp file + `launchctl bootstrap`/`schtasks /Create /F`) and start it with
-   `GetServiceInfo` verification. The old stage stays on disk until the new service answers with
-   the expected `version`/`apiVersion`.
-5. If the new service fails to start, point the login item back at the previous stage and restart
-   it; surface the error and keep the app on the old version if possible. If the app is moved or
-   uninstalled, the installer updates/removes the login item; a service that is already running
-   is stopped first.
+2. **Quiesce the service before replacing the app binary.** Windows locks a running `.exe`, and
+   electron-updater replaces the macOS bundle too, so the service cannot keep running while the
+   app is replaced. `prepareForAppUpdate()` stops it (`ShutdownService`, wait for exit), then
+   electron-updater installs. This is the one planned pause; scripts resume from `enabled` state
+   when the new service starts.
+3. The relaunched app's `start()` finds no service (or one of another version), spawns the new
+   stage and verifies `/health` reports the expected `version`. The old stage stays on disk until
+   then.
+4. If the new service fails to start, respawn the previous stage and surface the error.
 
-For a future hot update (no app binary replacement), the same staging/handoff works without step
-3: stage the JS, update the login item, `RestartService`, verify, roll back. The app update path
+For a future hot update (no app binary replacement), the same staging/replace works without step
+2: stage the JS, stop, spawn the new stage, verify, roll back. The app update path
 does not promise zero downtime; it promises that state is on disk, scripts resume, and a failed
 update rolls back to the previous stage. If zero-downtime app updates become a hard requirement,
 stage a private copy of the Electron runtime (~276 MB) in the service stage so the app bundle can
 be replaced while it runs; that is explicitly not v1.
 
-`service.json` is removed on graceful exit. A crash leaves it; the shell verifies it with
-`/health`/`GetServiceInfo` before adopting.
+`service.json` is removed on graceful exit. A crash leaves it; the shell adopts a registration
+only when `/health` answers with the same pid.
 
 ### Discovery: `service.json`
 
@@ -328,9 +330,12 @@ This mirrors the opencode-kit rule: clients look in state, then config/data, and
 `url` is loopback before using it. The Electron shell reads the same file and checks
 `GetServiceInfo.apiVersion` before adopting a running service.
 
-A `<state>/ballast/service.lock` contains `{ pid, startedAt }`. On start: if the lock's process is
-alive and `/health` answers with `apiVersion`, exit with "already running"; if stale, replace it.
-Only one service may own this user's state. Removing `service.json` while the service runs is
+A `<state>/ballast/service.lock` contains `{ pid, startedAt }` and is created exclusively
+(`wx`). A live lock pid means the service is running or still starting (`service.json` is only
+written after warm-up), so a second `serve` refuses. Only a dead pid, or a live pid that never
+registered within 5 minutes (pid reuse), is stale and replaced. On exit the service removes
+`service.json`/`service.lock` only if they still name its own pid. Only one service may own this
+user's state. Removing `service.json` while the service runs is
 harmless; the next client just cannot discover it until restart.
 
 ### Local API transport
@@ -339,7 +344,7 @@ harmless; the next client just cannot discover it until restart.
   WebSocket (`RpcServer.layerHttp({ group, path: "/rpc", protocol: "websocket" })` +
   `RpcSerialization.layerJson` + `NodeHttpServer`), so one connection carries all request/response
   and streaming RPCs. `WatchService`, `StreamLogs` and `StreamEvents` are ordinary streaming RPCs.
-- `GET /health` is a small unauthenticated JSON endpoint for the supervisor (pid, version,
+- `GET /health` is a small unauthenticated JSON endpoint for the shell/CLI (pid, version,
   apiVersion, uptime). It exposes no project data.
 - `GET /` serves the built UI (`HttpStaticServer`/`HttpServerResponse.file`), including a
   `Referrer-Policy: no-referrer` header.
@@ -358,11 +363,11 @@ harmless; the next client just cannot discover it until restart.
 | Dev UI | Only with `--dev`, allow `http://localhost:5173` (Vite) as an origin and a `BALLAST_DEV_TOKEN`; never in a packaged build. |
 | Secrets | `service.json`, `service.lock` and connection secrets are `0600` in a `0700` directory. v1 stores connection secrets in `<data>/ballast/secrets.json` (as the Twitch code already does); Phase 2 moves them to the OS keychain. Cloud machine tokens are stored the same way. |
 | Logging | Redact the token, `Authorization`, cookie and secret fields from logs and error details. `service.json` is never copied into logs or telemetry. |
-| Shutdown | `ShutdownService`/`RestartService` require auth. Stop closes workers, drivers and the cloud socket, removes `service.json` and exits 0 (launchd/task does not restart). Restart exits 75 so the OS supervisor starts a fresh generation. The shell waits up to 5 s after either request, then `SIGTERM`. |
+| Shutdown | `ShutdownService` requires auth. Stop closes workers, drivers and the cloud socket, removes `service.json` and always exits 0. The caller waits for exit, then `SIGTERM`, then `SIGKILL`. Restart is stop + spawn by the caller; there is no restart RPC. |
 
-The service writes a parent-death pipe only in `--supervised` mode (dev shell or standalone test);
-if that supervisor dies, it exits rather than orphaning a second writer. Installed mode
-(LaunchAgent/Scheduled Task) is independent of the shell process and ignores it.
+The service watches its parent only in `--supervised` mode (stdin EOF = parent died; dev and
+tests); it then exits rather than orphaning a second writer. The normal detached service ignores
+its parent.
 
 ### CLI
 
@@ -375,15 +380,17 @@ ballast projects list|get|add <path>|remove <id>
 ballast scripts list|get|start|stop|restart|logs|events [--project <id>]
 ballast connections list|configure|connect|disconnect|auth
 ballast pair [--code <code>]
-ballast service install|uninstall|start|stop|restart
-ballast doctor                      # discovery, apiVersion, health, login item
+ballast service start|stop|restart|status
+ballast doctor                      # discovery, apiVersion, health
 ballast plan <entry> [--in-process]  # dev: current behaviour
 ballast run <entry> [--in-process]   # dev: current behaviour
 ```
 
 `plan`/`run` keep their current in-process implementation for developing the script engine and
 for CI. Their output prints a warning that they bypass the service. Everything else uses the
-generated `AgentClient`; discovery is §2's, with the env overrides for tests. MCP will be another
+generated `AgentClient`; discovery is §2's, with the env overrides for tests. Commands that need
+the service start it in the background when none is running (not `ballast status`, and not when
+`BALLAST_SERVICE_URL` is set). MCP will be another
 client of the same API, with its own scoped token later.
 
 ### State, logs and events (v1)
@@ -445,7 +452,7 @@ project's Scripts list. Projects are added from the switcher or Settings.
 
 | Screen | What it shows | Data (RPC) | Actions |
 |---|---|---|---|
-| **Shell chrome** | Window, tray icon/menu, service health/version, connection-to-service state, update badge | `GetHealth`, `GetServiceInfo`, `WatchService`; Electron updater events | Show/Hide, Restart service, Stop Ballast, Quit UI, Install update |
+| **Shell chrome** | Window, tray icon/menu, service health/version, connection-to-service state, update badge | `GetHealth`, `GetServiceInfo`, `WatchService`; Electron updater events | Show/Hide, Start/Restart service, Stop Ballast, Quit UI, Install update |
 | **Projects** | List of projects (name, root, script count, running count, last error); add/remove | `ListProjects`, `GetProject`, `WatchService` | `AddProject(path)`, `RemoveProject` (files untouched), switch project |
 | **Connections** | Service-wide list grouped by integration, one row per connection (title, slot label, status pill, account/detail, used-by projects/scripts). Detail pane: fields, mode, scopes, last error | `ListConnections`, `GetConnection`, `WatchService` | `ConfigureConnection` (URL/password, Twitch client id/secret), `ConnectConnection`, `DisconnectConnection`, `StartConnectionAuth` (browser/device code), re-auth when `scopes.missing` is non-empty |
 | **Cloud** | Link state, Twitch account, machine name/id, relay connected/pending, last event time (one pairing for all projects) | `GetCloudStatus`, `WatchService` | `BeginCloudPairing` (open URL, show code), `PairCloud` (paste code), `UnpairCloud` |
@@ -455,8 +462,8 @@ project's Scripts list. Projects are added from the switcher or Settings.
 | **Script detail: Logs** | Live lines, level filter, script filter, pause, search, timestamps, structured fields | `StreamLogs({ projectId?, scriptId?, afterSeq })`, `WatchService` | Clear view, copy, open raw |
 | **Script detail: Events** | Live inspector: inbound/outbound, topic, connection, project/script, time, payload JSON, stale/dropped badges | `StreamEvents({ projectId?, ... })`, `WatchService` | Filter by project/topic/integration; replay is Phase 3 |
 | **Script detail: Graph** | Placeholder in v1; renders when `view.kind === "graph"` | `GetScript.view` | none |
-| **Settings** | Service installed/running/version/pid/state dir, start at login, quit-to-tray, log level, cloud URL (advanced), project roots, copy diagnostics | `GetServiceInfo`, `GetHealth`; Electron `app.getLoginItemSettings` | Install/uninstall login item; start/stop/restart service; open logs/data folders; add/remove project |
-| **Onboarding** | Add the first project (folder), start at login, connect OBS (optional), sign in to Twitch (optional) | `AddProject`, `GetServiceInfo`, `ConfigureConnection`, `ConnectConnection`, `BeginCloudPairing` | Finish → Scripts |
+| **Settings** | Service running/version/pid/state dir, quit-to-tray, log level, cloud URL (advanced), project roots, copy diagnostics | `GetServiceInfo`, `GetHealth`; desktop bridge `service.status` | Stop service (restart only in the desktop app); open logs/data folders; add/remove project |
+| **Onboarding** | Add the first project (folder), connect OBS (optional), sign in to Twitch (optional) | `AddProject`, `GetServiceInfo`, `ConfigureConnection`, `ConnectConnection`, `BeginCloudPairing` | Finish → Scripts |
 
 Notes:
 
@@ -504,7 +511,7 @@ Modules:
 | `src/mock.ts` | `MockAgentLayer`/`MockAgentRpcs`: full in-memory implementation with realistic data |
 | `test/rpc.test.ts` | In-process client tests through the real Effect RPC machinery |
 
-RPCs: `GetServiceInfo`, `GetHealth`, `ShutdownService`, `RestartService`; `ListProjects`,
+RPCs: `GetServiceInfo`, `GetHealth`, `ShutdownService`; `ListProjects`,
 `GetProject`, `AddProject`, `RemoveProject`; `ListScripts`, `GetScript`, `PlanScript`,
 `StartScript`, `StopScript`, `RestartScript`, `SetScriptParam`, `SetScriptEnabled`,
 `ListConsents`, `ApproveConsent`, `RejectConsent`; `ListConnections`, `GetConnection`,
@@ -534,11 +541,11 @@ Design points:
   evolve without breaking the UI contract; the mapping is a pure function with tests.
 - **Versioning.** `apiVersion: 1`; additive schemas/optional keys are compatible; new RPC tags
   are compatible; removing/renaming fields or changing semantics bumps `apiVersion`. The shell
-  refuses to adopt a service with a different major API version and offers restart.
+  refuses to adopt a service with a different major API version and replaces it.
 
 The mock is deliberately realistic: **two projects** (Main Channel, Second Channel), four scripts
 (running, needs-consent, stopped, error), OBS, Twitch cloud/local, fake, cloud linked, logs and
-events. It supports every mutation (including project add/remove and service restart), publishes
+events. It supports every mutation (including project add/remove), publishes
 the same `ServiceEvent`s, and is the UI's data source until the service lands.
 
 Verification:
@@ -562,8 +569,8 @@ the contract; nobody imports another workstream's source.
 | Boundary | Contract |
 |---|---|
 | **A (shell + UI) ↔ B (service)** | `AgentRpcs` from `@ballast/agent-protocol`; `service.json` discovery; `/rpc` WebSocket; bearer token/session cookie. A uses `MockAgentLayer` until B answers `/health`. No direct imports from `apps/agent`. |
-| **B (service) ↔ C (install/update)** | `ballast serve [--port 0] [--dev] [--supervised]`; `service.json` (apiVersion, version, pid, url, token, defaultProjectId); exit 0 = stop, exit 75 = restart; `GetServiceInfo`/`GetHealth`/`RestartService`; service stage layout below. B never writes login items; C never changes service state files. |
-| **A (shell) ↔ C (install/update)** | Electron IPC: `service.status` (not-installed/installed/running/version), `service.install`, `service.uninstall`, `service.start`, `service.stop`, `service.restart`, `update.install`. UI Settings/tray call these; they do not run `launchctl`/`schtasks` from the renderer. |
+| **B (service) ↔ C (spawn/update)** | `ballast serve [--port 0] [--dev] [--supervised]`; `service.json` (apiVersion, version, pid, url, token, defaultProjectId) + `service.lock`; shutdown always exits 0; `GetServiceInfo`/`GetHealth`/`ShutdownService`; service stage layout below. C never changes service state files. |
+| **A (shell) ↔ C (spawn/update)** | Electron IPC: `service.status` (phase/running/version), `service.start`, `service.stop`, `service.restart`, `update.install`. UI Settings/tray call these; the renderer never spawns processes. |
 | **Stage layout** | `<userData>/service/<version>/{main.mjs,plan-worker.mjs,web/}`; the running stage is never overwritten; `service.json` lives in `<state>/ballast/`. |
 
 ### A — `apps/desktop` (Electron) + `apps/web` (Solid UI) against `MockAgentLayer`
@@ -589,33 +596,33 @@ possible; do not rewrite `run.ts`/`runtime-session.ts` until its owner lands.
 
 | Task | Notes | Wait on |
 |---|---|---|
-| B1 service bootstrap | New `serve` entry: token + `service.json` + lock, HTTP/WS, `/health`, `/rpc` with protocol handlers (stub data first), static `web/`, `--supervised`, exit codes, graceful shutdown. | — |
+| B1 service bootstrap | New `serve` entry: token + `service.json` + lock, HTTP/WS, `/health`, `/rpc` with protocol handlers (stub data first), static `web/`, `--supervised`, graceful shutdown. | — |
 | B2 ProjectManager/ProjectStore | Register roots (`projects.json`); per-project `.ballast`; add/remove; watch `scripts/**/*.ts`; project-scoped script discovery. | planner manifest shape |
 | B3 ScriptManager | Extract one-script lifecycle from `run.ts`/`runtime-session.ts`; plan → diff → consent; start/stop/restart; generations; `enabled` resume; new scripts stopped. Keep the in-process CLI. | **apps/agent/run.ts etc.** |
 | B4 ConnectionManager + shared bus | One driver per service-wide connection; reference-count by running manifests; scopes union; reconnect; per-project topic filters. | **apps/agent drivers, integrations** |
 | B5 Logs/events | Worker log notification or structured stdout; tag project/script; ring buffers + `seq`; bus tap for inbound/outbound events; `StreamLogs`/`StreamEvents`. | **runtime protocol in packages/core** |
 | B6 CloudLink | Pairing begin/claim, relay reconnect, Twitch cloud transport; one per service. | **apps/cloud / 0002** (can start against existing HTTP) |
-| B7 lifecycle RPCs | `ShutdownService`, `RestartService` (exit 75), project/script/consent handlers, health counts. | B1 |
+| B7 lifecycle RPCs | `ShutdownService` (exit 0), project/script/consent handlers, health counts. | B1 |
 | B8 contract tests | Start the real service in a temp project; call every `AgentRpcs` member; assert worker/connection/log/event behaviour. | B1–B6 |
 
 Acceptance: `pnpm --filter @ballast/agent serve` starts, discovers, serves the UI, runs two
-projects' scripts, keeps running after the client disconnects, and stops/restarts on RPC.
+projects' scripts, keeps running after the client disconnects, and stops on RPC.
 
-### C — service install, supervision and update in the shell
+### C — service spawn, replace and update in the shell
 
 Can start now against a stub stage (`main.mjs` that writes `service.json` and answers `/health`).
 
 | Task | Notes | Gate |
 |---|---|---|
-| C1 Launcher | Stage service + UI; spawn with `ELECTRON_RUN_AS_NODE=1 process.execPath <stage>/main.mjs serve --standalone`; macOS LaunchAgent plist (`RunAtLoad`, `KeepAlive` on non-zero, `ELECTRON_RUN_AS_NODE`); Windows Scheduled Task/Run key + hidden `.vbs`/`.cmd` wrapper that waits and propagates exit 75; stable install path. | — |
-| C2 Install/uninstall/stop/restart | `service.install` writes the login item and starts; `service.uninstall` stops + removes it; `service.stop` unloads/stops; `service.restart` updates plist/task then asks the service to exit 75; status IPC for UI/CLI. | C1 |
-| C3 Adoption/handoff | Read `service.json`, probe `GetServiceInfo`, adopt compatible; stage new version; stop service, install app update, update login item atomically, start/verify; roll back to previous stage on failure; clean old stages. | B1 |
-| C4 Tray/UI/CLI wiring | “Quit UI” leaves service; “Stop Ballast” stops; Settings shows installed/running/version; CLI `service …` uses the same launcher commands. | A5, B7 |
-| C5 E2E lifecycle | macOS + Windows: install, login start (no UI), quit UI (service alive), explicit stop/restart, app update with service running (quiesce/restart), crash restart, uninstall (no orphan). | B8 |
+| C1 Launcher | Stage service + UI; spawn detached `ELECTRON_RUN_AS_NODE=1 process.execPath <stage>/main.mjs serve` (stdin ignored, logs appended to `service.log`/`service.err.log`, `windowsHide`, `unref`). | — |
+| C2 Start/stop/restart | `service.start` adopts/replaces/spawns; `service.stop` = `ShutdownService` → wait → `SIGTERM` → `SIGKILL`; `service.restart` = stop + spawn; status IPC for UI. CLI `ballast service …` does the same from its own runtime. | C1 |
+| C3 Adoption/replace | Read `service.json`, probe `/health` (same pid), adopt the shipped version; replace another version (stop → spawn → verify), respawn the previous stage on failure; stop before app update; clean old stages. | B1 |
+| C4 Tray/UI/CLI wiring | “Quit UI” leaves service; “Stop Ballast” stops; Settings shows running/version; restart only where the caller can respawn (desktop, CLI). | A5, B7 |
+| C5 E2E lifecycle | Start, quit UI (service alive), explicit stop (no orphan), version replace/rollback, app update with service running (quiesce + respawn). | B8 |
 
-Acceptance: after install, reboot/login starts the service with no Electron window; quitting the
-app leaves scripts running; an app update replaces the service without losing state; stop and
-restart work from tray, Settings and CLI.
+Acceptance: opening the app starts (or adopts) the service; quitting the app leaves scripts
+running; an app update replaces the service without losing state; stop and restart work from
+tray, Settings and CLI.
 
 ### Sequencing
 
@@ -653,9 +660,8 @@ UI can be finished before the service is.
    clients should get scoped, revocable tokens; define that before exposing MCP beyond localhost.
 7. **Rune trigger.** Which Rune release/features would actually justify the port? Write the
    checklist down when Rune 1.0 is near, rather than porting for its own sake.
-8. **Windows launcher detail.** v1 uses a generated hidden `.vbs`/`.cmd` in the service stage for
-   the Scheduled Task/Run key. Replace it with a small signed native launcher if antivirus,
-   console flashes or policy become a problem; decide after the first Windows QA pass.
+8. **Windows QA.** The detached spawn (`windowsHide`, no console) is unit-tested on macOS only;
+   confirm on Windows that no console flashes and the service survives the app quitting.
 
 ---
 
@@ -674,7 +680,7 @@ UI can be finished before the service is.
 | Rune browser engine sizes | `installer.rs`: 128 MB macOS, 142 MB Windows; CEF `156.4.0` |
 
 **What this change did not do:** no Electron or Rune app was built or run. The shell decision is
-based on the repos, the shipped OpenCode app and the OS API surface above. A1/C1 should start with a one-day packaging spike (unsigned app, tray, login item, `ELECTRON_RUN_AS_NODE` service spawn,
+based on the repos, the shipped OpenCode app and the OS API surface above. A1/C1 should start with a one-day packaging spike (unsigned app, tray, `ELECTRON_RUN_AS_NODE` service spawn,
 update feed) before the full shell work is planned as done.
 
 Files added by this decision:

@@ -1,74 +1,118 @@
-import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Hex from "effect/encoding/Hex";
 
+/**
+ * Platform error check for "the entry does not exist". Effect normalizes every
+ * platform failure into `PlatformError`, so callers no longer have to match
+ * Node's `ENOENT` codes.
+ */
 export const isNotFound = (cause: unknown): boolean =>
-  typeof cause === "object" &&
-  cause !== null &&
-  "code" in cause &&
-  cause.code === "ENOENT";
+  PlatformError.isPlatformError(cause) && cause.reason._tag === "NotFound";
 
-export const ensureDir = async (path: string, mode = 0o700): Promise<void> => {
-  await mkdir(path, { recursive: true, mode });
-};
+export const ensureDir = (
+  path: string,
+  mode = 0o700,
+): Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem> =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.makeDirectory(path, { recursive: true, mode }),
+  );
 
-export const readJson = async (path: string): Promise<unknown | undefined> => {
-  try {
-    return JSON.parse(await readFile(path, "utf8"));
-  } catch (cause) {
-    if (isNotFound(cause)) return undefined;
-    throw cause;
-  }
-};
+export const readJson = (
+  path: string,
+): Effect.Effect<
+  unknown | undefined,
+  PlatformError.PlatformError | Error,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const text = yield* fs.readFileString(path).pipe(
+      Effect.catchIf(isNotFound, () => Effect.succeed(undefined)),
+    );
+    if (text === undefined) return undefined;
+    return yield* Effect.try({
+      try: (): unknown => JSON.parse(text),
+      catch: (cause) =>
+        new Error(
+          `Could not parse ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+    });
+  });
 
-export const readText = async (path: string): Promise<string | undefined> => {
-  try {
-    return await readFile(path, "utf8");
-  } catch (cause) {
-    if (isNotFound(cause)) return undefined;
-    throw cause;
-  }
-};
+export const readText = (
+  path: string,
+): Effect.Effect<
+  string | undefined,
+  PlatformError.PlatformError,
+  FileSystem.FileSystem
+> =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.readFileString(path).pipe(Effect.catchIf(isNotFound, () => Effect.succeed(undefined))),
+  );
+
+const temporaryName = (
+  path: string,
+): Effect.Effect<string, PlatformError.PlatformError, Crypto.Crypto> =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    const bytes = yield* crypto.randomBytes(4);
+    return `${path}.${Hex.encode(bytes)}.tmp`;
+  });
 
 /**
  * Write JSON atomically with restrictive permissions. The temporary file is
  * renamed over the target, so a crash never leaves a partial document.
  */
-export const writeJsonAtomic = async (
+export const writeJsonAtomic = (
   path: string,
   value: unknown,
   mode = 0o600,
-): Promise<void> => {
-  await ensureDir(dirname(path));
-  const temporary = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
-  await rename(temporary, path);
-};
+): Effect.Effect<
+  void,
+  PlatformError.PlatformError,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> =>
+  writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`, mode);
 
-export const writeTextAtomic = async (
+export const writeTextAtomic = (
   path: string,
   value: string,
   mode = 0o600,
-): Promise<void> => {
-  await ensureDir(dirname(path));
-  const temporary = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(temporary, value, { mode });
-  await rename(temporary, path);
-};
+): Effect.Effect<
+  void,
+  PlatformError.PlatformError,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    yield* fs.makeDirectory(paths.dirname(path), { recursive: true, mode: 0o700 });
+    const temporary = yield* temporaryName(path);
+    yield* fs.writeFileString(temporary, value, { mode });
+    yield* fs.rename(temporary, path);
+  });
 
-export const removeFile = async (path: string): Promise<void> => {
-  await rm(path, { force: true });
-};
+export const removeFile = (
+  path: string,
+): Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem> =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.remove(path, { force: true }),
+  );
 
-export const fileExists = async (path: string): Promise<boolean> => {
-  try {
-    await stat(path);
-    return true;
-  } catch (cause) {
-    if (isNotFound(cause)) return false;
-    throw cause;
-  }
-};
+export const fileExists = (
+  path: string,
+): Effect.Effect<boolean, PlatformError.PlatformError, FileSystem.FileSystem> =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(path));
 
-export const contentHash = (content: string): string =>
-  createHash("sha256").update(content).digest("hex").slice(0, 16);
+export const contentHash = (
+  content: string,
+): Effect.Effect<string, PlatformError.PlatformError, Crypto.Crypto> =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(content));
+    return Hex.encode(digest).slice(0, 16);
+  });

@@ -5,8 +5,6 @@ const bridge: BallastBridge = {
   version: BRIDGE_VERSION,
   service: {
     status: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceStatus),
-    install: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceInstall),
-    uninstall: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceUninstall),
     start: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceStart),
     stop: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceStop),
     restart: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceRestart),
@@ -25,6 +23,7 @@ const bridge: BallastBridge = {
     retry: () => ipcRenderer.invoke(BRIDGE_CHANNELS.appRetry),
     showLogs: () => ipcRenderer.invoke(BRIDGE_CHANNELS.appShowLogs),
     openExternal: (url: string) => ipcRenderer.invoke(BRIDGE_CHANNELS.appOpenExternal, url),
+    pickDirectory: () => ipcRenderer.invoke(BRIDGE_CHANNELS.appPickDirectory),
   },
   events: {
     onServiceStatus(listener: (status: ServiceStatus) => void) {

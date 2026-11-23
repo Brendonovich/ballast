@@ -1,22 +1,18 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-const installBridge = async (page: Page, installed: boolean): Promise<void> => {
-  await page.addInitScript((isInstalled) => {
+const installBridge = async (page: Page): Promise<void> => {
+  await page.addInitScript(() => {
     const status = {
       schemaVersion: 1,
-      phase: isInstalled ? "running" : "not-installed",
-      installed: isInstalled,
-      running: isInstalled,
-      supervisor: isInstalled ? "launch-agent" : "none",
-      loginItemPath: isInstalled ? "/tmp/ballast.plist" : null,
-      installedVersion: isInstalled ? "9.9.9" : null,
+      phase: "running",
+      running: true,
       builtVersion: "9.9.9",
-      runningVersion: isInstalled ? "9.9.9" : null,
+      runningVersion: "9.9.9",
       apiVersion: 1,
-      pid: isInstalled ? 4242 : null,
-      url: isInstalled ? location.origin : null,
-      startedAt: isInstalled ? Date.now() : null,
+      pid: 4242,
+      url: location.origin,
+      startedAt: Date.now(),
       pendingConsents: 0,
       updateAvailable: false,
       lastError: null,
@@ -30,29 +26,12 @@ const installBridge = async (page: Page, installed: boolean): Promise<void> => {
     };
     const action = async (name: string) => {
       localStorage.setItem("ballast.bridge.action", name);
-      if (name === "install") {
-        return {
-          ok: true,
-          status: {
-            ...status,
-            phase: "running",
-            installed: true,
-            running: true,
-            supervisor: "launch-agent",
-            installedVersion: "9.9.9",
-            runningVersion: "9.9.9",
-          },
-          message: null,
-        };
-      }
       return { ok: true, status, message: null };
     };
     Reflect.set(window, "ballast", {
       version: 1,
       service: {
         status: async () => status,
-        install: () => action("install"),
-        uninstall: () => action("uninstall"),
         start: () => action("start"),
         stop: () => action("stop"),
         restart: () => action("restart"),
@@ -84,6 +63,7 @@ const installBridge = async (page: Page, installed: boolean): Promise<void> => {
         retry: async () => {},
         showLogs: async () => {},
         openExternal: async () => {},
+        pickDirectory: async () => "/tmp/picked-project",
       },
       events: {
         onServiceStatus: (listener: (status: unknown) => void) => {
@@ -93,20 +73,17 @@ const installBridge = async (page: Page, installed: boolean): Promise<void> => {
         onUpdateStatus: () => () => {},
       },
     });
-  }, installed);
+  });
 };
 
-test("desktop bridge supplies installed/running state and supervisor actions", async ({ page }) => {
-  await installBridge(page, true);
+test("desktop bridge supplies running state and service actions", async ({ page }) => {
+  await installBridge(page);
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await page.getByTestId("nav-settings").click();
 
   await expect(page.getByText("running", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("9.9.9").first()).toBeVisible();
-  await expect(page.getByTestId("service-install")).toHaveCount(0);
-  await page.getByText("Advanced").click();
-  await expect(page.getByTestId("service-uninstall")).toBeVisible();
 
   await page.evaluate(() => {
     const listener = Reflect.get(window, "ballastStatusListener");
@@ -114,11 +91,7 @@ test("desktop bridge supplies installed/running state and supervisor actions", a
       listener({
         schemaVersion: 1,
         phase: "stopping",
-        installed: true,
         running: false,
-        supervisor: "launch-agent",
-        loginItemPath: "/tmp/ballast.plist",
-        installedVersion: "9.9.9",
         builtVersion: "9.9.9",
         runningVersion: "9.9.9",
         apiVersion: 1,
@@ -150,20 +123,10 @@ test("desktop bridge supplies installed/running state and supervisor actions", a
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem("ballast.bridge.action")))
     .toBe("stop");
-});
 
-test("desktop bridge offers install only when the service is not installed", async ({ page }) => {
-  await installBridge(page, false);
-  await page.goto("/");
-  await page.getByTestId("nav-settings").click();
-
-  await expect(page.getByText("not-installed")).toBeVisible();
-  await expect(page.getByTestId("service-install")).toBeVisible();
-  await expect(page.getByText("Advanced")).toHaveCount(0);
-
-  await page.getByTestId("service-install").click();
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("ballast.bridge.action")))
-    .toBe("install");
-  await expect(page.getByTestId("service-install")).toHaveCount(0);
+  // The desktop bridge supplies the native folder picker for a new project.
+  await page.getByTestId("nav-projects").click();
+  await page.getByTestId("new-project").click();
+  await page.getByTestId("create-project-directory-pick").click();
+  await expect(page.getByTestId("create-project-directory")).toHaveValue("/tmp/picked-project");
 });

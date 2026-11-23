@@ -13,12 +13,12 @@ const Summary = Schema.Struct({ total: Schema.Number });
 
 export default Effect.gen(function* () {
   const hook = yield* Http.Webhook("kofi");
-  const scene = yield* Ballast.Param.string("scene", {
-    title: "Scene",
-    options: OBS.scenes("main"),
-  });
   const api = yield* Http.Client("kofi-api", { hosts: ["api.example.com"] });
   const obs = yield* OBS.Connection("main");
+  const scene = yield* Ballast.Param.string("scene", {
+    title: "Scene",
+    options: OBS.scenes(obs),
+  });
 
   yield* Http.Webhook.json(Donation).subscribe("donation", hook, (donation) =>
     Effect.gen(function* () {

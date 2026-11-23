@@ -5,7 +5,6 @@ import type { DesktopConfig } from "../config.ts";
 import type { ServiceBuild, Stage, StageRef } from "./types.ts";
 
 const versionPattern = /^[0-9A-Za-z][0-9A-Za-z._+-]*$/;
-const installedFile = "installed.json";
 
 export function assertVersion(version: string): void {
   if (!versionPattern.test(version)) throw new Error("invalid service version: " + version);
@@ -76,13 +75,6 @@ export async function resolveServiceBuild(config: DesktopConfig): Promise<Servic
   return { version, directory: config.serviceBuildDir };
 }
 
-async function atomicWriteJson(file: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = file + "." + process.pid + "." + randomBytes(4).toString("hex") + ".tmp";
-  await writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-  await rename(temporary, file);
-}
-
 /**
  * Copy a service build into <userData>/service/<version>.
  *
@@ -126,28 +118,11 @@ export async function stageService(config: DesktopConfig, build: ServiceBuild): 
   return asStage({ version: build.version, directory });
 }
 
-export async function readInstalledStage(config: DesktopConfig): Promise<StageRef | undefined> {
-  const value = await readJson(path.join(config.stageRoot, installedFile));
-  if (!record(value)) return undefined;
-  const version = value["version"];
-  const directory = value["directory"];
-  if (typeof version !== "string" || typeof directory !== "string") return undefined;
+/** An already-staged version (for rolling back to a running service's stage), if complete. */
+export async function existingStage(config: DesktopConfig, version: string): Promise<Stage | undefined> {
   if (!versionPattern.test(version)) return undefined;
-  if (path.dirname(path.resolve(directory)) !== path.resolve(config.stageRoot)) return undefined;
-  if (path.basename(path.resolve(directory)) !== version) return undefined;
-  return { version, directory: path.resolve(directory) };
-}
-
-export async function writeInstalledStage(config: DesktopConfig, stage: StageRef): Promise<void> {
-  await atomicWriteJson(path.join(config.stageRoot, installedFile), {
-    version: stage.version,
-    directory: stage.directory,
-    installedAt: Date.now(),
-  });
-}
-
-export async function removeInstalledStage(config: DesktopConfig): Promise<void> {
-  await rm(path.join(config.stageRoot, installedFile), { force: true });
+  const stage = asStage(stageRef(config.stageRoot, version));
+  return (await pathType(stage.entry)) === "file" ? stage : undefined;
 }
 
 /** Remove all version stages except the ones still referenced. Failures are ignored. */
@@ -161,7 +136,7 @@ export async function cleanStages(config: DesktopConfig, keepVersions: ReadonlyA
   }
   const removed: string[] = [];
   for (const entry of entries) {
-    if (keep.has(entry) || entry === installedFile) continue;
+    if (keep.has(entry)) continue;
     const target = path.join(config.stageRoot, entry);
     if ((await pathType(target)) !== "directory") continue;
     try {

@@ -7,7 +7,7 @@ const example = fileURLToPath(new URL("../../../../examples/midi-cc.ts", import.
 const callRequest = fileURLToPath(new URL("./fixtures/call-request.ts", import.meta.url));
 
 describe("plan MIDI scripts", () => {
-  it.effect("records the device option source, topics and note request", () =>
+  it.effect("records the device option source, topics and midi namespace", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
@@ -43,7 +43,7 @@ describe("plan MIDI scripts", () => {
           },
         ],
         requests: [
-          { integration: "midi", slot: "controller", request: "midi/noteOn", scopes: [] },
+          { integration: "midi", slot: "controller", request: "midi/*", scopes: [] },
         ],
         unresolved: [],
         timers: [],

@@ -133,22 +133,28 @@ export const isOptionSource = (value: string): value is OptionSource =>
  * Dynamic options from `HotkeysInCurrentModel`. Values are hotkey names (or
  * the ID for a name-less hotkey), both accepted by `HotkeyTrigger`.
  */
-export const hotkeys = (slot: string): Ballast.ParamOptionSource => ({
+export const hotkeys = (
+  connection: Ballast.ConnectionRef<typeof INTEGRATION>,
+): Ballast.ParamOptionSource => ({
   integration: INTEGRATION,
-  slot,
+  slot: connection.slot,
   source: OPTION_SOURCES.hotkeys,
 });
 
 /** Dynamic options from `AvailableModels`. Values are stable model IDs. */
-export const models = (slot: string): Ballast.ParamOptionSource => ({
+export const models = (
+  connection: Ballast.ConnectionRef<typeof INTEGRATION>,
+): Ballast.ParamOptionSource => ({
   integration: INTEGRATION,
-  slot,
+  slot: connection.slot,
   source: OPTION_SOURCES.models,
 });
 
 /** Dynamic options from `ExpressionState`. Values are `.exp3.json` files. */
-export const expressions = (slot: string): Ballast.ParamOptionSource => ({
+export const expressions = (
+  connection: Ballast.ConnectionRef<typeof INTEGRATION>,
+): Ballast.ParamOptionSource => ({
   integration: INTEGRATION,
-  slot,
+  slot: connection.slot,
   source: OPTION_SOURCES.expressions,
 });

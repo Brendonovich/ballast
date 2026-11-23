@@ -6,7 +6,12 @@ import {
   ConnectionMode,
   ConnectionStatus,
 } from "./common.ts";
-import { ScriptRef } from "./scripts.ts";
+export const ConnectionBindingRef = Schema.Struct({
+  projectId: Schema.String,
+  /** The project-local requirement name, e.g. "main" or "broadcaster". */
+  slot: Schema.String,
+});
+export type ConnectionBindingRef = typeof ConnectionBindingRef.Type;
 
 export const ConnectionFieldKind = Schema.Literals(["url", "text", "secret", "select"]);
 export type ConnectionFieldKind = typeof ConnectionFieldKind.Type;
@@ -59,7 +64,6 @@ export type ConnectionAccount = typeof ConnectionAccount.Type;
 export const ConnectionSummary = Schema.Struct({
   id: Schema.String,
   integration: Schema.String,
-  slot: Schema.String,
   /** The integration's display name, for example "OBS Studio". */
   title: Schema.String,
   /** The user-facing name of this connection, for example "Main OBS". */
@@ -70,8 +74,8 @@ export const ConnectionSummary = Schema.Struct({
   fields: Schema.Array(ConnectionField),
   values: Schema.Array(ConnectionValue),
   scopes: ConnectionScopes,
-  /** Scripts in any project that currently declare a slot bound to this connection. */
-  usedBy: Schema.Array(ScriptRef),
+  /** Project requirements currently bound to this instance. */
+  boundBy: Schema.Array(ConnectionBindingRef),
   account: Schema.optionalKey(ConnectionAccount),
   detail: Schema.optionalKey(Schema.String),
   lastError: Schema.optionalKey(Schema.String),
@@ -86,6 +90,28 @@ export const ConnectionSummary = Schema.Struct({
   requiresAuth: Schema.Boolean,
 });
 export type ConnectionSummary = typeof ConnectionSummary.Type;
+
+export const CreateConnectionRequest = Schema.Struct({
+  integration: Schema.String,
+  label: Schema.String,
+  /** Field values keyed by the integration catalog's field keys. */
+  config: Schema.Record(Schema.String, Schema.String),
+  mode: Schema.optionalKey(ConnectionMode),
+});
+export type CreateConnectionRequest = typeof CreateConnectionRequest.Type;
+
+export const UpdateConnectionRequest = Schema.Struct({
+  id: Schema.String,
+  label: Schema.optionalKey(Schema.String),
+  config: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  mode: Schema.optionalKey(ConnectionMode),
+});
+export type UpdateConnectionRequest = typeof UpdateConnectionRequest.Type;
+
+export const DeleteConnectionRequest = Schema.Struct({
+  id: Schema.String,
+});
+export type DeleteConnectionRequest = typeof DeleteConnectionRequest.Type;
 
 export const ConfigureConnectionRequest = Schema.Struct({
   connectionId: Schema.String,
@@ -148,26 +174,152 @@ export const obsFields: ReadonlyArray<ConnectionField> = [
     label: "Password",
     kind: "secret",
     required: false,
-    description: "Stored in the OS keychain on release builds.",
+    description: "Stored in Ballast's data directory with 0600 file permissions.",
   },
 ];
+
+const textField = (
+  key: string,
+  label: string,
+  description?: string,
+): ConnectionField => ({
+  key,
+  label,
+  kind: "text",
+  required: false,
+  ...(description === undefined ? {} : { description }),
+});
+
+const secretField = (
+  key: string,
+  label: string,
+  description?: string,
+): ConnectionField => ({
+  key,
+  label,
+  kind: "secret",
+  required: false,
+  ...(description === undefined ? {} : { description }),
+});
+
+const selectField = (
+  key: string,
+  label: string,
+  options: ReadonlyArray<string>,
+  description?: string,
+): ConnectionField => ({
+  key,
+  label,
+  kind: "select",
+  required: false,
+  options: [...options],
+  ...(description === undefined ? {} : { description }),
+});
 
 export const twitchFields: ReadonlyArray<ConnectionField> = [
   {
     key: "clientId",
     label: "Client ID",
     kind: "text",
-    required: true,
-    description: "From your Twitch application; only used in local-app mode.",
+    required: false,
+    description: "From your Twitch application; used in local-app mode.",
   },
   {
     key: "clientSecret",
     label: "Client secret",
     kind: "secret",
-    required: true,
+    required: false,
     description: "Only used in local-app mode. Never leaves this machine.",
   },
+  textField(
+    "connection",
+    "Cloud connection",
+    "Cloud Twitch connection id or login, for cloud mode.",
+  ),
 ];
+
+export const vtsFields: ReadonlyArray<ConnectionField> = [
+  textField("url", "WebSocket URL", "Defaults to ws://127.0.0.1:8001."),
+  textField("pluginName", "Plugin name", "Shown in the VTube Studio approval dialog."),
+  textField("pluginDeveloper", "Plugin developer"),
+  textField("pluginIcon", "Plugin icon (base64, 128x128)"),
+];
+
+export const keyboardFields: ReadonlyArray<ConnectionField> = [
+  selectField(
+    "permission",
+    "macOS permission",
+    ["unknown", "granted", "denied"],
+    "Provided by the shell where it can query Accessibility.",
+  ),
+];
+
+export const midiFields: ReadonlyArray<ConnectionField> = [
+  textField("input", "Input port", "Leave empty when the script only sends MIDI."),
+  textField("output", "Output port", "Default output for send requests."),
+];
+
+export const websocketFields: ReadonlyArray<ConnectionField> = [
+  selectField("mode", "Mode", ["auto", "client", "server"]),
+  textField("url", "Client URL", "ws:// or wss://; required for a client slot."),
+  textField("headers", "Headers (JSON)", 'For example {"authorization":"Bearer ..."}'),
+  secretField("headersSecret", "Secret headers (JSON)", "Merged over the plain headers."),
+  textField("subprotocols", "Subprotocols (comma separated)"),
+  textField("serverHost", "Server host", "Defaults to 127.0.0.1."),
+  textField("serverPort", "Server port", "Required for a server slot."),
+  textField("serverPath", "Server path", "Defaults to every path."),
+];
+
+export const httpFields: ReadonlyArray<ConnectionField> = [
+  textField("baseUrl", "Base URL", "Required for HTTP client requests."),
+  textField("headers", "Default headers (JSON)"),
+  secretField("headersSecret", "Secret headers (JSON)", "Merged over the plain headers."),
+  selectField("authType", "Auth", ["none", "bearer", "basic", "header"]),
+  secretField("authToken", "Bearer token"),
+  textField("authUsername", "Basic auth username"),
+  secretField("authPassword", "Basic auth password"),
+  textField("authHeaderName", "Auth header name"),
+  secretField("authHeaderValue", "Auth header value"),
+  textField(
+    "allowedHosts",
+    "Allowed hosts (comma separated)",
+    "The manifest host scopes are always enforced too.",
+  ),
+  selectField("webhookTransport", "Webhook transport", ["local", "cloud"]),
+  textField("webhookHookId", "Cloud hook id", "Optional stable id; generated from the slot otherwise."),
+  textField("webhookHost", "Webhook host", "Defaults to 127.0.0.1."),
+  textField("webhookPort", "Webhook port", "Defaults to 8787."),
+  textField("webhookPath", "Webhook path", "Defaults to /hooks/<slot>."),
+  selectField("webhookVerification", "Webhook verification", [
+    "none",
+    "shared-secret",
+    "hmac-sha256",
+  ]),
+  textField("webhookHeader", "Verification header"),
+  secretField("webhookSecret", "Verification secret"),
+  textField("webhookTimestampHeader", "Timestamp header"),
+  textField("webhookTolerance", "Timestamp tolerance (seconds)"),
+  textField("webhookResponseStatus", "Static response status"),
+  textField("webhookResponseBody", "Static response body"),
+  textField("webhookMaxAgeMs", "Max event age (ms)"),
+  selectField("webhookOnStale", "Stale events", ["drop", "deliver"]),
+];
+
+/** One integration kind available to the Add connection dialog. */
+export const ConnectionIntegration = Schema.Struct({
+  integration: Schema.String,
+  title: Schema.String,
+  location: ConnectionLocation,
+  modes: Schema.Array(ConnectionMode),
+  requiresAuth: Schema.Boolean,
+  fields: Schema.Array(ConnectionField),
+  description: Schema.optionalKey(Schema.String),
+  /** Static own-app OAuth redirect the user must register, when configured. */
+  redirectUrl: Schema.optionalKey(Schema.String),
+});
+export type ConnectionIntegration = typeof ConnectionIntegration.Type;
+
+
 
 export const fakeFields: ReadonlyArray<ConnectionField> = [
   {
@@ -178,6 +330,89 @@ export const fakeFields: ReadonlyArray<ConnectionField> = [
     placeholder: ">",
   },
 ];
+
+/** The source of truth for connection form fields and supported modes. */
+export const connectionIntegrations: ReadonlyArray<ConnectionIntegration> = [
+  {
+    integration: "obs",
+    title: "OBS Studio",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: obsFields,
+    description:
+      "OBS WebSocket 5.x: scenes, sources, filters, transitions, recording and streaming.",
+  },
+  {
+    integration: "twitch",
+    title: "Twitch",
+    location: "either",
+    modes: ["auto", "local-app", "cloud"],
+    requiresAuth: true,
+    fields: twitchFields,
+    description:
+      "A Twitch account through the Ballast cloud relay or your own Twitch application.",
+  },
+  {
+    integration: "fake",
+    title: "Fake",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: fakeFields,
+    description: "Deterministic in-process test integration.",
+  },
+  {
+    integration: "vts",
+    title: "VTube Studio",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: vtsFields,
+    description: "VTube Studio plugin approval, hotkeys and model parameters.",
+  },
+  {
+    integration: "keyboard",
+    title: "Keyboard",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: keyboardFields,
+    description: "Global macOS keyboard input through Accessibility.",
+  },
+  {
+    integration: "midi",
+    title: "MIDI",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: midiFields,
+    description: "MIDI input/output ports for note, control and program messages.",
+  },
+  {
+    integration: "websocket",
+    title: "WebSocket",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: websocketFields,
+    description: "A WebSocket client connection or a local WebSocket server.",
+  },
+  {
+    integration: "http",
+    title: "HTTP",
+    location: "either",
+    modes: ["auto", "local-app", "cloud"],
+    requiresAuth: false,
+    fields: httpFields,
+    description: "HTTP requests and verified local or cloud webhooks.",
+  },
+];
+
+export const ListIntegrationsResponse = Schema.Struct({
+  integrations: Schema.Array(ConnectionIntegration),
+});
+export type ListIntegrationsResponse = typeof ListIntegrationsResponse.Type;
 
 /** A helper for UI code that wants to display a field value consistently. */
 export const valueOf = (

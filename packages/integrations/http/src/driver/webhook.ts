@@ -1,7 +1,8 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -78,9 +79,14 @@ const headerValue = (
 };
 
 const constantTimeEqual = (left: string, right: string): boolean => {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
+  const a = new TextEncoder().encode(left);
+  const b = new TextEncoder().encode(right);
+  if (a.byteLength !== b.byteLength) return false;
+  let difference = 0;
+  for (let index = 0; index < a.byteLength; index++) {
+    difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return difference === 0;
 };
 
 const verifySignature = (
@@ -118,8 +124,14 @@ const verifySignature = (
   }
 
   const signed = timestamp === undefined
-    ? Buffer.from(body)
-    : Buffer.concat([Buffer.from(timestamp + "."), Buffer.from(body)]);
+    ? body
+    : (() => {
+        const prefix = new TextEncoder().encode(timestamp + ".");
+        const joined = new Uint8Array(prefix.byteLength + body.byteLength);
+        joined.set(prefix);
+        joined.set(body, prefix.byteLength);
+        return joined;
+      })();
   const expected = createHmac("sha256", verification.secret)
     .update(signed)
     .digest(verification.encoding);
@@ -246,6 +258,7 @@ const groupLocal = (
 const localApp = (
   routes: ReadonlyMap<string, WebhookDefinition>,
   queue: Queue.Queue<WebhookDelivery>,
+  crypto: Crypto.Crypto,
 ): Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   never,
@@ -277,7 +290,7 @@ const localApp = (
 
     yield* Queue.offer(queue, {
       hook: definition.slot,
-      id: randomUUID(),
+      id: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
       source: "local",
       method: request.method,
       path: url.pathname,
@@ -307,7 +320,7 @@ const cloudRegistration = (definition: WebhookDefinition) => {
 };
 
 /** Standalone webhook driver: local HTTP listeners plus cloud relay deliveries. */
-export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
+export const layer: Layer.Layer<WebhookDriver, never, Crypto.Crypto> = Layer.effect(
   WebhookDriver,
   Effect.gen(function* () {
     // Capture the relay in the driver layer. `start` runs in the caller's
@@ -316,6 +329,7 @@ export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
     // lookup as a fallback preserves standalone tests/embedders that provide
     // the relay next to the start call.
     const layerRelay = yield* Effect.serviceOption(WebhookRelay);
+    const crypto = yield* Crypto.Crypto;
     return WebhookDriver.of({
       start: (definitions) =>
         Effect.gen(function* () {
@@ -355,7 +369,7 @@ export const layer: Layer.Layer<WebhookDriver> = Layer.effect(
                 address: group.host + ":" + port + route.path,
               });
             }
-            yield* server.serve(localApp(routes, queue)).pipe(
+            yield* server.serve(localApp(routes, queue, crypto)).pipe(
               Effect.provideService(Scope.Scope, scope),
             );
             yield* Effect.logInfo(

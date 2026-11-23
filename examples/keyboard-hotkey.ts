@@ -3,7 +3,6 @@ import { Effect } from "effect";
 
 export default Effect.gen(function* () {
   const keyboard = yield* Keyboard.Connection("main");
-  const tap = yield* Keyboard.Tap(keyboard);
 
   yield* Keyboard.Hotkey.subscribe(
     "hotkey",
@@ -11,7 +10,7 @@ export default Effect.gen(function* () {
     (event) =>
       Effect.gen(function* () {
         yield* Effect.log(`hotkey ${event.combo}`);
-        yield* tap({ key: "F2" });
+        yield* keyboard.tap({ key: "F2" });
       }),
     { keys: ["Ctrl", "Shift", "F1"] },
   );

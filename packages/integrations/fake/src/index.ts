@@ -26,14 +26,49 @@ export const ChatPayloadSchema = Schema.Struct({ text: Schema.String });
 export const EchoInputSchema = Schema.Struct({ text: Schema.String });
 export const EchoOutputSchema = Schema.Struct({ text: Schema.String });
 
-/** A local fake-service connection slot. Nothing listens on it yet. */
+export interface FakeClient extends Ballast.ConnectionRef<Integration> {
+  /** Echo text back. The plan client dies if it is called. */
+  readonly echo: (input: EchoInput) => Effect.Effect<EchoOutput>;
+}
+
+const call = <A, B>(
+  host: Ballast.RequestHostService,
+  connection: Ballast.ConnectionRef<Integration>,
+  request: string,
+  inputSchema: Schema.Codec<A, unknown, never, never>,
+  outputSchema: Schema.Codec<B, unknown, never, never>,
+  input: A,
+): Effect.Effect<B> =>
+  host.granted<A, B>({
+    integration: INTEGRATION,
+    slot: connection.slot,
+    request,
+    scopes: [],
+    key: INTEGRATION + "/" + connection.slot + "/" + request,
+    inputSchema,
+    outputSchema,
+  })(input);
+
+/**
+ * A local fake-service connection slot. The connection grants the whole
+ * `fake/*` request namespace; `echo` is a method on the handle.
+ */
 export const Connection = (
   slot: string,
-): Effect.Effect<Ballast.ConnectionRef<Integration>> =>
-  Ballast.Connection<Integration>({
-    integration: INTEGRATION,
-    slot,
-    location: "local",
+): Effect.Effect<FakeClient, never, Ballast.RequestHost> =>
+  Effect.gen(function* () {
+    const connection = yield* Ballast.Connection<Integration>({
+      integration: INTEGRATION,
+      slot,
+      location: "local",
+      requests: ["*"],
+    });
+    const host = yield* Ballast.RequestHost;
+    return {
+      ...connection,
+      echo: (input) =>
+        call(host, connection, "fake/echo", EchoInputSchema, EchoOutputSchema, input),
+    };
   });
 
 /**
@@ -55,15 +90,4 @@ export const Chat = Ballast.Topic<ChatPayload, Integration>({
   schema: ChatPayloadSchema,
 });
 
-/** Echo text back. The plan client dies if it is called. */
-export const Echo = (
-  connection: Ballast.ConnectionRef<Integration>,
-): Effect.Effect<Ballast.RequestClient<EchoInput, EchoOutput>, never, Ballast.RequestHost> =>
-  Ballast.Request<EchoInput, EchoOutput>({
-    integration: INTEGRATION,
-    slot: connection.slot,
-    request: "fake/echo",
-    scopes: ["fake:write"],
-    inputSchema: EchoInputSchema,
-    outputSchema: EchoOutputSchema,
-  });
+

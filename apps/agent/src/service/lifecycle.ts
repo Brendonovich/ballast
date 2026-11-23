@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 export interface LifecycleService {
-  /** Wait for a ShutdownService/RestartService request and return its exit code. */
+  /** Wait for a shutdown request (ShutdownService, POST /shutdown, a signal) and return its exit code. */
   readonly wait: Effect.Effect<number>;
   readonly stop: (code: number) => Effect.Effect<void>;
 }

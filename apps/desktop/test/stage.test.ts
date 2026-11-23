@@ -6,11 +6,9 @@ import type { DesktopConfig } from "../src/main/config.ts";
 import {
   asStage,
   cleanStages,
-  readInstalledStage,
-  removeInstalledStage,
+  existingStage,
   resolveServiceBuild,
   stageService,
-  writeInstalledStage,
 } from "../src/main/service/stage.ts";
 import { configFor } from "./support.ts";
 
@@ -63,27 +61,21 @@ describe("service staging", () => {
     await expect(stageService(incomplete, { version: "9.9.9", directory: build })).rejects.toThrow(/incomplete/);
   });
 
-  it("tracks installed.json and cleans old stages", async () => {
+  it("finds complete stages and cleans old ones", async () => {
     const { config } = await fixture("1.0.0");
     await mkdir(path.join(config.stageRoot, "0.9.0"), { recursive: true });
     await mkdir(path.join(config.stageRoot, "1.0.0"), { recursive: true });
+    await writeFile(path.join(config.stageRoot, "1.0.0", "main.mjs"), "// staged");
     await mkdir(path.join(config.stageRoot, "1.1.0"), { recursive: true });
     await mkdir(path.join(config.stageRoot, ".1.2.0.123.tmp"), { recursive: true });
-    await writeInstalledStage(config, { version: "1.0.0", directory: path.join(config.stageRoot, "1.0.0") });
-    expect(await readInstalledStage(config)).toEqual({
-      version: "1.0.0",
-      directory: path.join(config.stageRoot, "1.0.0"),
-    });
+
+    expect((await existingStage(config, "1.0.0"))?.entry).toBe(path.join(config.stageRoot, "1.0.0", "main.mjs"));
+    expect(await existingStage(config, "1.1.0")).toBeUndefined();
+    expect(await existingStage(config, "../escape")).toBeUndefined();
 
     const removed = await cleanStages(config, ["1.0.0", "1.1.0"]);
     expect(removed.sort()).toEqual([".1.2.0.123.tmp", "0.9.0"]);
-    expect(await readInstalledStage(config)).toEqual({
-      version: "1.0.0",
-      directory: path.join(config.stageRoot, "1.0.0"),
-    });
-
-    await removeInstalledStage(config);
-    expect(await readInstalledStage(config)).toBeUndefined();
+    expect((await existingStage(config, "1.0.0"))?.version).toBe("1.0.0");
   });
 
   it("rejects version names that could escape the stage root", async () => {

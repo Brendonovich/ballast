@@ -1,15 +1,15 @@
 # @ballast/desktop
 
-The Ballast desktop shell: one Electron window, a tray item, and the installer/updater for the
+The Ballast desktop shell: one Electron window, a tray item, and the launcher/updater for the
 background agent service. It implements decision 0003 tasks **A1**, **A5** and **C1–C4**:
 
 - A1: single instance, `--background`, window loads the discovered service URL (token → HttpOnly
   cookie exchange) or `BALLAST_UI_URL` in development, "Starting Ballast…" fallback, tray menu.
 - A5: quit-UI vs stop-service are separate; service status comes from IPC; pending-consent count
   from `/health`; update state is an IPC event.
-- C1: versioned service staging and a macOS LaunchAgent / Windows Scheduled Task.
+- C1: versioned service staging and a detached `ballast serve` spawn (no OS supervisor).
 - C2: typed IPC bridge for `service.*` and `update.install`.
-- C3: discovery/adoption, version handoff, verification and rollback, old-stage cleanup.
+- C3: discovery/adoption, version replacement, verification and rollback, old-stage cleanup.
 - C4: tray, application menu and IPC call the same launcher functions.
 
 The real service is `apps/agent/dist-service` (`ballast serve` plus the built Solid UI in
@@ -26,10 +26,10 @@ shell's unit tests.
 - **electron-updater is pinned literally (6.8.9)**, not via `catalog:`: electron-builder validates
   that dependency's version string and cannot parse pnpm's catalog placeholder.
 - **Plain TypeScript in the launcher**, with Effect only behind `src/main/service/controls.ts`.
-  The shell is event-driven OS process management (`launchctl`, `schtasks`, `fs`, `fetch`), so
-  staging/handoff stay plain and unit-tested. `ShutdownService`, `RestartService` and
-  `ReportShellPermission` use the typed agent RPC over authenticated WebSocket; launchctl /
-  Task Scheduler remain the fallback when the service is wedged.
+  The shell is plain process management (`child_process`, `fs`, `fetch`), so staging and
+  start/stop stay small and unit-tested. `ShutdownService` and `ReportShellPermission` use the
+  typed agent RPC over authenticated WebSocket; `SIGTERM`/`SIGKILL` are the fallback when the
+  service is wedged.
 
 ## Run it
 
@@ -46,26 +46,23 @@ BALLAST_UI_URL=http://localhost:5173 pnpm --filter @ballast/desktop dev
 
 Without `BALLAST_UI_URL` the window waits for `service.json`, loads the service UI at
 `http://127.0.0.1:<port>/?token=…` (the service sets an `HttpOnly; SameSite=Strict` cookie and
-redirects to `/`), or shows the bundled fallback page while it comes up. `dev` sets
-`BALLAST_DEV=1`, so a launch with no running service installs and starts the freshly built stage
-automatically (the same `service.install`/`service.start` calls the tray uses). Set
-`BALLAST_DEV=0` to skip that.
+redirects to `/`), or shows the bundled fallback page while it comes up. Every launch calls
+`service.start()` (the same call the tray uses), so the freshly built stage is started, or
+replaces a running service of another version. Set `BALLAST_AUTOSTART=0` to skip that.
 
 Environment overrides, mostly for tests and development:
 
 | Variable | Meaning |
 |---|---|
-| `BALLAST_APP_ID`, `BALLAST_SERVICE_LABEL` | app id / LaunchAgent label / task name (default `dev.ballast.agent`) |
+| `BALLAST_APP_ID` | app id (default `dev.ballast.agent`) |
 | `BALLAST_USER_DATA_DIR` | overrides Electron `userData` |
 | `BALLAST_STATE_DIR`, `BALLAST_DATA_DIR`, `BALLAST_LOG_DIR` | service state/data/log paths |
-| `BALLAST_LAUNCH_AGENTS_DIR` | plist directory (default `~/Library/LaunchAgents`) |
 | `BALLAST_SERVICE_BUILD_DIR` | service build to stage (default `../agent/dist-service` in dev, `Resources/service` when packaged) |
 | `BALLAST_SERVICE_SKIP_BUILD`, `BALLAST_SERVICE_SKIP_WEB_BUILD` | reuse an existing agent/web build when running device/pack |
 | `BALLAST_SERVICE_VERSION` | force the staged version (otherwise `version.json` / `package.json`) |
 | `BALLAST_SERVICE_PORT` | fixed port for development (default random) |
 | `BALLAST_UI_URL` | load a Vite dev UI instead of the service origin |
-| `BALLAST_DEV` | `1` (dev default): install/start the built service on launch; `0` disables |
-| `BALLAST_RESTART_THROTTLE_SECONDS` | launchd `ThrottleInterval` (default 5) |
+| `BALLAST_AUTOSTART` | `0`: do not start the service on launch (fallback-page E2E) |
 | `BALLAST_START_TIMEOUT_MS` | start/verify budget (default 30000) |
 | `BALLAST_UPDATE_URL` | build-time generic electron-updater feed |
 
@@ -75,23 +72,25 @@ Expected build layout (0003 §2):
 
 ```
 <build>/
-  main.mjs            # serve entry; run as: electron <stage>/main.mjs serve --standalone
+  main.mjs            # serve entry; run as: ELECTRON_RUN_AS_NODE=1 electron <stage>/main.mjs serve
   plan-worker.mjs     # new Worker(new URL("./plan-worker.mjs", import.meta.url))
   web/                # built Solid UI served at /
   version.json        # optional: { "version": "0.1.0" }
 ```
 
-At install time it is copied to:
+On start it is copied to:
 
 ```
 <userData>/service/<version>/…
-<userData>/service/installed.json   # pointer written after a successful handoff
 <stateDir>/service.json             # written by the service (0600)
+<stateDir>/service.lock             # single-instance lock (created with wx)
+<logDir>/service.log, service.err.log  # the detached process's stdout/stderr (appended)
 ```
 
-A stage is **never overwritten**. Re-running install with the same version reuses the directory
-even if the bundled files changed; bump the version to hand off. Old stages are removed on launch
-and after a successful handoff, keeping the running/installed stage.
+A stage is **never overwritten**: the same version reuses the directory even if the bundled files
+changed, so the version must change for new code. Dev builds append a content hash to the
+version, so a rebuilt service is a new stage and `dev` replaces the running service with it.
+Old stages are removed on launch and after a successful replacement, keeping the running stage.
 
 ### Building the real service
 
@@ -110,38 +109,34 @@ pnpm --filter @ballast/desktop run pack
 `node apps/agent/scripts/build-service.mjs`, so `dist-service/web/` contains the real Solid UI.
 The service honours `BALLAST_STATE_DIR`, `BALLAST_DATA_DIR`, `BALLAST_LOG_DIR`,
 `BALLAST_SERVICE_PORT`; writes `service.json` with `apiVersion`, `version`, `url`, `token`, `pid`,
-`startedAt`; answers `GET /health` with `ok`, `apiVersion`, `version`, `pid`; exits **0** on
-shutdown and **75** for restart.
+`startedAt`; answers `GET /health` with `ok`, `apiVersion`, `version`, `pid`; and always exits
+**0** on shutdown.
 
 ## Lifecycle and discovery
 
 - Discovery order: `BALLAST_STATE_DIR/service.json`, then `BALLAST_DATA_DIR/service.json`; the URL
   must be loopback HTTP(S). The shell validates `schemaVersion`, `name === "ballast-agent"`,
-  token/pid, and adopts only `apiVersion === 1`.
+  token/pid, and adopts only `apiVersion === 1` when `/health` answers with the same pid.
 - Liveness/version/adoption comes from `GET /health`. `GetServiceInfo` is **not** called over RPC
-  in main: decision 0003 defines `/health` specifically for the supervisor and requires it to
-  carry pid/version/apiVersion, and pulling Effect RPC + a WebSocket client into the main bundle
-  for one call is unnecessary. `service.json` supplies the token; `/health` supplies liveness.
-- macOS install: stage → write `~/Library/LaunchAgents/<label>.plist` → `launchctl bootout` the old
-  job (ignore if absent) → `launchctl bootstrap gui/<uid> <plist>` → wait for `/health` with the
-  expected version. The plist has `RunAtLoad`, `KeepAlive → SuccessfulExit = false`, environment
-  `ELECTRON_RUN_AS_NODE=1`, state/data/log paths, and `ProgramArguments = [app binary, stage/main.mjs,
-  serve, --standalone]`.
-- Stop: `ShutdownService` over RPC, then `launchctl bootout` (the plist stays; `installed` is
-  true, `running` false). Start: `launchctl bootstrap` / `kickstart`. Restart: `RestartService`
-  exits 75 and launchd starts a fresh generation. If the RPC fails (older or wedged service), the
-  launcher falls back to `launchctl kickstart -k`.
-- Windows: a generated hidden `ballast-service.vbs` sets the environment, runs
-  `ELECTRON_RUN_AS_NODE=1 <app.exe> <stage>\main.mjs serve --standalone` with window style 0,
-  **waits**, and quits with the child's code. A per-user logon Scheduled Task runs it with
-  `IgnoreNew` and `RestartOnFailure` (PT1M/999), so exit 75 restarts. `buildRunKeyCommand` is the
-  Run-key alternative. Generation is unit-tested; it has not been executed on Windows here.
-- Update/handoff (C3): stage new version → stop → rewrite login item → start → verify expected
-  version → clean old stage. If start/verify fails, rewrite/start/verify the previous stage. The
-  pure reducer is in `src/main/service/handoff.ts` and is covered by `test/handoff.test.ts`.
-- App update: `update.install` stops the service, writes `<userData>/update-relaunch.json`, and
-  calls `electron-updater`. The relaunched app sees the marker and starts the installed service
-  again. This is the "quiesce before replacing the app binary" step in 0003 §2.
+  in main: decision 0003 defines `/health` for the shell/CLI and requires it to carry
+  pid/version/apiVersion. `service.json` supplies the token; `/health` supplies liveness.
+- There is **no OS supervisor** (no LaunchAgent, Scheduled Task or login item), as in OpenCode's
+  background service. The launcher spawns
+  `ELECTRON_RUN_AS_NODE=1 <electron> <userData>/service/<version>/main.mjs serve` with
+  `detached: true`, stdin ignored, stdout/stderr appended to `<logDir>/service.log` /
+  `service.err.log`, `windowsHide`, then `unref()`. The service outlives the UI and has no idle
+  exit; it does not start at login (it starts when the app or CLI is opened).
+- Single instance is the service's job: `service.lock` is created exclusively. A live lock pid
+  means running or still starting, so a second spawn exits; only a dead pid or a live pid that
+  never registered within 5 minutes is stale.
+- Start (every launch, tray, bridge): adopt a running service of the shipped version; replace one
+  of any other version (stop → spawn the new stage → verify `/health` version → clean old stages;
+  on failure respawn the previous stage); otherwise spawn and wait for `/health`.
+- Stop: `ShutdownService` over RPC, wait for exit, then `SIGTERM`, then `SIGKILL`. Restart is
+  stop + spawn.
+- App update: `update.install` calls `prepareForAppUpdate()` (stop the service), then
+  electron-updater installs. The relaunched app's `start()` spawns the new version. This is the
+  "quiesce before replacing the app binary" step in 0003 §2.
 
 ## Renderer bridge (C2)
 
@@ -163,11 +158,9 @@ interface BallastBridge {
   version: 1;
   service: {
     status(): Promise<ServiceStatus>;
-    install(): Promise<ServiceAction>;    // stage, (re)write login item, start, verify
-    uninstall(): Promise<ServiceAction>;  // stop + remove login item
-    start(): Promise<ServiceAction>;
-    stop(): Promise<ServiceAction>;
-    restart(): Promise<ServiceAction>;
+    start(): Promise<ServiceAction>;    // adopt, replace another version, or spawn; verify
+    stop(): Promise<ServiceAction>;     // ShutdownService, then SIGTERM/SIGKILL
+    restart(): Promise<ServiceAction>;  // stop + spawn
   };
   permissions: {
     status(): Promise<ServicePermissions>;             // accessibility: granted | denied | unknown
@@ -183,6 +176,7 @@ interface BallastBridge {
     retry(): Promise<void>;              // re-run discovery
     showLogs(): Promise<void>;
     openExternal(url: string): Promise<void>; // http(s) only
+    pickDirectory(): Promise<string | null>;   // native folder picker; null when cancelled
   };
   events: {
     onServiceStatus(listener: (status: ServiceStatus) => void): () => void;
@@ -191,10 +185,10 @@ interface BallastBridge {
 }
 ```
 
-`ServiceStatus` carries phase (`not-installed | installed | starting | restarting | stopping |
-running | installing | updating | uninstalling | error`), installed/running flags, installed and
-running versions, built version, apiVersion, pid, loopback URL, pending-consent count,
-`updateAvailable`, `lastError`, `permissions.accessibility`, and the state/data/stage/log paths.
+`ServiceStatus` carries phase (`stopped | starting | restarting | stopping | running | updating |
+error`), the running flag, running and built versions, apiVersion, pid, loopback URL,
+pending-consent count, `updateAvailable` (a service of another version is running),
+`lastError`, `permissions.accessibility`, and the state/data/stage/log paths.
 The service **token is never part of the bridge**; only main reads it and navigates the window.
 
 Renderer security: `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`, no remote
@@ -220,7 +214,7 @@ Measured locally (macOS 26.5.1, arm64, unsigned):
 | `Contents/Resources/service` | real service stage + runtime `node_modules` |
 
 The service sits **outside app.asar** via `extraResources: build-service → Resources/service`, so
-it can be spawned by launchd/Task Scheduler. The app carries no product UI bundle. `BALLAST_APP_ID`
+it can be spawned as a separate process. The app carries no product UI bundle. `BALLAST_APP_ID`
 overrides the bundle id for test builds; release builds still need signing/notarization and an
 icon (`mac.identity` is explicitly `null` for local builds).
 
@@ -229,53 +223,41 @@ icon (`mac.identity` is explicitly `null` for local builds).
 ```bash
 pnpm --filter @ballast/desktop typecheck
 pnpm --filter @ballast/desktop test          # vitest: shell + stub only
-pnpm --filter @ballast/desktop test:e2e      # real service, real LaunchAgent, real UI
+pnpm --filter @ballast/desktop test:e2e      # real service, real UI, service outlives the UI
 ```
 
-Vitest covers config resolution, discovery/adoption, staging/cleanup, LaunchAgent plist and
-Windows task/wrapper generation, the handoff state machine, the stub service exit contract, and a
-launcher install → restart → stop → start → uninstall cycle against a real stub process. The
-stub exists only for these tests; dev and pack stage `apps/agent/dist-service`.
+Vitest covers config resolution, discovery/adoption, staging/cleanup, the stub service exit
+contract, and launcher cycles against a real detached stub process: spawn → adopt → restart → stop,
+and replacing a running service of another version with the shipped build. The stub exists only
+for these tests; dev and pack stage `apps/agent/dist-service`.
 
-The Playwright E2E builds the real agent service, launches Electron with `_electron`, installs a
-throwaway LaunchAgent label (`dev.ballast.agent.e2e.<pid>.<time>`), adds a temp fake-tick project,
-starts it, approves consent, asserts worker logs, loads the real service UI, opens the script detail,
-screenshots it, quits the UI, asserts the service pid and ticks continue, then uninstalls and
-asserts the plist, `service.json` and process are gone. It also asserts that the desktop's
-Accessibility state reaches `/health.permissions.accessibility`. The screenshot is written under
-`test-results/<test>/ballast-e2e-ui.png`.
+The Playwright E2E builds the real agent service and uses throwaway state/data/userData dirs. It
+runs the `--ballast-demo=start` entry point, then uses the CLI to add a temp fake-tick project,
+configure, start it and approve consent, and asserts worker ticks. It then launches Electron with
+`_electron`, loads the real service UI, checks the bridge (same pid, Accessibility state reaches
+`/health.permissions.accessibility`), screenshots it, quits the UI, and asserts the service pid
+and ticks continue. Finally `--ballast-demo=stop` must leave no process and no `service.json`.
+A second test runs with `BALLAST_AUTOSTART=0` and checks the bundled fallback page. The screenshot
+is written under `test-results/<test>/ballast-e2e-ui.png`.
 
-The same lifecycle can be driven by hand with the hidden demo entry point (use a throwaway label):
+The same lifecycle can be driven by hand with the hidden demo entry point (use throwaway dirs):
 
 ```bash
-ROOT=/tmp/ballast-launchd-demo
+ROOT=/tmp/ballast-demo
 BIN=./node_modules/.bin/electron
-COMMON=(env BALLAST_APP_ID=dev.ballast.agent.test BALLAST_SERVICE_LABEL=dev.ballast.agent.test
+COMMON=(env BALLAST_APP_ID=dev.ballast.agent.test
   BALLAST_USER_DATA_DIR=$ROOT/userData BALLAST_STATE_DIR=$ROOT/state
-  BALLAST_DATA_DIR=$ROOT/data BALLAST_LOG_DIR=$ROOT/logs BALLAST_RESTART_THROTTLE_SECONDS=1)
+  BALLAST_DATA_DIR=$ROOT/data BALLAST_LOG_DIR=$ROOT/logs)
 
-"${COMMON[@]}" $BIN . --ballast-demo=install    # stage + plist + launchctl bootstrap + verify
+"${COMMON[@]}" $BIN . --ballast-demo=start      # stage + detached spawn + verify /health
 "${COMMON[@]}" $BIN . --ballast-demo=status
 "${COMMON[@]}" $BIN . --background --ballast-quit-after-ms=2000  # quit UI; pid must stay
-"${COMMON[@]}" $BIN . --ballast-demo=restart    # exit 75 -> launchd -> new pid
-"${COMMON[@]}" $BIN . --ballast-demo=stop       # process gone, plist retained
-"${COMMON[@]}" $BIN . --ballast-demo=start
-"${COMMON[@]}" $BIN . --ballast-demo=uninstall  # plist + process gone
+"${COMMON[@]}" $BIN . --ballast-demo=restart    # stop + spawn -> new pid
+"${COMMON[@]}" $BIN . --ballast-demo=stop       # process and service.json gone
 ```
 
-Always clean up a test label afterwards:
-
-```bash
-launchctl bootout gui/$(id -u)/dev.ballast.agent.test 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/dev.ballast.agent.test.plist"
-```
-
-### Observed on this machine
-
-The Playwright E2E passes on macOS 26.5.1 (arm64): install, fake-tick script, UI screenshot,
-UI quit with the service still ticking, uninstall with no plist/process. The vitest suite has 31
-tests. The earlier packaged-app and v1→v2→broken-v3 rollback observations used the stub and still
-apply to the handoff state machine.
+Nothing is registered with the OS, so `--ballast-demo=stop` (or killing the pid in
+`$ROOT/state/service.json`) is the only cleanup; service output is in `$ROOT/logs/service.log`.
 
 ## Known gaps / integration notes
 
@@ -289,15 +271,16 @@ apply to the handoff state machine.
 3. **App updater feed/signing.** `electron-updater` is wired, but an unsigned local build has no
    `app-update.yml`; `update.status` reports `unavailable`. Release builds need a feed
    (`BALLAST_UPDATE_URL`), signing/notarization and an app icon.
-4. **Windows not executed here.** Task XML and VBS are unit-tested. Task Scheduler restarts on any
-   non-zero exit (not only 75); the Run-key path is generated but not installed by the runtime.
+4. **Windows not executed here.** The detached spawn uses `windowsHide`; confirm on Windows that
+   no console flashes and the service survives the app quitting.
 5. **Permissions.** macOS Accessibility is queried by the shell; Input Monitoring has no public
    Electron query. Windows/Linux report `granted`. The service restarts keyboard drivers when the
    shell reports a change, but the user may still have to grant Accessibility in System Settings.
 6. **Single service per user** is enforced by the service's `service.lock`; the shell does not
    prevent two different userData roots from starting a service.
-7. **Service update E2E** is covered by the state-machine tests and a launchd v1→v2→broken-v3
-   rollback run; a full signed app-update (electron-updater replacing the bundle) still needs a
-   real feed.
-8. **Real-world integrations** (OBS, Twitch, VTube Studio, MIDI, keyboard hooks) still need
+7. **No crash restart or start at login.** Nothing restarts a crashed service until the app or CLI
+   is opened again (by design; there is no OS supervisor).
+8. **Service update E2E**: version replacement is covered by the launcher tests against the stub;
+   a full signed app-update (electron-updater replacing the bundle) still needs a real feed.
+9. **Real-world integrations** (OBS, Twitch, VTube Studio, MIDI, keyboard hooks) still need
    validation against the actual applications/devices; the service tests use mocks and fakes.

@@ -1,10 +1,11 @@
-import { randomBytes } from "node:crypto";
-import { readdir, stat } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Hex from "effect/encoding/Hex";
 import { agentError } from "@ballast/agent-protocol";
 import type { AgentError } from "@ballast/agent-protocol";
 import { ensureDir, readJson, writeJsonAtomic } from "./fs.ts";
@@ -46,46 +47,55 @@ export class ProjectManager extends Context.Service<ProjectManager, ProjectManag
   "ballast/service/ProjectManager",
 ) {}
 
-export const projectsJsonPath = (dataDir: string): string => join(dataDir, "projects.json");
+export const projectsJsonPath = (path: Path.Path, dataDir: string): string =>
+  path.join(dataDir, "projects.json");
 
-const projectRootKey = (root: string): string => resolve(root);
+const projectRootKey = (path: Path.Path, root: string): string => path.resolve(root);
 
-const isDirectory = async (path: string): Promise<boolean> => {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
-};
+const isDirectory = (
+  path: string,
+): Effect.Effect<boolean, never, FileSystem.FileSystem> =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.stat(path).pipe(
+      Effect.map((info) => info.type === "Directory"),
+      Effect.catch(() => Effect.succeed(false)),
+    ),
+  );
 
-const loadRegistry = async (dataDir: string): Promise<ProjectRegistry> => {
-  const value = await readJson(projectsJsonPath(dataDir));
-  if (value === undefined) return { version: 1, projects: [] };
-  if (typeof value !== "object" || value === null) return { version: 1, projects: [] };
-  const record = value as Record<string, unknown>;
-  const projects = record["projects"];
-  if (!Array.isArray(projects)) return { version: 1, projects: [] };
-  const parsed: Array<ProjectRecord> = [];
-  for (const item of projects) {
-    if (typeof item !== "object" || item === null) continue;
-    const entry = item as Record<string, unknown>;
-    if (
-      typeof entry["id"] !== "string" ||
-      typeof entry["name"] !== "string" ||
-      typeof entry["root"] !== "string"
-    ) {
-      continue;
+const loadRegistry = (
+  dataDir: string,
+): Effect.Effect<ProjectRegistry, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const value = yield* readJson(projectsJsonPath(path, dataDir)).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    if (value === undefined) return { version: 1, projects: [] };
+    if (typeof value !== "object" || value === null) return { version: 1, projects: [] };
+    const record = value as Record<string, unknown>;
+    const projects = record["projects"];
+    if (!Array.isArray(projects)) return { version: 1, projects: [] };
+    const parsed: Array<ProjectRecord> = [];
+    for (const item of projects) {
+      if (typeof item !== "object" || item === null) continue;
+      const entry = item as Record<string, unknown>;
+      if (
+        typeof entry["id"] !== "string" ||
+        typeof entry["name"] !== "string" ||
+        typeof entry["root"] !== "string"
+      ) {
+        continue;
+      }
+      parsed.push({
+        id: entry["id"],
+        name: entry["name"],
+        root: path.resolve(entry["root"]),
+        createdAt: typeof entry["createdAt"] === "number" ? entry["createdAt"] : Date.now(),
+        updatedAt: typeof entry["updatedAt"] === "number" ? entry["updatedAt"] : Date.now(),
+      });
     }
-    parsed.push({
-      id: entry["id"],
-      name: entry["name"],
-      root: resolve(entry["root"]),
-      createdAt: typeof entry["createdAt"] === "number" ? entry["createdAt"] : Date.now(),
-      updatedAt: typeof entry["updatedAt"] === "number" ? entry["updatedAt"] : Date.now(),
-    });
-  }
-  return { version: 1, projects: parsed };
-};
+    return { version: 1, projects: parsed };
+  });
 
 const isScriptFile = (name: string): boolean =>
   name.endsWith(".ts") &&
@@ -93,8 +103,8 @@ const isScriptFile = (name: string): boolean =>
   !name.endsWith(".test.ts") &&
   !name.startsWith(".");
 
-const scriptNameOf = (id: string): string => {
-  const file = basename(id).replace(/\.ts$/, "");
+const scriptNameOf = (path: Path.Path, id: string): string => {
+  const file = path.basename(id).replace(/\.ts$/, "");
   return file
     .split(/[-_.]/)
     .filter((part) => part.length > 0)
@@ -102,44 +112,54 @@ const scriptNameOf = (id: string): string => {
     .join(" ") || file;
 };
 
-const toPosix = (path: string): string => path.split(sep).join("/");
+const toPosix = (path: Path.Path, value: string): string => value.split(path.sep).join("/");
 
-const scanDirectory = async (
+const scanDirectory = (
   project: ProjectRecord,
   directory: string,
   found: Array<DiscoveredScript>,
-): Promise<void> => {
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-    const absolutePath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      await scanDirectory(project, absolutePath, found);
-      continue;
+): Effect.Effect<void, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const entries = yield* fs.readDirectory(directory).pipe(
+      Effect.catch(() => Effect.succeed([] as Array<string>)),
+    );
+    entries.sort((left, right) => left.localeCompare(right));
+    for (const name of entries) {
+      if (name.startsWith(".") || name === "node_modules") continue;
+      const absolutePath = path.join(directory, name);
+      const info = yield* fs.stat(absolutePath).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      if (info === undefined) continue;
+      if (info.type === "Directory") {
+        yield* scanDirectory(project, absolutePath, found);
+        continue;
+      }
+      if (info.type !== "File" || !isScriptFile(name)) continue;
+      const id = toPosix(path, path.relative(project.root, absolutePath));
+      found.push({ id, absolutePath, name: scriptNameOf(path, id) });
     }
-    if (!entry.isFile() || !isScriptFile(entry.name)) continue;
-    const id = toPosix(relative(project.root, absolutePath));
-    found.push({ id, absolutePath, name: scriptNameOf(id) });
-  }
-};
+  });
 
 export const ProjectManagerLive = (dataDir: string) =>
   Layer.effect(
     ProjectManager,
     Effect.gen(function* () {
-      const registry = yield* Ref.make(yield* Effect.promise(() => loadRegistry(dataDir)));
+      const path = yield* Path.Path;
+      const platform = yield* Effect.context<
+        Crypto.Crypto | FileSystem.FileSystem | Path.Path
+      >();
+      const provide = <A, E>(
+        effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
+      const registry = yield* Ref.make(yield* loadRegistry(dataDir));
 
       const save = (state: ProjectRegistry): Effect.Effect<void> =>
-        Effect.tryPromise({
-          try: () => writeJsonAtomic(projectsJsonPath(dataDir), state, 0o600),
-          catch: () => undefined,
-        }).pipe(Effect.ignore);
+        provide(
+          writeJsonAtomic(projectsJsonPath(path, dataDir), state, 0o600),
+        ).pipe(Effect.ignore);
 
       const projects = Effect.map(Ref.get(registry), (state) => state.projects);
 
@@ -155,22 +175,27 @@ export const ProjectManagerLive = (dataDir: string) =>
           if (raw === "") {
             return yield* Effect.fail(agentError("invalid", "A project path is required"));
           }
-          const root = resolve(raw);
-          if (!(yield* Effect.promise(() => isDirectory(root)))) {
+          const root = path.resolve(raw);
+          if (!(yield* provide(isDirectory(root)))) {
             return yield* Effect.fail(
               agentError("invalid", `"${root}" is not a directory`),
             );
           }
           const current = yield* Ref.get(registry);
-          if (current.projects.some((project) => projectRootKey(project.root) === projectRootKey(root))) {
+          if (current.projects.some((project) => projectRootKey(path, project.root) === projectRootKey(path, root))) {
             return yield* Effect.fail(
               agentError("conflict", `A project already watches "${root}"`),
             );
           }
           const now = Date.now();
+          const crypto = Context.get(platform, Crypto.Crypto);
+          const id = yield* crypto.randomBytes(4).pipe(
+            Effect.map((bytes) => `proj_${Hex.encode(bytes)}`),
+            Effect.orDie,
+          );
           const project: ProjectRecord = {
-            id: `proj_${randomBytes(4).toString("hex")}`,
-            name: input.name?.trim() || basename(root) || "Project",
+            id,
+            name: input.name?.trim() || path.basename(root) || "Project",
             root,
             createdAt: now,
             updatedAt: now,
@@ -216,17 +241,13 @@ export const ProjectManagerLive = (dataDir: string) =>
       const scan = (
         project: ProjectRecord,
       ): Effect.Effect<ReadonlyArray<DiscoveredScript>> =>
-        Effect.promise(() =>
-          Effect.runPromise(
-            Effect.gen(function* () {
-              const found: Array<DiscoveredScript> = [];
-              yield* Effect.promise(() =>
-                scanDirectory(project, join(project.root, "scripts"), found),
-              );
-              return found;
-            }),
-          ),
-        );
+        Effect.gen(function* () {
+          const found: Array<DiscoveredScript> = [];
+          yield* provide(
+            scanDirectory(project, path.join(project.root, "scripts"), found),
+          );
+          return found;
+        });
 
       return {
         projects,
@@ -235,14 +256,16 @@ export const ProjectManagerLive = (dataDir: string) =>
         remove,
         touch,
         scan,
-        scriptPath: (project, scriptId) => join(project.root, scriptId),
+        scriptPath: (project, scriptId) => path.join(project.root, scriptId),
       };
     }),
   );
 
 /** Ensure the state directory for a project exists. */
-export const ensureProjectStateDir = (project: ProjectRecord): Effect.Effect<void> =>
-  Effect.tryPromise({
-    try: () => ensureDir(join(project.root, ".ballast")),
-    catch: () => undefined,
+export const ensureProjectStateDir = (
+  project: ProjectRecord,
+): Effect.Effect<void, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    yield* ensureDir(path.join(project.root, ".ballast"));
   }).pipe(Effect.ignore);

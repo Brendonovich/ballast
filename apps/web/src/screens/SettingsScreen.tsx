@@ -5,17 +5,12 @@ import type { CloudPairingSession } from "@ballast/agent-protocol";
 import { useAgent } from "../state/context.tsx";
 import { getDesktopBridge } from "../bridge.ts";
 import type { ServiceAction, ServiceStatus } from "../bridge.ts";
-import {
-  formatDateTime,
-  formatDuration,
-  plural,
-} from "../lib/format.ts";
-import { ExternalLinkIcon, TrashIcon } from "../ui/icons.tsx";
+import { formatDateTime, formatDuration } from "../lib/format.ts";
+import { ExternalLinkIcon } from "../ui/icons.tsx";
 import {
   Button,
   ConfirmDialog,
   Field,
-  IconButton,
   PageHeader,
   Section,
   Status,
@@ -55,13 +50,7 @@ export const SettingsScreen = (): JSX.Element => {
   const store = useAgent();
   const bridge = getDesktopBridge();
   const [desktopStatus, setDesktopStatus] = createSignal<ServiceStatus>();
-  const [desktopBusy, setDesktopBusy] = createSignal<
-    "install" | "uninstall" | "restart" | "stop"
-  >();
-  const [path, setPath] = createSignal("");
-  const [name, setName] = createSignal("");
-  const [projectError, setProjectError] = createSignal<string>();
-  const [removing, setRemoving] = createSignal<string>();
+  const [desktopBusy, setDesktopBusy] = createSignal<"restart" | "stop">();
   const [stopOpen, setStopOpen] = createSignal(false);
   const [unpairOpen, setUnpairOpen] = createSignal(false);
   const [machineName, setMachineName] = createSignal(readMachineName());
@@ -79,7 +68,7 @@ export const SettingsScreen = (): JSX.Element => {
   });
 
   const desktopAction = async (
-    kind: "install" | "uninstall" | "restart" | "stop",
+    kind: "restart" | "stop",
     action: () => Promise<ServiceAction>,
     failure: string,
   ): Promise<boolean> => {
@@ -89,7 +78,7 @@ export const SettingsScreen = (): JSX.Element => {
       const result = await action();
       setDesktopStatus(result.status);
       if (!result.ok) {
-        toast.error(failure, result.message ?? "The desktop supervisor returned an error.");
+        toast.error(failure, result.message ?? "The desktop app could not control the service.");
       }
       return result.ok;
     } catch (error) {
@@ -100,12 +89,10 @@ export const SettingsScreen = (): JSX.Element => {
     }
   };
 
+  // Restart is stop + spawn, which only the desktop app (or CLI) can do.
   const restartService = async (): Promise<void> => {
-    if (bridge !== undefined) {
-      await desktopAction("restart", () => bridge.service.restart(), "Restart failed");
-      return;
-    }
-    await store.restartService("settings");
+    if (bridge === undefined) return;
+    await desktopAction("restart", () => bridge.service.restart(), "Restart failed");
   };
 
   const stopService = async (): Promise<void> => {
@@ -116,36 +103,6 @@ export const SettingsScreen = (): JSX.Element => {
     }
     const ok = await store.shutdownService();
     if (ok) setStopOpen(false);
-  };
-
-  const installService = async (): Promise<void> => {
-    await desktopAction("install", () => bridge?.service.install() ?? Promise.reject(new Error("No desktop bridge")), "Install failed");
-  };
-
-  const uninstallService = async (): Promise<void> => {
-    await desktopAction(
-      "uninstall",
-      () => bridge?.service.uninstall() ?? Promise.reject(new Error("No desktop bridge")),
-      "Uninstall failed",
-    );
-  };
-
-  const addProject = async (): Promise<void> => {
-    const value = path().trim();
-    if (value === "") {
-      setProjectError("Enter the absolute path of a folder.");
-      return;
-    }
-    store.clearActionError();
-    const added = await store.addProject(value, name().trim());
-    if (added === undefined) {
-      setProjectError(store.lastActionError() ?? "Could not add the project.");
-      return;
-    }
-    setProjectError(undefined);
-    setPath("");
-    setName("");
-    store.selectProject(added.summary.id);
   };
 
   const beginPairing = async (): Promise<void> => {
@@ -172,7 +129,7 @@ export const SettingsScreen = (): JSX.Element => {
 
   return (
     <div>
-      <PageHeader title="Settings" description="Service, projects, cloud and appearance." />
+      <PageHeader title="Settings" description="Service, cloud and appearance." />
 
       <Section title="Service">
         <Show
@@ -226,14 +183,10 @@ export const SettingsScreen = (): JSX.Element => {
               <SettingRow label="Version">
                 <span class="font-mono">
                   {status().runningVersion ??
-                    status().installedVersion ??
                     status().builtVersion ??
                     store.info()?.version ??
                     "—"}
                 </span>
-              </SettingRow>
-              <SettingRow label="Installed">
-                {status().installed ? `yes · ${status().supervisor}` : "no"}
               </SettingRow>
               <SettingRow label="Transport">
                 <span class="font-mono">
@@ -247,14 +200,16 @@ export const SettingsScreen = (): JSX.Element => {
           )}
         </Show>
         <div class="mt-3 flex flex-wrap items-center gap-2">
-          <Button
-            variant="neutral"
-            data-testid="service-restart"
-            loading={desktopBusy() === "restart" || store.isPending("service:restart")}
-            onClick={() => void restartService()}
-          >
-            Restart
-          </Button>
+          <Show when={bridge !== undefined}>
+            <Button
+              variant="neutral"
+              data-testid="service-restart"
+              loading={desktopBusy() === "restart"}
+              onClick={() => void restartService()}
+            >
+              Restart
+            </Button>
+          </Show>
           <Button
             variant="ghost"
             data-testid="service-stop"
@@ -262,97 +217,11 @@ export const SettingsScreen = (): JSX.Element => {
           >
             Stop service
           </Button>
-          <Show when={desktopStatus()?.installed === false}>
-            <Button
-              variant="outline"
-              data-testid="service-install"
-              loading={desktopBusy() === "install"}
-              onClick={() => void installService()}
-            >
-              Install service
-            </Button>
-          </Show>
         </div>
-        <Show when={desktopStatus()?.installed === true}>
-          <details class="mt-3 border-t border-edge pt-2">
-            <summary class="text-[11px] text-faint hover:text-body">Advanced</summary>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                variant="ghost"
-                data-testid="service-uninstall"
-                loading={desktopBusy() === "uninstall"}
-                onClick={() => void uninstallService()}
-              >
-                Uninstall service
-              </Button>
-              <span class="text-[11px] text-faint">
-                Removes the login item. The app stays installed.
-              </span>
-            </div>
-          </details>
-        </Show>
         <Show when={bridge === undefined && store.transport.kind === "mock"}>
           <p class="mt-2 text-[11px] text-faint">
-            Mock service: restart and stop are no-ops.
+            Mock service: stop is a no-op.
           </p>
-        </Show>
-      </Section>
-
-      <Section title="Projects" description="Folders the agent watches. Removing one never deletes its files.">
-        <div class="border-t border-edge">
-          <For each={store.projects()}>
-            {(project) => (
-              <div class="flex items-center gap-3 border-b border-edge py-2">
-                <div class="min-w-0 flex-1">
-                  <p class="truncate text-[13px] text-strong">{project.name}</p>
-                  <p class="truncate font-mono text-[11px] text-faint">{project.root}</p>
-                </div>
-                <span class="text-[11px] text-faint">
-                  {plural(store.projectScriptCount(project.id), "script")}
-                </span>
-                <IconButton
-                  label={`Remove ${project.name}`}
-                  variant="ghost"
-                  onClick={() => setRemoving(project.id)}
-                >
-                  <TrashIcon size={13} />
-                </IconButton>
-              </div>
-            )}
-          </For>
-          <Show when={store.projects().length === 0}>
-            <p class="py-3 text-[12px] text-muted">No projects yet.</p>
-          </Show>
-        </div>
-
-        <div class="mt-3 flex flex-wrap items-end gap-2">
-          <Field label="Folder" class="min-w-48 flex-1">
-            <TextInput
-              data-testid="add-project-path"
-              value={path()}
-              onInput={(event) => setPath(event.currentTarget.value)}
-              placeholder="/Users/you/streaming/my-channel"
-            />
-          </Field>
-          <Field label="Name (optional)" class="w-36">
-            <TextInput
-              data-testid="add-project-name"
-              value={name()}
-              onInput={(event) => setName(event.currentTarget.value)}
-              placeholder="My channel"
-            />
-          </Field>
-          <Button
-            variant="neutral"
-            data-testid="add-project-submit"
-            loading={store.isPending("project:add")}
-            onClick={() => void addProject()}
-          >
-            Add
-          </Button>
-        </div>
-        <Show when={projectError()}>
-          <p class="mt-1 text-[11px] text-danger">{projectError()}</p>
         </Show>
       </Section>
 
@@ -485,7 +354,7 @@ export const SettingsScreen = (): JSX.Element => {
       <Show when={stopOpen()}>
         <ConfirmDialog
           title="Stop the service?"
-          description="Workers, connections and the cloud relay close. Scripts resume when it starts again."
+          description="Workers, connections and the cloud relay close. Projects resume when it starts again."
           confirmLabel="Stop"
           pending={desktopBusy() === "stop" || store.isPending("service:shutdown")}
           onCancel={() => setStopOpen(false)}
@@ -506,26 +375,6 @@ export const SettingsScreen = (): JSX.Element => {
             });
           }}
         />
-      </Show>
-
-      <Show when={removing()}>
-        {(projectId) => {
-          const project = () => store.project(projectId());
-          return (
-            <ConfirmDialog
-              title={`Remove ${project()?.name ?? "project"}?`}
-              description="The project is unregistered. Files on disk stay where they are."
-              confirmLabel="Remove"
-              pending={store.isPending("project:remove")}
-              onCancel={() => setRemoving(undefined)}
-              onConfirm={() => {
-                void store.removeProject(projectId()).then((ok) => {
-                  if (ok) setRemoving(undefined);
-                });
-              }}
-            />
-          );
-        }}
       </Show>
     </div>
   );

@@ -1,10 +1,8 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { rolldown } from "rolldown";
 import type { Plugin } from "rolldown";
 
@@ -19,12 +17,13 @@ export interface RuntimeBundle {
   readonly bytes: number;
 }
 
-const requireFromHere = createRequire(fileURLToPath(import.meta.url));
+const requireFromHere = createRequire(import.meta.url);
 
 /**
  * Resolve bare imports with Node's own resolver from the importer, falling
  * back to the agent's dependencies. This lets a script copied to a temp folder
  * without a node_modules directory bundle against the workspace packages.
+ * Module resolution is a Node loader concern; Effect does not wrap it.
  */
 const nodeResolvePlugin: Plugin = {
   name: "ballast-node-resolve",
@@ -57,71 +56,100 @@ const nodeResolvePlugin: Plugin = {
 export const bundleScript = (
   entry: string,
   generation: number,
-): Effect.Effect<RuntimeBundle, BundleError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const absoluteEntry = resolve(entry);
-      const coreEntry = fileURLToPath(import.meta.resolve("@ballast/core"));
-      const directory = await mkdtemp(join(tmpdir(), "ballast-runtime-"));
-      const input = join(directory, "entry.ts");
-      const output = join(directory, "script.mjs");
+): Effect.Effect<
+  RuntimeBundle,
+  BundleError,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const absoluteEntry = path.resolve(entry);
+    const coreEntry = yield* path
+      .fromFileUrl(new URL(import.meta.resolve("@ballast/core")))
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new BundleError({ message: `Could not resolve @ballast/core: ${cause.message}` }),
+        ),
+      );
+    const directory = yield* fs
+      .makeTempDirectory({ prefix: "ballast-runtime-" })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new BundleError({ message: `Could not create a bundle directory: ${cause.message}` }),
+        ),
+      );
+    const input = path.join(directory, "entry.ts");
+    const output = path.join(directory, "script.mjs");
 
-      const source = [
-        `import { runRuntimeWorker } from ${JSON.stringify(coreEntry)};`,
-        `import script from ${JSON.stringify(absoluteEntry)};`,
-        `runRuntimeWorker(script).catch((error) => {`,
-        `  console.error("[runtime] failed to start", error);`,
-        `  process.exit(1);`,
-        `});`,
-      ].join("\n");
-      await writeFile(input, `${source}\n`, "utf8");
+    const source = [
+      `import { runRuntimeWorker } from ${JSON.stringify(coreEntry)};`,
+      `import script from ${JSON.stringify(absoluteEntry)};`,
+      `runRuntimeWorker(script).catch((error) => {`,
+      `  console.error("[runtime] failed to start", error);`,
+      `  process.exit(1);`,
+      `});`,
+    ].join("\n");
+    yield* fs.writeFileString(input, `${source}\n`).pipe(Effect.orDie);
 
-      const bundle = await rolldown({
-        input,
-        platform: "node",
-        plugins: [nodeResolvePlugin],
-        transform: {
-          define: {
-            "globalThis.__BALLAST_PHASE__": JSON.stringify("runtime"),
+    const run = Effect.tryPromise({
+      try: () =>
+        rolldown({
+          input,
+          platform: "node",
+          plugins: [nodeResolvePlugin],
+          transform: {
+            define: {
+              "globalThis.__BALLAST_PHASE__": JSON.stringify("runtime"),
+            },
           },
-        },
-        onwarn(warning) {
-          if (
-            warning.code === "UNRESOLVED_IMPORT" &&
-            warning.message.includes("@effect/platform-bun")
-          ) {
-            // Alchemy's Bun-only branches are never taken in the Node worker.
-            return;
-          }
-          console.warn(`[bundle] ${warning.message}`);
-        },
-      });
+          onwarn(warning) {
+            if (
+              warning.code === "UNRESOLVED_IMPORT" &&
+              warning.message.includes("@effect/platform-bun")
+            ) {
+              // Alchemy's Bun-only branches are never taken in the Node worker.
+              return;
+            }
+            console.warn(`[bundle] ${warning.message}`);
+          },
+        }),
+      catch: (cause) =>
+        new BundleError({
+          message: `Failed to bundle ${entry}: ${
+            cause instanceof Error ? (cause.stack ?? cause.message) : String(cause)
+          }`,
+        }),
+    });
 
-      try {
-        const result = await bundle.generate({
+    const bundle = yield* run;
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        bundle.generate({
           format: "esm",
           minify: "dce-only",
           codeSplitting: false,
-        });
-        const chunk = result.output.find((item) => item.type === "chunk");
-        if (chunk === undefined) {
-          throw new Error("Rolldown produced no JavaScript chunk");
-        }
-        await writeFile(output, chunk.code, "utf8");
-        return {
-          generation,
-          path: output,
-          directory,
-          bytes: chunk.code.length,
-        };
-      } finally {
-        await bundle.close();
-      }
-    },
-    catch: (cause) =>
-      new BundleError({
-        message: `Failed to bundle ${entry}: ${
-          cause instanceof Error ? (cause.stack ?? cause.message) : String(cause)
-        }`,
-      }),
+        }),
+      catch: (cause) =>
+        new BundleError({
+          message: `Failed to bundle ${entry}: ${
+            cause instanceof Error ? (cause.stack ?? cause.message) : String(cause)
+          }`,
+        }),
+    }).pipe(Effect.ensuring(Effect.promise(() => bundle.close()).pipe(Effect.ignore)));
+    const chunk = result.output.find((item) => item.type === "chunk");
+    if (chunk === undefined) {
+      return yield* Effect.fail(
+        new BundleError({ message: "Rolldown produced no JavaScript chunk" }),
+      );
+    }
+    yield* fs.writeFileString(output, chunk.code).pipe(Effect.orDie);
+    return {
+      generation,
+      path: output,
+      directory,
+      bytes: chunk.code.length,
+    };
   });

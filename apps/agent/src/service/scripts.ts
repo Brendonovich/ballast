@@ -1,12 +1,13 @@
-import { createHash, randomBytes } from "node:crypto";
-import { stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
+import * as Crypto from "effect/Crypto";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import {
@@ -87,19 +88,25 @@ interface AppliedFile {
   readonly appliedAt: number;
 }
 
-const settingsPath = (project: ProjectRecord): string =>
-  join(project.root, ".ballast", "settings.json");
+const settingsPath = (path: Path.Path, project: ProjectRecord): string =>
+  path.join(project.root, ".ballast", "settings.json");
 
-const appliedPath = (projectRoot: string, scriptId: string): string =>
-  join(
+const appliedPath = (path: Path.Path, projectRoot: string, scriptId: string): string =>
+  path.join(
     projectRoot,
     ".ballast",
     "applied",
     `${scriptId.replaceAll(/[^a-zA-Z0-9_.-]/g, "_")}.json`,
   );
 
-const loadSettings = async (project: ProjectRecord): Promise<ProjectSettings> => {
-  const value = await readJson(settingsPath(project));
+const loadSettings = (
+  project: ProjectRecord,
+): Effect.Effect<ProjectSettings, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const value = yield* readJson(settingsPath(path, project)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   if (typeof value !== "object" || value === null) {
     return { version: 1, scripts: {} };
   }
@@ -130,13 +137,17 @@ const loadSettings = async (project: ProjectRecord): Promise<ProjectSettings> =>
     };
   }
   return { version: 1, scripts: parsed };
-};
+  });
 
-const loadApplied = async (
+const loadApplied = (
   projectRoot: string,
   scriptId: string,
-): Promise<AppliedFile | undefined> => {
-  const value = await readJson(appliedPath(projectRoot, scriptId));
+): Effect.Effect<AppliedFile | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const value = yield* readJson(appliedPath(path, projectRoot, scriptId)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   if (typeof value !== "object" || value === null) return undefined;
   const manifest = (value as { manifest?: unknown }).manifest;
   if (typeof manifest !== "object" || manifest === null) return undefined;
@@ -148,8 +159,7 @@ const loadApplied = async (
         ? (value as { appliedAt: number }).appliedAt
         : Date.now(),
   };
-};
-
+  });
 
 const recordKey = (projectId: string, scriptId: string): string =>
   `${projectId}\u0000${scriptId}`;
@@ -241,6 +251,7 @@ const toParamView = (
     key: param.key,
     type: param.type,
     ...(param.title === undefined ? {} : { title: param.title }),
+    ...(param.description === undefined ? {} : { description: param.description }),
     ...(param.default === undefined ? {} : { default: param.default }),
     ...(value === undefined ? {} : { value }),
     required: param.default === undefined && values[param.key] === undefined,
@@ -356,6 +367,15 @@ export const ScriptManagerLive = Layer.effect(
     const logs = yield* Logs;
     const router = yield* EventRouter;
     const hub = yield* ServiceHub;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
+    const platform = yield* Effect.context<
+      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+    >();
+    const provide = <A, E>(
+      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+    ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
     const timers = yield* makeTimerManager({ clock, logs, hub });
     const state = yield* Ref.make<ReadonlyMap<string, ScriptRecord>>(new Map());
@@ -393,7 +413,7 @@ export const ScriptManagerLive = Layer.effect(
       Effect.gen(function* () {
         const cached = (yield* Ref.get(settings)).get(project.id);
         if (cached !== undefined) return cached;
-        const loaded = yield* Effect.promise(() => loadSettings(project));
+        const loaded = yield* provide(loadSettings(project));
         yield* Ref.update(settings, (current) => {
           const next = new Map(current);
           next.set(project.id, loaded);
@@ -406,10 +426,11 @@ export const ScriptManagerLive = Layer.effect(
       Effect.gen(function* () {
         const value = (yield* Ref.get(settings)).get(project.id);
         if (value === undefined) return;
-        yield* Effect.tryPromise({
-          try: () => writeJsonAtomic(settingsPath(project), value, 0o600),
-          catch: (cause) => errorMessage(cause),
-        }).pipe(
+        yield* provide(
+          writeJsonAtomic(settingsPath(path, project), value, 0o600),
+        ).pipe(
+          Effect.mapError(errorMessage),
+        ).pipe(
           Effect.catch((reason) =>
             logs.write({
               level: "error",
@@ -446,14 +467,15 @@ export const ScriptManagerLive = Layer.effect(
       const appliedAt = record.appliedAt;
       if (manifest === undefined || appliedAt === undefined) return Effect.void;
       const file: AppliedFile = { version: 1, manifest, appliedAt };
-      return Effect.tryPromise({
-            try: () =>
-              writeJsonAtomic(
-                appliedPath(record.projectRoot, record.scriptId),
-                file,
-                0o600,
-              ),            catch: (cause) => errorMessage(cause),
-          }).pipe(
+      return provide(
+        writeJsonAtomic(
+          appliedPath(path, record.projectRoot, record.scriptId),
+          file,
+          0o600,
+        ),
+      ).pipe(
+        Effect.mapError(errorMessage),
+      ).pipe(
             Effect.catch((reason) =>
               logs.write({
                 level: "error",
@@ -510,7 +532,7 @@ export const ScriptManagerLive = Layer.effect(
           { readonly id: string; readonly status: NonNullable<ManifestConnection["connectionStatus"]> }
         >();
         for (const summary of summaries) {
-          map.set(`${summary.integration}/${summary.slot}`, {
+          map.set(summary.id, {
             id: summary.id,
             status: summary.status,
           });
@@ -561,7 +583,7 @@ export const ScriptManagerLive = Layer.effect(
         return record;
       });
 
-    const resolveDir = dirname(fileURLToPath(import.meta.url));
+    const resolveDir = yield* path.fromFileUrl(new URL(".", import.meta.url));
 
     const planEntry = (record: ScriptRecord) =>
       planDetails(record.absolutePath, {
@@ -708,7 +730,7 @@ export const ScriptManagerLive = Layer.effect(
         yield* prepareConnections(record, manifest);
         const generation = record.generation + 1;
         const params = record.params;
-        const bundle = yield* bundleScript(record.absolutePath, generation).pipe(
+        const bundle = yield* provide(bundleScript(record.absolutePath, generation)).pipe(
           Effect.mapError((error) => agentError("internal", error.message)),
         );
         const declarationFor = (name: string): TimerManifest | undefined =>
@@ -866,16 +888,23 @@ export const ScriptManagerLive = Layer.effect(
         string,
         { readonly id: string; readonly status: NonNullable<ManifestConnection["connectionStatus"]> }
       >,
-    ): ConsentRequest => ({
-      id: `consent_${randomBytes(6).toString("hex")}`,
-      projectId: record.projectId,
-      scriptId: record.scriptId,
-      scriptName: record.name,
-      createdAt: Date.now(),
-      reason: consentReason(changes),
-      summary: consentSummary(changes),
-      diff: toWireDiff(changes, options, bindings, record.params),
-    });
+    ): Effect.Effect<ConsentRequest> =>
+      Effect.gen(function* () {
+        const id = yield* crypto.randomBytes(6).pipe(
+          Effect.map((bytes) => Hex.encode(bytes)),
+          Effect.orDie,
+        );
+        return {
+          id: `consent_${id}`,
+          projectId: record.projectId,
+          scriptId: record.scriptId,
+          scriptName: record.name,
+          createdAt: Date.now(),
+          reason: consentReason(changes),
+          summary: consentSummary(changes),
+          diff: toWireDiff(changes, options, bindings, record.params),
+        };
+      });
 
     const beginStart = (
       record: ScriptRecord,
@@ -903,7 +932,7 @@ export const ScriptManagerLive = Layer.effect(
         if (changes.requiresConsent && !approved) {
           const options = yield* resolveOptions(manifest);
           const bindings = yield* connectionBindings();
-          const consent = consentFor(current, manifest, changes, options, bindings);
+          const consent = yield* consentFor(current, manifest, changes, options, bindings);
           const next = yield* setRecord({
             ...current,
             manifest,
@@ -986,24 +1015,25 @@ export const ScriptManagerLive = Layer.effect(
     ): Effect.Effect<ScriptSource, AgentError> =>
       Effect.gen(function* () {
         const record = yield* requireRecord(projectId, scriptId);
-        const content = yield* Effect.tryPromise({
-          try: () => readText(record.absolutePath),
-          catch: (cause) => agentError("internal", errorMessage(cause)),
-        });
+        const content = yield* provide(readText(record.absolutePath)).pipe(
+          Effect.mapError((cause) => agentError("internal", cause.message)),
+        );
         if (content === undefined) {
           return yield* Effect.fail(
             agentError("not-found", `Script file "${record.absolutePath}" does not exist`),
           );
         }
-        const fileStat = yield* Effect.tryPromise({
-          try: () => stat(record.absolutePath),
-          catch: (cause) => agentError("internal", errorMessage(cause)),
-        });
+        const fileStat = yield* provide(fs.stat(record.absolutePath)).pipe(
+          Effect.mapError((cause) => agentError("internal", cause.message)),
+        );
+        const digest = yield* provide(
+          crypto.digest("SHA-256", new TextEncoder().encode(content)),
+        ).pipe(Effect.orDie);
         return {
           path: record.scriptId,
           content,
-          sha256: createHash("sha256").update(content).digest("hex"),
-          updatedAt: fileStat.mtimeMs,
+          sha256: Hex.encode(digest),
+          updatedAt: Option.getOrElse(fileStat.mtime, () => new Date()).getTime(),
           language: "typescript",
         };
       });
@@ -1104,27 +1134,34 @@ export const ScriptManagerLive = Layer.effect(
             (param.type === "string" && typeof value === "string") ||
             (param.type === "number" && typeof value === "number" && Number.isFinite(value)) ||
             (param.type === "boolean" && typeof value === "boolean") ||
-            (param.type === "enum" && typeof value === "string");
+            (param.type === "enum" && typeof value === "string") ||
+            (param.type === "strings" &&
+              Array.isArray(value) &&
+              value.every((entry) => typeof entry === "string"));
           if (!validType) {
             return yield* Effect.fail(
               agentError("invalid", `Param "${key}" expects a ${param.type} value`),
             );
           }
-          if (param.type === "enum" && param.options !== undefined) {
+          if ((param.type === "enum" || param.type === "strings") && param.options !== undefined) {
             const options = yield* connections.optionValues(param.options).pipe(
               Effect.catch(() => Effect.succeed(undefined)),
             );
-            if (
-              options !== undefined &&
-              typeof value === "string" &&
-              !options.includes(value)
-            ) {
-              return yield* Effect.fail(
-                agentError(
-                  "invalid",
-                  `Param "${key}" must be one of: ${options.join(", ")}`,
-                ),
-              );
+            if (options !== undefined) {
+              const selected =
+                param.type === "strings" && Array.isArray(value)
+                  ? value.filter((entry): entry is string => typeof entry === "string")
+                  : typeof value === "string"
+                    ? [value]
+                    : [];
+              if (selected.some((entry) => !options.includes(entry))) {
+                return yield* Effect.fail(
+                  agentError(
+                    "invalid",
+                    `Param "${key}" must be one of: ${options.join(", ")}`,
+                  ),
+                );
+              }
             }
           }
           const project = yield* projects.get(projectId);
@@ -1238,11 +1275,11 @@ export const ScriptManagerLive = Layer.effect(
 
     const fingerprintOf = (absolutePath: string): Effect.Effect<string> =>
       Effect.gen(function* () {
-        const content = yield* Effect.tryPromise({
-          try: () => readText(absolutePath),
-          catch: (cause) => new Error(errorMessage(cause)),
-        }).pipe(Effect.catch(() => Effect.succeed(undefined)));
-        return content === undefined ? "missing" : contentHash(content);
+        const content = yield* provide(readText(absolutePath)).pipe(
+          Effect.catch(() => Effect.succeed(undefined)),
+        );
+        if (content === undefined) return "missing";
+        return yield* provide(contentHash(content)).pipe(Effect.orDie);
       });
 
     const planOnly = (record: ScriptRecord): Effect.Effect<ScriptRecord> =>
@@ -1279,7 +1316,7 @@ export const ScriptManagerLive = Layer.effect(
         if (changes.requiresConsent) {
           const options = yield* resolveOptions(manifest);
           const bindings = yield* connectionBindings();
-          const consent = consentFor(current, manifest, changes, options, bindings);
+          const consent = yield* consentFor(current, manifest, changes, options, bindings);
           const next = yield* setRecord({
             ...current,
             manifest,
@@ -1331,10 +1368,9 @@ export const ScriptManagerLive = Layer.effect(
             const fingerprint = yield* fingerprintOf(discoveredScript.absolutePath);
             if (fingerprint === "missing") continue;
             if (existing === undefined) {
-              const applied = yield* Effect.tryPromise({
-                try: () => loadApplied(project.root, discoveredScript.id),
-                catch: () => undefined,
-              }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+              const applied = yield* provide(
+                loadApplied(project.root, discoveredScript.id),
+              ).pipe(Effect.catch(() => Effect.succeed(undefined)));
               const entry = projectSettingsValue.scripts[discoveredScript.id];
               const record: ScriptRecord = {
                 projectId,

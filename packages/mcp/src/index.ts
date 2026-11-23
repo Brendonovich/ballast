@@ -4,18 +4,19 @@ export { discoverService, readServiceRegistration, serviceJsonPath } from "./dis
 export type { DiscoveredService, DiscoveryOptions, ServiceRegistration } from "./discovery.ts";
 export { makeAgentGateway } from "./client.ts";
 export type { AgentGateway, GatewayOptions } from "./client.ts";
-export { applyProject, checkText, makeProjectAdapter } from "./adapter.ts";
+export {
+  applyProject,
+  checkText,
+  makeProjectAdapter,
+  normalizeSourceLocation,
+} from "./adapter.ts";
 export type {
   ApplyOutcome,
   ApplyReason,
   ApplyState,
   CheckResult,
-  CheckUnit,
-  Diagnostic,
-  MissingConnection,
-  MissingScopes,
   ProjectAdapter,
-  UnitChange,
+  ProjectState,
 } from "./adapter.ts";
 export { catalog, formatCatalog, selectCatalog } from "./catalog.ts";
 export type {
@@ -28,8 +29,6 @@ export type {
   ConnectionKind,
 } from "./catalog.ts";
 export { GUIDE } from "./guide.ts";
-export { initProject } from "./scaffold.ts";
-export type { ScaffoldResult } from "./scaffold.ts";
 export { registerTools } from "./tools.ts";
 export type { ToolContext, ToolOutput } from "./tools.ts";
 export { makeMcpLayer, runServer } from "./server.ts";

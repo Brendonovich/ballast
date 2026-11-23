@@ -53,13 +53,13 @@ import * as OBS from "@ballast/obs";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
-    // Params: captured into the manifest at plan time, read from settings at runtime
-    const rewardTitle = yield* Ballast.Param.string("rewardTitle", { title: "Reward title" });
-    const scene = yield* Ballast.Param.string("scene", { title: "Scene", options: OBS.scenes("main") });
-
     // Connection slots: credential and location requirements
     const broadcaster = yield* Twitch.Account("broadcaster");
     const obs = yield* OBS.Connection("main");
+
+    // Params: captured into the manifest at plan time, read from settings at runtime
+    const rewardTitle = yield* Ballast.Param.string("rewardTitle", { title: "Reward title" });
+    const scene = yield* Ballast.Param.string("scene", { title: "Scene", options: OBS.scenes(obs) });
 
     // Request capability: recorded in the manifest, returns a typed client
     const setScene = yield* OBS.SetCurrentProgramScene(obs);
@@ -80,7 +80,7 @@ Rules:
 - Param values are **lazy** `Effect`s, so plan mode never needs real values. A topic can depend on a param (for example "subscribe to the channel named in this param"); planning records it as unresolved and apply resolves it.
 - Imports are limited to `effect`, `@ballast/*` and relative files at first. npm dependencies come later through bundling.
 - Scripts are AI-authored, so script APIs favour being explicit and machine-verifiable (named, declared, schema-typed, checkable at plan time) over convenience.
-- Delays that outlive a handler are durable timers (`Ballast.Timer`), not `Effect.sleep`; timer declarations are part of the manifest (decision 0006).
+- Delays that outlive a handler are durable timers (`Ballast.Timer.subscribe`), not `Effect.sleep`; timer declarations are part of the manifest (decision 0006).
 
 ### 4.2 Plan, apply, run
 
@@ -141,7 +141,7 @@ Script authors import `@ballast/*` and `effect` only. See
 The catalog is the single source of truth. It produces:
 
 - the typed script SDK
-- the settings UI for params with dynamic options (`OBS.scenes("main")` asks the live connection for its scenes)
+- the settings UI for params with dynamic options (`OBS.scenes(obs)` asks the live connection for its scenes)
 - the MCP tool descriptions agents read
 - the event inspector's decoders
 
@@ -239,7 +239,7 @@ ballast/
 Prove a script's init can be planned into a manifest and run in a worker outside a cloud deploy.
 - `Ballast.Script` evaluates init against either the plan layer or the runtime layer in a Node worker.
 - Plan one script in isolation; extract the manifest. Requests die if called and connections are never opened.
-- A fake integration with one topic and one request; runtime bundle with `__BALLAST_PHASE__ = "runtime"`.
+- A fake integration with one topic and a `fake/*` request namespace; runtime bundle with `__BALLAST_PHASE__ = "runtime"`.
 - **Exit:** `ballast plan examples/fake.ts` prints a manifest; `ballast run` delivers fake events to the handler, and hot reload replaces it cleanly.
 - **Outcome:** decision 0001's fallback B was adopted by decision 0004. Alchemy is not in the script runtime; it only deploys the cloud.
 

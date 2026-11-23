@@ -1,13 +1,15 @@
-import { watchFile, unwatchFile } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createInterface } from "node:readline/promises";
+import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Queue from "effect/Queue";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Stdio from "effect/Stdio";
+import * as Terminal from "effect/Terminal";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { FetchHttpClient } from "effect/http";
 import { diff, plan } from "@ballast/planner";
 import type { ManifestDiff } from "@ballast/planner";
@@ -28,7 +30,9 @@ import {
   readStoredTwitchAccount,
   resolveDataDir,
   resolveTwitchAppConfig,
+  twitchEnvKeys,
 } from "./twitch/config.ts";
+import { readEnvironment } from "./service/config.ts";
 import type { TwitchMode } from "./twitch/config.ts";
 import { startTwitchRuntime } from "./twitch/runtime.ts";
 
@@ -46,35 +50,41 @@ type RequestHandler = (
   input: unknown,
 ) => Effect.Effect<unknown, string>;
 
-export class RuntimeParamStore implements RuntimeSettings {
-  private readonly values: Map<string, string | number | boolean>;
+type RunParamValue = string | number | boolean | ReadonlyArray<string>;
 
-  constructor(values: Map<string, string | number | boolean>) {
+export class RuntimeParamStore implements RuntimeSettings {
+  private readonly values: Map<string, RunParamValue>;
+
+  constructor(values: Map<string, RunParamValue>) {
     this.values = values;
   }
 
-  get(key: string): string | number | boolean | undefined {
+  get(key: string): RunParamValue | undefined {
     return this.values.get(key);
   }
 }
 
-const resolveDir = dirname(fileURLToPath(import.meta.url));
+const resolveDir = (path: Path.Path): Effect.Effect<string> =>
+  path.fromFileUrl(new URL(".", import.meta.url)).pipe(Effect.orDie);
 
-const readEntry = (entry: string): Effect.Effect<string, Error> =>
-  Effect.tryPromise({
-    try: () => readFile(entry, "utf8"),
-    catch: (cause) =>
-      new Error(
-        `Could not read ${entry}: ${cause instanceof Error ? cause.message : String(cause)}`,
-      ),
+const readEntry = (
+  entry: string,
+): Effect.Effect<string, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.readFileString(entry).pipe(
+      Effect.mapError((cause) => new Error(`Could not read ${entry}: ${cause.message}`)),
+    );
   });
 
-const coerceParam = (param: ParamManifest, raw: string): string | number | boolean => {
+const coerceParam = (param: ParamManifest, raw: string): RunParamValue => {
   switch (param.type) {
     case "string":
       return raw;
     case "enum":
       return raw;
+    case "strings":
+      return raw.split(",").map((value) => value.trim()).filter((value) => value !== "");
     case "number": {
       const value = Number(raw);
       if (!Number.isFinite(value)) {
@@ -103,7 +113,7 @@ const optionSourceKey = (source: ParamOptionSource): string =>
 
 const validateOptions = (
   declared: ReadonlyMap<string, ParamManifest>,
-  values: ReadonlyMap<string, string | number | boolean>,
+  values: ReadonlyMap<string, RunParamValue>,
   resolveOptions: ParamOptionResolver,
 ): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
@@ -128,10 +138,13 @@ const validateOptions = (
         resolved.set(cacheKey, available);
       }
 
-      if (!available.includes(String(value))) {
+      const selected = Array.isArray(value) ? value : [String(value)];
+      const rejected = selected.filter((entry) => !available.includes(entry));
+      if (rejected.length > 0) {
+        const shown = Array.isArray(value) ? rejected.join(", ") : String(value);
         return yield* Effect.fail(
           new Error(
-            `Param "${key}" value "${value}" is not available from ${cacheKey}. Available: ${
+            `Param "${key}" value "${shown}" is not available from ${cacheKey}. Available: ${
               available.length === 0 ? "(none)" : available.join(", ")
             }`,
           ),
@@ -149,10 +162,10 @@ export const parseParamValues = (
   manifest: Manifest,
   inputs: ReadonlyMap<string, string>,
   resolveOptions?: ParamOptionResolver,
-): Effect.Effect<Map<string, string | number | boolean>, Error> =>
+): Effect.Effect<Map<string, RunParamValue>, Error> =>
   Effect.gen(function* () {
     const declared = paramMap(manifest);
-    const values = new Map<string, string | number | boolean>();
+    const values = new Map<string, RunParamValue>();
 
     for (const [key, raw] of inputs) {
       const param = declared.get(key);
@@ -196,7 +209,7 @@ const refreshParamValues = (
   manifest: Manifest,
   inputs: ReadonlyMap<string, string>,
   resolveOptions?: ParamOptionResolver,
-): Effect.Effect<Map<string, string | number | boolean>, Error> => {
+): Effect.Effect<Map<string, RunParamValue>, Error> => {
   const declared = paramMap(manifest);
   const kept = new Map([...inputs].filter(([key]) => declared.has(key)));
   return parseParamValues(manifest, kept, resolveOptions);
@@ -210,24 +223,21 @@ const printDiff = (value: ManifestDiff): void => {
   console.log(JSON.stringify(value, null, 2));
 };
 
-const askQuestion = (question: string): Promise<boolean> => {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return rl
-    .question(question)
-    .then((answer) => {
-      process.stdout.write("\n");
-      return answer.trim().toLowerCase().startsWith("y");
-    })
-    .catch(() => {
-      process.stdout.write("\n");
-      return false;
-    })
-    .finally(() => {
-      rl.close();
-    });
-};
+const askQuestion = (
+  question: string,
+): Effect.Effect<boolean, never, Terminal.Terminal> =>
+  Effect.gen(function* () {
+    const terminal = yield* Terminal.Terminal;
+    yield* terminal.display(question).pipe(Effect.orDie);
+    const answer = yield* terminal.readLine.pipe(
+      Effect.catchIf(Terminal.isQuitError, () => Effect.succeed("")),
+    );
+    yield* terminal.display("\n").pipe(Effect.orDie);
+    return answer.trim().toLowerCase().startsWith("y");
+  });
 
-const askConsent = (): Promise<boolean> => askQuestion("Apply? [y/N] ");
+const askConsent = (): Effect.Effect<boolean, never, Terminal.Terminal> =>
+  askQuestion("Apply? [y/N] ");
 
 interface AppliedState {
   readonly manifest: Manifest;
@@ -250,16 +260,26 @@ interface RunTimerHandlers {
 }
 
 const startWorker = (
+  platform: Context.Context<
+    | ChildProcessSpawner
+    | Crypto.Crypto
+    | FileSystem.FileSystem
+    | Path.Path
+    | Scope.Scope
+    | Stdio.Stdio
+    | Terminal.Terminal
+  >,
   entry: string,
   generation: number,
   params: RuntimeParamStore,
   request: RequestHandler,
   timers: RunTimerHandlers,
-): Effect.Effect<RuntimeSession, Error> =>
+) =>
   Effect.gen(function* () {
-    const bundle = yield* bundleScript(entry, generation).pipe(
-      Effect.mapError((error) => new Error(error.message)),
-    );
+    const bundle = yield* Effect.provideContext(
+      bundleScript(entry, generation),
+      platform,
+    ).pipe(Effect.mapError((error) => new Error(error.message)));
     console.log(
       `[run] bundled generation ${generation} (${bundle.bytes} bytes) -> ${bundle.path}`,
     );
@@ -292,30 +312,17 @@ const obsSlotsFor = (manifest: Manifest): ReadonlyArray<string> =>
 
 const watchEntry = (
   entry: string,
-  reload: () => Effect.Effect<void>,
-): Effect.Effect<never, never, Scope.Scope> =>
+  reload: () => Effect.Effect<void, never, FileSystem.FileSystem | Terminal.Terminal>,
+) =>
   Effect.gen(function* () {
-    const events = yield* Queue.unbounded<void>();
-
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        watchFile(entry, { interval: 300 }, () => {
-          Queue.offerUnsafe(events, undefined);
-        });
-        return () => {
-          unwatchFile(entry);
-        };
-      }),
-      (stop) => Effect.sync(stop),
-    );
-
-    return yield* Effect.forever(
-      Effect.gen(function* () {
-        yield* Queue.take(events);
-        // Editors often emit more than one event for a save; coalesce them.
-        yield* Effect.sleep("150 millis");
-        yield* Queue.clear(events);
-        yield* reload();
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.watch(entry).pipe(
+      // Editors often emit more than one event for a save; coalesce them.
+      Stream.debounce("150 millis"),
+      Stream.runForEach(() => reload()),
+      Effect.catch((error) => {
+        console.error(`[run] could not watch ${entry}: ${error.message}`);
+        return Effect.never;
       }),
     );
   });
@@ -324,10 +331,40 @@ const watchEntry = (
  * Run a script in a worker, watch its entry and hot-swap generations. Consent
  * is requested when the plan adds a scope or a connection slot.
  */
-export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
+export const runScript = (options: RunOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const entry = resolve(options.entry);
+      const path = yield* Path.Path;
+      const platform = yield* Effect.context<
+        | ChildProcessSpawner
+        | Crypto.Crypto
+        | FileSystem.FileSystem
+        | Path.Path
+        | Scope.Scope
+        | Stdio.Stdio
+        | Terminal.Terminal
+      >();
+      const provide = <A, E>(
+        effect: Effect.Effect<
+          A,
+          E,
+          | ChildProcessSpawner
+          | Crypto.Crypto
+          | FileSystem.FileSystem
+          | Path.Path
+          | Scope.Scope
+          | Stdio.Stdio
+          | Terminal.Terminal
+        >,
+      ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
+      const env = yield* readEnvironment([
+        "CI",
+        "BALLAST_CI",
+        "XDG_DATA_HOME",
+        "LOCALAPPDATA",
+        "HOME",
+      ]);
+      const entry = path.resolve(options.entry);
       const initialContent = yield* readEntry(entry);
       const bus = new AgentEventBus();
       const obsSlots = new Map<string, ObsSlotState>();
@@ -337,45 +374,50 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
         slot: string,
         scopes: ReadonlyArray<string>,
       ): Effect.Effect<boolean, Error> =>
-        Effect.gen(function* () {
-          if (process.stdin.isTTY !== true || process.env["CI"] === "1") return false;
-          const stored = yield* Effect.tryPromise({
-            try: () => readStoredTwitchAccount(slot),
-            catch: (cause) =>
-              new Error(
-                "Could not read the stored Twitch token: " +
-                  (cause instanceof Error ? cause.message : String(cause)),
-              ),
-          });
+        provide(Effect.gen(function* () {
+          const stdio = yield* Stdio.Stdio;
+          const stdinIsTerminal = yield* stdio.stdinIsTerminal;
+          if (!stdinIsTerminal || env["CI"] === "1") return false;
+          const stored = yield* readStoredTwitchAccount(slot).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Error(
+                  "Could not read the stored Twitch token: " +
+                    (cause instanceof Error ? cause.message : String(cause)),
+                ),
+            ),
+          );
           if (stored === undefined) return false;
 
+          const twitchEnv = {
+            ...env,
+            ...(yield* readEnvironment(twitchEnvKeys(slot))),
+          };
           const config = yield* Effect.try({
-            try: () => resolveTwitchAppConfig(slot, options, stored),
+            try: () => resolveTwitchAppConfig(slot, options, stored, twitchEnv),
             catch: (cause) =>
               cause instanceof Error ? cause : new Error(String(cause)),
           });
 
-          const approved = yield* Effect.promise(() =>
-            askQuestion(
-              "[twitch:" +
-                slot +
-                "] the stored token is missing scopes: " +
-                scopes.join(", ") +
-                ". Re-authorize now? [y/N] ",
-            ),
+          const approved = yield* askQuestion(
+            "[twitch:" +
+              slot +
+              "] the stored token is missing scopes: " +
+              scopes.join(", ") +
+              ". Re-authorize now? [y/N] ",
           );
           if (!approved) return false;
 
           yield* authorizeTwitchAccount({
             slot,
             config,
-            dataDir: resolveDataDir(),
+            dataDir: resolveDataDir(path, env),
             scopes,
           }).pipe(Effect.provide(FetchHttpClient.layer));
           return true;
-        });
+        }));
 
-      const twitch = yield* startTwitchRuntime({
+      const twitch = yield* provide(startTwitchRuntime({
         options: {
           connections: options.connections,
           secrets: options.secrets,
@@ -384,7 +426,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
         ...(options.cloudUrl === undefined ? {} : { cloudUrl: options.cloudUrl }),
         publish: (key, payload) => bus.publish(key, payload),
         reauthorize: reauthorizeTwitch,
-      });
+      }));
       yield* Effect.addFinalizer(() => twitch.close);
 
       const ensureObs = (
@@ -405,19 +447,19 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           }
 
           const config = yield* Effect.try({
-            try: () => resolveObsConnectionConfig(slot, options),
+            try: () => resolveObsConnectionConfig(slot, options, env),
             catch: (cause) =>
               cause instanceof Error ? cause : new Error(String(cause)),
           });
 
           const scope = yield* Scope.fork(parentScope, "parallel");
-          const driver = yield* startObsDriver({
+          const driver = yield* provide(startObsDriver({
             slot,
             url: config.url,
             ...(config.password === undefined ? {} : { password: config.password }),
             topics,
             publish: (key, payload) => bus.publish(key, payload),
-          }).pipe(Scope.provide(scope));
+          })).pipe(Scope.provide(scope));
           obsSlots.set(slot, { driver, scope, topics: topicsKey });
           return driver;
         });
@@ -475,7 +517,9 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
             return scenes;
           });
 
-      const initialManifest = yield* plan(entry, { resolveDir }).pipe(
+      const initialManifest = yield* plan(entry, {
+        resolveDir: yield* resolveDir(path),
+      }).pipe(
         Effect.mapError((error) => new Error(error.message)),
       );
 
@@ -590,6 +634,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
       let applied: AppliedState = {
         manifest: initialManifest,
         session: yield* startWorker(
+          platform,
           entry,
           0,
           new RuntimeParamStore(initialValues),
@@ -610,7 +655,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
 
       console.log(`[run] watching ${entry}`);
 
-      const reload = (): Effect.Effect<void> =>
+      const reload = () =>
         Effect.gen(function* () {
           const content = yield* readEntry(entry).pipe(
             Effect.catch((error) => {
@@ -621,7 +666,9 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           if (content === undefined || content === lastPlannedContent) return;
           lastPlannedContent = content;
 
-          const nextManifest = yield* plan(entry, { resolveDir }).pipe(
+          const nextManifest = yield* plan(entry, {
+            resolveDir: yield* resolveDir(path),
+          }).pipe(
             Effect.mapError((error) => new Error(error.message)),
             Effect.catch((error) => {
               console.error(`[run] plan failed: ${error.message}`);
@@ -633,7 +680,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           const changes = diff(applied.manifest, nextManifest);
           if (changes.requiresConsent) {
             printDiff(changes);
-            const approved = yield* Effect.promise(askConsent);
+            const approved = yield* askConsent();
             if (!approved) {
               console.log(
                 `[run] update rejected; keeping worker generation ${applied.session.generation}`,
@@ -690,6 +737,7 @@ export const runScript = (options: RunOptions): Effect.Effect<never, Error> =>
           if (nextValues === undefined) return;
 
           const nextSession = yield* startWorker(
+            platform,
             entry,
             generation++,
             new RuntimeParamStore(nextValues),

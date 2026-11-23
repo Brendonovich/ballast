@@ -13,7 +13,54 @@ pnpm --filter @ballast/agent serve --port 0 --dev
 
 `plan` and `run` remain in-process development commands; everything else (`status`, `projects`, `scripts`,
 `connections`, `cloud`, `consent`, `service`) is a client of a running `serve` discovered through
-`service.json`.
+`service.json`. When none is running, those commands start one in the background first (except
+`ballast status`, and not when `BALLAST_SERVICE_URL` is set).
+
+## Background service
+
+```bash
+ballast service start     # spawn a detached `ballast serve` (no-op if one is running)
+ballast service status
+ballast service restart   # stop + spawn
+ballast service stop      # ShutdownService, then SIGTERM/SIGKILL
+```
+
+There is no OS supervisor (no LaunchAgent, Scheduled Task or start at login). `service start`
+re-runs the CLI's own runtime and entry with `serve` as a detached process (stdin ignored,
+output appended to `<logDir>/service.log` / `service.err.log`); it outlives the CLI and has no
+idle exit. `service.lock` (created exclusively) keeps one service per user, and the service always
+exits 0 on shutdown. `serve --supervised` instead exits when its parent closes stdin.
+
+## MCP for coding agents
+
+`ballast mcp` serves the Ballast MCP tools over stdio. It discovers the running
+service through `service.json`, so start the service first. In OpenCode, add a
+local server:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "ballast": {
+        "type": "local",
+        "command": [
+          "node",
+          "--experimental-strip-types",
+          "--no-warnings=ExperimentalWarning",
+          "/absolute/path/to/ballast/apps/agent/src/bin.ts",
+          "mcp"
+        ]
+      }
+    }
+  }
+}
+```
+
+The staged service bundle is also an MCP server: run `main.mjs mcp` from
+`dist-service` (or the desktop's staged `service/<version>/main.mjs`) with a
+Node 22.18+ binary, or `ELECTRON_RUN_AS_NODE=1` with the app binary. See
+`packages/mcp/README.md` for the shipped config and the tool list.
 
 ## Service build for the desktop shell
 
@@ -24,7 +71,7 @@ pnpm --filter @ballast/agent build:service
 Writes `apps/agent/dist-service/`:
 
 ```
-main.mjs           bundled `ballast` CLI (serve --standalone works)
+main.mjs           bundled `ballast` CLI (`main.mjs serve` runs the service)
 plan-worker.mjs    bundled planner worker (main.mjs points at it)
 web/               copy of apps/web/dist, or a placeholder page
 version.json       { "version": "..." }
@@ -35,7 +82,7 @@ node_modules/      effect, ws, rolldown + native binding, uiohook-napi and
 
 The native `rolldown` package is deliberately external to the bundle and copied with its
 `@rolldown/*` binding, because script bundles are produced at runtime. Run the stage with
-`ELECTRON_RUN_AS_NODE=1 <electron> <stage>/main.mjs serve --standalone` (the desktop launcher does this).
+`ELECTRON_RUN_AS_NODE=1 <electron> <stage>/main.mjs serve` (the desktop launcher spawns this detached).
 `BALLAST_STATE_DIR`, `BALLAST_DATA_DIR`, `BALLAST_LOG_DIR`, `BALLAST_SERVICE_PORT` and
 `BALLAST_SERVICE_VERSION` are honoured.
 

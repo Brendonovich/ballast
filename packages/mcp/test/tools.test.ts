@@ -1,12 +1,25 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { emptyProjectManifest } from "@ballast/agent-protocol";
-import type { HealthStatus, ProjectDetail, ProjectSummary } from "@ballast/agent-protocol";
+import type {
+  ConnectionSummary,
+  HealthStatus,
+  ProjectConsentRequest,
+  ProjectDetail,
+  ProjectSummary,
+} from "@ballast/agent-protocol";
 
-import { applyProject, checkText } from "../src/adapter.ts";
+import {
+  applyProject,
+  checkText,
+  normalizeSourceLocation,
+  requirementLine,
+  requirementViews,
+} from "../src/adapter.ts";
 import type { CheckResult, ProjectAdapter } from "../src/adapter.ts";
 import { formatCatalog, selectCatalog } from "../src/catalog.ts";
 import { GUIDE } from "../src/guide.ts";
+import { statusState } from "../src/tools.ts";
 
 const summary: ProjectSummary = {
   id: "proj_test",
@@ -23,6 +36,7 @@ const summary: ProjectSummary = {
 const detail = (overrides: Partial<ProjectDetail> = {}): ProjectDetail => ({
   summary,
   manifest: emptyProjectManifest("proj_test", "ballast.ts"),
+  requirements: [],
   units: [],
   scripts: [],
   ...overrides,
@@ -39,16 +53,37 @@ const health: HealthStatus = {
   lastEventSeq: 0,
 };
 
+const connection = (
+  id: string,
+  integration: string,
+  label: string,
+  status: ConnectionSummary["status"] = "connected",
+): ConnectionSummary => ({
+  id,
+  integration,
+  title: integration,
+  label,
+  location: "local",
+  mode: "auto",
+  status,
+  fields: [],
+  values: [],
+  scopes: { granted: [], required: [], missing: [] },
+  boundBy: [],
+  requiresAuth: false,
+});
+
 const baseCheck = (overrides: Partial<CheckResult> = {}): CheckResult => ({
-  project: summary,
-  entry: "ballast.ts",
+  summary,
   ok: true,
   diagnostics: [],
   units: [],
   changes: [],
   requiresConsent: false,
+  requirements: [],
   missingConnections: [],
   missingScopes: [],
+  availableConnections: [],
   ...overrides,
 });
 
@@ -62,7 +97,7 @@ const adapter = (state: AdapterState): ProjectAdapter => ({
   listProjects: () => Effect.succeed([summary]),
   resolveProject: () => Effect.succeed(summary),
   getProject: () => Effect.succeed(state.project),
-  registerProject: () => Effect.succeed(state.project),
+  createProject: () => Effect.succeed(state.project),
   checkProject: () => Effect.succeed(state.check),
   restartProject: () => {
     state.restarts += 1;
@@ -93,9 +128,10 @@ describe("ballast_apply", () => {
     expect(state.restarts).toBe(0);
   });
 
-  it("waits for a missing connection instead of restarting", async () => {
+  it("waits for an unbound requirement instead of restarting", async () => {
     const state = {
       check: baseCheck({
+        requirements: [{ integration: "obs", slot: "main", location: "local" as const }],
         missingConnections: [{ integration: "obs", slot: "main", location: "local" as const }],
       }),
       project: detail({ summary: { ...summary, enabled: true }, appliedAt: 1 }),
@@ -103,7 +139,8 @@ describe("ballast_apply", () => {
     };
     const outcome = await Effect.runPromise(applyProject(adapter(state), summary));
     expect(outcome.state).toBe("waiting_for_user");
-    expect(outcome.reason).toBe("connection");
+    expect(outcome.reason).toBe("connections");
+    expect(outcome.message).toContain("obs/main");
     expect(state.restarts).toBe(0);
   });
 
@@ -117,7 +154,7 @@ describe("ballast_apply", () => {
       restarts: 0,
     };
     const outcome = await Effect.runPromise(applyProject(adapter(state), summary));
-    expect(outcome.state).toBe("reloaded");
+    expect(outcome.state).toBe("running");
     expect(state.restarts).toBe(1);
   });
 
@@ -131,7 +168,8 @@ describe("ballast_apply", () => {
       restarts: 0,
     };
     const outcome = await Effect.runPromise(applyProject(adapter(state), summary));
-    expect(outcome.state).toBe("invalid");
+    expect(outcome.state).toBe("error");
+    expect(outcome.reason).toBe("invalid");
     expect(state.restarts).toBe(0);
   });
 });
@@ -157,6 +195,135 @@ describe("checkText", () => {
   });
 });
 
+describe("source normalization", () => {
+  it("recovers a project-relative source from a repo-relative path", () => {
+    expect(
+      normalizeSourceLocation("/Users/me/ballast-projects/chat", {
+        file: "../../ballast-projects/chat/src/a.ts",
+        line: 4,
+        column: 2,
+      }),
+    ).toEqual({ file: "src/a.ts", line: 4, column: 2 });
+  });
+
+  it("drops core frames outside the project", () => {
+    expect(
+      normalizeSourceLocation("/Users/me/ballast-projects/chat", {
+        file: "../../core/src/timer.ts",
+        line: 394,
+        column: 14,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("prints real source links for units", () => {
+    const text = checkText(
+      baseCheck({
+        units: [
+          {
+            kind: "topic",
+            name: "tick",
+            source: { file: "src/a.ts", line: 6, column: 20 },
+            status: "active",
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("src/a.ts:6");
+  });
+});
+
+const consent: ProjectConsentRequest = {
+  id: "consent_test",
+  projectId: summary.id,
+  projectName: summary.name,
+  createdAt: 0,
+  reason: "scopes",
+  summary: "Adds scopes: fake:read",
+  diff: {
+    requiresConsent: true,
+    added: { connections: [], topics: [], requests: [], scopes: ["fake:read"], params: [] },
+    removed: { connections: [], topics: [], requests: [], scopes: [], params: [] },
+  },
+  bindings: [],
+};
+describe("requirement views", () => {
+  it("formats bound, proposed, unbound and missing requirements", () => {
+    const connections = [
+      connection("conn_twitch", "twitch", "My Twitch"),
+      connection("conn_obs", "obs", "Studio OBS"),
+      connection("conn_obs_2", "obs", "Laptop OBS", "disconnected"),
+    ];
+    const views = requirementViews(
+      [
+        {
+          integration: "twitch",
+          slot: "broadcaster",
+          location: "either",
+          boundInstanceId: "conn_twitch",
+        },
+        {
+          integration: "obs",
+          slot: "main",
+          location: "local",
+          proposedInstanceId: "conn_obs",
+        },
+        { integration: "fake", slot: "main", location: "local" },
+        {
+          integration: "midi",
+          slot: "controller",
+          location: "local",
+          boundInstanceId: "conn_gone",
+        },
+      ],
+      connections,
+    );
+    expect(views.map(requirementLine)).toEqual([
+      'twitch/broadcaster → bound to "My Twitch" (connected)',
+      'obs/main → proposed: "Studio OBS" (confirm at Start)',
+      "fake/main → none: user must add a fake connection in the Ballast app",
+      'midi/controller → bound to "conn_gone" (missing)',
+    ]);
+  });
+
+  it("says the user must add an integration when none are compatible", () => {
+    const [view] = requirementViews(
+      [{ integration: "twitch", slot: "bot", location: "either" }],
+      [],
+    );
+    expect(view === undefined ? "" : requirementLine(view)).toContain(
+      "none: user must add a twitch connection in the Ballast app",
+    );
+  });
+
+  it("counts compatible instances for an unbound slot", () => {
+    const [view] = requirementViews(
+      [{ integration: "obs", slot: "main", location: "local" }],
+      [
+        connection("conn_obs_1", "obs", "Studio OBS"),
+        connection("conn_obs_2", "obs", "Laptop OBS"),
+      ],
+    );
+    expect(view === undefined ? "" : requirementLine(view)).toBe(
+      "obs/main → unbound: 2 compatible connections available",
+    );
+  });
+});
+
+describe("status vocabulary", () => {
+  it("uses waiting_for_user with a reason for pending consent", () => {
+    expect(
+      statusState({ ...summary, status: "needs-consent" }, detail({ pendingConsent: consent })),
+    ).toEqual({ state: "waiting_for_user", reason: "consent" });
+  });
+
+  it("uses running for a healthy project", () => {
+    expect(statusState({ ...summary, status: "running" }, detail())).toEqual({
+      state: "running",
+    });
+  });
+});
+
 describe("catalog", () => {
   it("is an index by default and does not dump every topic", () => {
     const selection = selectCatalog({});
@@ -171,6 +338,8 @@ describe("catalog", () => {
     const fake = selection.integrations[0];
     expect(fake?.topics.map((topic) => topic.topic).sort()).toEqual(["fake/chat", "fake/tick"]);
     expect(fake?.requests.map((request) => request.name)).toEqual(["fake/echo"]);
+    expect(fake?.requests[0]?.scopes).toEqual([]);
+    expect(fake?.requests[0]?.grantedBy).toContain("fake/*");
   });
 
   it("includes Effect-Schema-derived JSON Schemas on request", () => {
@@ -186,6 +355,40 @@ describe("catalog", () => {
     expect(selection.integrations.every((integration) => integration.topics.length === 0)).toBe(true);
     expect(selection.integrations.every((integration) => integration.requests.length === 0)).toBe(true);
   });
+
+  it("filters a single topic or request by name", () => {
+    const topic = selectCatalog({ integration: "twitch", topic: "ChatMessage" });
+    expect(topic.integrations[0]?.topics.map((entry) => entry.name)).toEqual(["ChatMessage"]);
+    expect(topic.integrations[0]?.requests).toEqual([]);
+
+    const request = selectCatalog({
+      integration: "obs",
+      request: "SetCurrentProgramScene",
+    });
+    expect(request.integrations[0]?.requests.map((entry) => entry.name)).toEqual([
+      "obs/SetCurrentProgramScene",
+    ]);
+    expect(request.integrations[0]?.topics).toEqual([]);
+  });
+
+  it("reports truncation and pages with offset", () => {
+    const first = selectCatalog({ integration: "obs", kind: "requests", limit: 5 });
+    expect(first.integrations[0]?.requests).toHaveLength(5);
+    const page = first.pages[0];
+    expect(page?.requestMatches).toBeGreaterThan(5);
+    expect(page?.requestNextOffset).toBe(5);
+    expect(formatCatalog(first)).toContain("truncated");
+    const second = selectCatalog({
+      integration: "obs",
+      kind: "requests",
+      limit: 5,
+      offset: 5,
+    });
+    expect(second.integrations[0]?.requests).toHaveLength(5);
+    expect(second.integrations[0]?.requests[0]?.name).not.toBe(
+      first.integrations[0]?.requests[0]?.name,
+    );
+  });
 });
 
 describe("guide", () => {
@@ -194,5 +397,11 @@ describe("guide", () => {
     expect(GUIDE).toContain("Ballast.run");
     expect(GUIDE).toContain("account.helix");
     expect(GUIDE).toContain("Effect.sleep");
+    expect(GUIDE).toContain("Effect.catchCause");
+    expect(GUIDE).toContain("Effect.catchTag");
+    expect(GUIDE).toContain("Param.strings");
+    expect(GUIDE).toContain("OBS.scenes(obs)");
+    expect(GUIDE).not.toContain("Timer.unit");
+    expect(GUIDE).not.toContain("being removed");
   });
 });

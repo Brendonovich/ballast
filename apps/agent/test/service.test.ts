@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,7 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
 import type { LiveAgentClient } from "../src/service/client.ts";
-import { readServiceRegistration, serviceJsonPath } from "../src/service/config.ts";
+import { readServiceRegistration } from "../src/service/config.ts";
 import { fileExists } from "../src/service/fs.ts";
 import { startMockObsServer } from "./mock-obs-server.ts";
 
@@ -27,10 +28,9 @@ import { Effect } from "effect";
 export default Effect.gen(function* () {
     const prefix = yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
     const fake = yield* Fake.Connection("main");
-    const echo = yield* Fake.Echo(fake);
     yield* Fake.Tick.subscribe("tick", fake, (tick) =>
       Effect.gen(function* () {
-        const { text } = yield* echo({ text: \`\${yield* prefix} tick \${tick.n}\` });
+        const { text } = yield* fake.echo({ text: \`\${yield* prefix} tick \${tick.n}\` });
         yield* Effect.log(text);
       }),
     );
@@ -42,8 +42,8 @@ import * as OBS from "@ballast/module-obs";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
-    const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes("main"), default: "Scene 1" });
     const obs = yield* OBS.Connection("main");
+    const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes(obs), default: "Scene 1" });
     yield* OBS.CurrentProgramSceneChanged.subscribe("scene-changed", obs, (event) =>
       Effect.log(\`scene now \${event.sceneName}\`),
     );
@@ -181,7 +181,7 @@ describe("ballast serve", () => {
 
         const registration = yield* waitFor(
           "service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           service.output,
         );
         expect(registration.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -191,6 +191,7 @@ describe("ballast serve", () => {
           use: (client: LiveAgentClient) => Effect.Effect<A, E>,
         ): Effect.Effect<A, E | Error> =>
           withAgentClient(use, { ...env }).pipe(
+            Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
             Effect.mapError((error) => {
               if (error instanceof Error) return error;
               if (typeof error === "object" && error !== null) {
@@ -540,15 +541,18 @@ describe("ballast serve", () => {
         expect(health.scripts.total).toBe(3);
         expect(health.scripts.running).toBe(3);
 
-        yield* call((client) => client.RestartService({ reason: "contract test" }));
+        // A restart is stop + spawn by the caller (desktop/CLI); nothing respawns the service.
+        yield* call((client) => client.ShutdownService({ force: false }));
         const restartCode = yield* service.exit.pipe(Effect.timeout("20 seconds"));
-        expect(restartCode).toBe(75);
-        expect(yield* Effect.promise(() => fileExists(serviceJsonPath(stateDir)))).toBe(false);
+        expect(restartCode).toBe(0);
+        expect(
+          yield* fileExists(join(stateDir, "service.json")).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
+        ).toBe(false);
 
         const relaunched = yield* Effect.acquireRelease(spawnService(env), (process) => process.kill);
         yield* waitFor(
           "relaunched service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           relaunched.output,
         );
         const resumed = yield* waitFor(
@@ -569,16 +573,20 @@ describe("ballast serve", () => {
         yield* call((client) =>
           client.RemoveProject({ projectId: projectBDetail.summary.id }),
         );
-        expect(yield* Effect.promise(() => fileExists(join(projectB, "scripts", "tick-echo.ts")))).toBe(
-          true,
-        );
+        expect(
+          yield* fileExists(join(projectB, "scripts", "tick-echo.ts")).pipe(
+            Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
+          ),
+        ).toBe(true);
         const afterRemoval = yield* call((client) => client.ListProjects());
         expect(afterRemoval.projects).toHaveLength(1);
 
         yield* call((client) => client.ShutdownService({ force: false }));
         const shutdownCode = yield* relaunched.exit.pipe(Effect.timeout("20 seconds"));
         expect(shutdownCode).toBe(0);
-        expect(yield* Effect.promise(() => fileExists(serviceJsonPath(stateDir)))).toBe(false);
+        expect(
+          yield* fileExists(join(stateDir, "service.json")).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
+        ).toBe(false);
 
         yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
       }),
@@ -586,7 +594,7 @@ describe("ballast serve", () => {
   );
 
   it.live(
-    "matches the desktop launcher contract: version, health, cookie exchange and POST restart",
+    "matches the desktop launcher contract: version, health, cookie exchange and POST shutdown",
     () =>
       Effect.gen(function* () {
         const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-desktop-test-")));
@@ -607,7 +615,7 @@ describe("ballast serve", () => {
         );
         const registration = yield* waitFor(
           "service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           service.output,
         );
         expect(registration.version).toBe("9.9.9-desktop-test");
@@ -644,17 +652,17 @@ describe("ballast serve", () => {
         expect(page.status).toBe(200);
         expect(yield* Effect.promise(() => page.text())).toContain("Ballast");
 
-        const restart = yield* Effect.promise(() =>
-          fetch(`${registration.url}/restart`, {
+        const shutdown = yield* Effect.promise(() =>
+          fetch(`${registration.url}/shutdown`, {
             method: "POST",
             headers: { authorization: "Bearer " + registration.token },
           }),
         );
-        expect(restart.status).toBe(202);
+        expect(shutdown.status).toBe(202);
         const code = yield* service.exit.pipe(Effect.timeout("20 seconds"));
-        expect(code).toBe(75);
+        expect(code).toBe(0);
         expect(
-          yield* Effect.promise(() => fileExists(join(logDir, "service.log"))),
+          yield* fileExists(join(logDir, "service.log")).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
         ).toBe(true);
         yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
       }),
@@ -690,11 +698,12 @@ export const title = "No Modules Tick";
         const service = yield* Effect.acquireRelease(spawnService(env), (process) => process.kill);
         yield* waitFor(
           "service.json",
-          Effect.promise(() => readServiceRegistration(stateDir)),
+          readServiceRegistration(stateDir).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)),
           service.output,
         );
         const call = <A, E>(use: (client: LiveAgentClient) => Effect.Effect<A, E>): Effect.Effect<A, E | Error> =>
           withAgentClient(use, { ...env }).pipe(
+            Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
             Effect.mapError((error) => {
               if (error instanceof Error) return error;
               if (typeof error === "object" && error !== null) {

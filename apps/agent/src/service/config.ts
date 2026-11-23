@@ -1,23 +1,44 @@
-import { existsSync } from "node:fs";
-import { createServer } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createHash } from "node:crypto";
-import { homedir, hostname } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { hostname } from "node:os";
+import * as Cause from "effect/Cause";
+import * as Config from "effect/Config";
+import * as Crypto from "effect/Crypto";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import { ensureDir, readJson, removeFile, writeJsonAtomic, fileExists } from "./fs.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Base64Url from "effect/encoding/Base64Url";
+import {
+  ensureDir,
+  fileExists,
+  readJson,
+  removeFile,
+  writeJsonAtomic,
+} from "./fs.ts";
 
 export const AGENT_NAME = "ballast-agent" as const;
 export const AGENT_VERSION = "0.1.0-dev.20261123" as const;
 export const SERVICE_SCHEMA_VERSION = 1 as const;
 
+export type Environment = Readonly<Record<string, string | undefined>>;
+
+/** Read a fixed set of environment variables through Effect's Config service. */
+export const readEnvironment = (
+  keys: ReadonlyArray<string>,
+): Effect.Effect<Environment> =>
+  Effect.gen(function* () {
+    const entries: Array<readonly [string, string | undefined]> = [];
+    for (const key of keys) {
+      const value = yield* Config.String(key).pipe(Config.option, Effect.orDie);
+      entries.push([key, Option.getOrUndefined(value)] as const);
+    }
+    return Object.fromEntries(entries);
+  });
+
 export interface ServeOptions {
   readonly port: number;
   readonly dev: boolean;
   readonly supervised: boolean;
-  readonly standalone: boolean;
   readonly stateDir: string;
   readonly dataDir: string;
   readonly webDir: string | undefined;
@@ -38,160 +59,210 @@ const parsePort = (raw: string): number => {
 };
 
 const isAbsolutePath = (path: string): boolean =>
-  isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path);
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+
+const envValue = (env: Environment, key: string): string | undefined => {
+  const value = env[key];
+  return value === undefined || value === "" ? undefined : value;
+};
 
 export const resolveStateDir = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  path: Path.Path,
+  env: Environment,
 ): string => {
-  if (env["BALLAST_STATE_DIR"] !== undefined && env["BALLAST_STATE_DIR"] !== "") {
-    return resolve(env["BALLAST_STATE_DIR"]);
+  const stateDir = envValue(env, "BALLAST_STATE_DIR");
+  if (stateDir !== undefined) {
+    return path.resolve(stateDir);
   }
-  if (env["XDG_STATE_HOME"] !== undefined && env["XDG_STATE_HOME"] !== "") {
-    return join(env["XDG_STATE_HOME"], "ballast");
+  const xdgState = envValue(env, "XDG_STATE_HOME");
+  if (xdgState !== undefined) {
+    return path.join(xdgState, "ballast");
   }
   if (process.platform === "win32" && env["LOCALAPPDATA"] !== undefined) {
-    return join(env["LOCALAPPDATA"], "Ballast", "state");
+    return path.join(env["LOCALAPPDATA"], "Ballast", "state");
   }
-  return join(homedir(), ".local", "state", "ballast");
+  return path.join(env["HOME"] ?? "", ".local", "state", "ballast");
 };
 
 export const resolveDataDir = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  path: Path.Path,
+  env: Environment,
 ): string => {
-  if (env["BALLAST_DATA_DIR"] !== undefined && env["BALLAST_DATA_DIR"] !== "") {
-    return resolve(env["BALLAST_DATA_DIR"]);
+  const dataDir = envValue(env, "BALLAST_DATA_DIR");
+  if (dataDir !== undefined) {
+    return path.resolve(dataDir);
   }
-  if (env["XDG_DATA_HOME"] !== undefined && env["XDG_DATA_HOME"] !== "") {
-    return join(env["XDG_DATA_HOME"], "ballast");
+  const xdgData = envValue(env, "XDG_DATA_HOME");
+  if (xdgData !== undefined) {
+    return path.join(xdgData, "ballast");
   }
   if (process.platform === "win32" && env["LOCALAPPDATA"] !== undefined) {
-    return join(env["LOCALAPPDATA"], "Ballast");
+    return path.join(env["LOCALAPPDATA"], "Ballast");
   }
-  return join(homedir(), ".local", "share", "ballast");
+  return path.join(env["HOME"] ?? "", ".local", "share", "ballast");
 };
 
-const defaultWebDirs = (): ReadonlyArray<string> => [
-  fileURLToPath(new URL("../../../web/dist", import.meta.url)),
-  join(dirname(fileURLToPath(import.meta.url)), "web"),
-  join(process.cwd(), "web"),
-];
+const defaultWebDirs = (
+  path: Path.Path,
+  cwd: string,
+): Effect.Effect<ReadonlyArray<string>> =>
+  Effect.gen(function* () {
+    const moduleDir = yield* path.fromFileUrl(new URL(".", import.meta.url)).pipe(Effect.orDie);
+    return [
+      path.resolve(moduleDir, "../../../web/dist"),
+      path.join(moduleDir, "web"),
+      path.join(cwd, "web"),
+    ];
+  });
 
 export const resolveWebDir = (
   explicit: string | undefined,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): string | undefined => {
-  const configured = explicit ?? env["BALLAST_WEB_DIR"];
-  if (configured !== undefined && configured !== "") return resolve(configured);
-  const candidates = defaultWebDirs();
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
-};
+  env: Environment,
+  cwd: string,
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const configured = explicit ?? envValue(env, "BALLAST_WEB_DIR");
+    if (configured !== undefined) return path.resolve(configured);
+    const candidates = yield* defaultWebDirs(path, cwd);
+    for (const candidate of candidates) {
+      if (yield* fs.exists(candidate).pipe(Effect.orDie)) return candidate;
+    }
+    return candidates[0];
+  });
 
 export const parseServeOptions = (
   args: ReadonlyArray<string>,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): ServeOptions => {
-  let port = env["BALLAST_SERVICE_PORT"] === undefined
-    ? 0
-    : parsePort(env["BALLAST_SERVICE_PORT"]);
-  let dev = false;
-  let supervised = false;
-  let standalone = false;
-  let stateDir: string | undefined;
-  let dataDir: string | undefined;
-  let webDir: string | undefined;
-  let logDir = env["BALLAST_LOG_DIR"];
-  let cloudUrl = env["BALLAST_CLOUD_URL"];
+): Effect.Effect<
+  ServeOptions,
+  ServeConfigError,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cwd = yield* fs.realPath(".").pipe(Effect.orDie);
+    const env = yield* readEnvironment([
+      "BALLAST_STATE_DIR",
+      "BALLAST_DATA_DIR",
+      "BALLAST_WEB_DIR",
+      "BALLAST_LOG_DIR",
+      "BALLAST_CLOUD_URL",
+      "BALLAST_SERVICE_PORT",
+      "XDG_STATE_HOME",
+      "XDG_DATA_HOME",
+      "LOCALAPPDATA",
+      "HOME",
+    ]);
 
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    const value = (name: string): string => {
-      const next = args[index + 1];
-      if (next === undefined) {
-        throw new ServeConfigError({ message: `${name} requires a value` });
+    let port = env["BALLAST_SERVICE_PORT"] === undefined
+      ? 0
+      : parsePort(env["BALLAST_SERVICE_PORT"]);
+    let dev = false;
+    let supervised = false;
+    let stateDir: string | undefined;
+    let dataDir: string | undefined;
+    let webDir: string | undefined;
+    let logDir = env["BALLAST_LOG_DIR"];
+    let cloudUrl = env["BALLAST_CLOUD_URL"];
+
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      const value = (name: string): string => {
+        const next = args[index + 1];
+        if (next === undefined) {
+          throw new ServeConfigError({ message: `${name} requires a value` });
+        }
+        index++;
+        return next;
+      };
+      if (arg === "--port") {
+        port = parsePort(value("--port"));
+        continue;
       }
-      index++;
-      return next;
-    };
-    if (arg === "--port") {
-      port = parsePort(value("--port"));
-      continue;
+      if (arg !== undefined && arg.startsWith("--port=")) {
+        port = parsePort(arg.slice("--port=".length));
+        continue;
+      }
+      if (arg === "--dev") {
+        dev = true;
+        continue;
+      }
+      if (arg === "--supervised") {
+        supervised = true;
+        continue;
+      }
+      if (arg === "--state-dir") {
+        stateDir = path.resolve(value("--state-dir"));
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--state-dir=")) {
+        stateDir = path.resolve(arg.slice("--state-dir=".length));
+        continue;
+      }
+      if (arg === "--data-dir") {
+        dataDir = path.resolve(value("--data-dir"));
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--data-dir=")) {
+        dataDir = path.resolve(arg.slice("--data-dir=".length));
+        continue;
+      }
+      if (arg === "--web-dir") {
+        webDir = path.resolve(value("--web-dir"));
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--web-dir=")) {
+        webDir = path.resolve(arg.slice("--web-dir=".length));
+        continue;
+      }
+      if (arg === "--log-dir") {
+        logDir = path.resolve(value("--log-dir"));
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--log-dir=")) {
+        logDir = path.resolve(arg.slice("--log-dir=".length));
+        continue;
+      }
+      if (arg === "--cloud") {
+        cloudUrl = value("--cloud");
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--cloud=")) {
+        cloudUrl = arg.slice("--cloud=".length);
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--")) {
+        throw new ServeConfigError({ message: `Unknown serve option "${arg}"` });
+      }
+      if (arg !== undefined) {
+        throw new ServeConfigError({ message: `Unexpected argument "${arg}"` });
+      }
     }
-    if (arg !== undefined && arg.startsWith("--port=")) {
-      port = parsePort(arg.slice("--port=".length));
-      continue;
-    }
-    if (arg === "--dev") {
-      dev = true;
-      continue;
-    }
-    if (arg === "--supervised") {
-      supervised = true;
-      continue;
-    }
-    if (arg === "--standalone") {
-      standalone = true;
-      continue;
-    }
-    if (arg === "--state-dir") {
-      stateDir = resolve(value("--state-dir"));
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--state-dir=")) {
-      stateDir = resolve(arg.slice("--state-dir=".length));
-      continue;
-    }
-    if (arg === "--data-dir") {
-      dataDir = resolve(value("--data-dir"));
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--data-dir=")) {
-      dataDir = resolve(arg.slice("--data-dir=".length));
-      continue;
-    }
-    if (arg === "--web-dir") {
-      webDir = resolve(value("--web-dir"));
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--web-dir=")) {
-      webDir = resolve(arg.slice("--web-dir=".length));
-      continue;
-    }
-    if (arg === "--log-dir") {
-      logDir = resolve(value("--log-dir"));
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--log-dir=")) {
-      logDir = resolve(arg.slice("--log-dir=".length));
-      continue;
-    }
-    if (arg === "--cloud") {
-      cloudUrl = value("--cloud");
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--cloud=")) {
-      cloudUrl = arg.slice("--cloud=".length);
-      continue;
-    }
-    if (arg !== undefined && arg.startsWith("--")) {
-      throw new ServeConfigError({ message: `Unknown serve option "${arg}"` });
-    }
-    if (arg !== undefined) {
-      throw new ServeConfigError({ message: `Unexpected argument "${arg}"` });
-    }
-  }
 
-  return {
-    port,
-    dev,
-    supervised,
-    standalone,
-    stateDir: stateDir ?? resolveStateDir(env),
-    dataDir: dataDir ?? resolveDataDir(env),
-    webDir: resolveWebDir(webDir, env),
-    logDir: logDir === undefined || logDir === "" ? undefined : resolve(logDir),
-    cloudUrl: cloudUrl === undefined || cloudUrl === "" ? undefined : cloudUrl,
-  };
-};
+    return {
+      port,
+      dev,
+      supervised,
+      stateDir: stateDir ?? resolveStateDir(path, env),
+      dataDir: dataDir ?? resolveDataDir(path, env),
+      webDir: yield* resolveWebDir(webDir, env, cwd),
+      logDir: logDir === undefined || logDir === "" ? undefined : path.resolve(logDir),
+      cloudUrl: cloudUrl === undefined || cloudUrl === "" ? undefined : cloudUrl,
+    };
+  }).pipe(
+    Effect.catchCause((cause) => {
+      const error = Cause.squash(cause);
+      return Effect.fail(
+        error instanceof ServeConfigError
+          ? error
+          : new ServeConfigError({
+              message: error instanceof Error ? error.message : String(error),
+            }),
+      );
+    }),
+  );
 
 export interface ServiceRegistration {
   readonly schemaVersion: number;
@@ -212,60 +283,88 @@ export interface ServiceLock {
   readonly startedAt: number;
 }
 
-export const serviceJsonPath = (stateDir: string): string => join(stateDir, "service.json");
-export const serviceLockPath = (stateDir: string): string => join(stateDir, "service.lock");
+export const serviceJsonPath = (path: Path.Path, stateDir: string): string =>
+  path.join(stateDir, "service.json");
+export const serviceLockPath = (path: Path.Path, stateDir: string): string =>
+  path.join(stateDir, "service.lock");
 
-export const makeServiceToken = (): string => randomBytes(32).toString("base64url");
+export const makeServiceToken = (): Effect.Effect<string, never, Crypto.Crypto> =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
+    return Base64Url.encode(bytes);
+  });
 
-export const readServiceRegistration = async (
+export const readServiceRegistration = (
   stateDir: string,
-): Promise<ServiceRegistration | undefined> => {
-  const value = await readJson(serviceJsonPath(stateDir));
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record["url"] !== "string" ||
-    typeof record["token"] !== "string" ||
-    typeof record["pid"] !== "number" ||
-    record["apiVersion"] !== 1 ||
-    record["name"] !== "ballast-agent"
-  ) {
-    return undefined;
-  }
-  return value as ServiceRegistration;
-};
+): Effect.Effect<
+  ServiceRegistration | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const value = yield* readJson(serviceJsonPath(path, stateDir)).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    if (value === undefined) return undefined;
+    if (typeof value !== "object" || value === null) return undefined;
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record["url"] !== "string" ||
+      typeof record["token"] !== "string" ||
+      typeof record["pid"] !== "number" ||
+      record["apiVersion"] !== 1 ||
+      record["name"] !== "ballast-agent"
+    ) {
+      return undefined;
+    }
+    return value as ServiceRegistration;
+  });
 
-export const writeServiceRegistration = async (
+export const writeServiceRegistration = (
   stateDir: string,
   registration: ServiceRegistration,
-): Promise<void> => {
-  await ensureDir(stateDir, 0o700);
-  await writeJsonAtomic(serviceJsonPath(stateDir), registration, 0o600);
-};
+): Effect.Effect<
+  void,
+  never,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    yield* ensureDir(stateDir, 0o700);
+    yield* writeJsonAtomic(serviceJsonPath(path, stateDir), registration, 0o600);
+  }).pipe(Effect.orDie);
 
-export const writeServiceLock = async (stateDir: string, pid: number): Promise<void> => {
-  await ensureDir(stateDir, 0o700);
-  await writeJsonAtomic(serviceLockPath(stateDir), { pid, startedAt: Date.now() }, 0o600);
-};
+export const readServiceLock = (
+  stateDir: string,
+): Effect.Effect<ServiceLock | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const value = yield* readJson(serviceLockPath(path, stateDir)).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    if (typeof value !== "object" || value === null) return undefined;
+    const record = value as Record<string, unknown>;
+    return typeof record["pid"] === "number"
+      ? {
+          pid: record["pid"],
+          startedAt:
+            typeof record["startedAt"] === "number" ? record["startedAt"] : 0,
+        }
+      : undefined;
+  });
 
-export const readServiceLock = async (stateDir: string): Promise<ServiceLock | undefined> => {
-  const value = await readJson(serviceLockPath(stateDir));
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  return typeof record["pid"] === "number"
-    ? { pid: record["pid"], startedAt: typeof record["startedAt"] === "number" ? record["startedAt"] : 0 }
-    : undefined;
-};
-
-export const clearServiceFiles = (stateDir: string): Effect.Effect<void> =>
-  Effect.tryPromise({
-    try: async () => {
-      await removeFile(serviceJsonPath(stateDir));
-      await removeFile(serviceLockPath(stateDir));
-    },
-    catch: () => undefined,
+/** Remove service.json and service.lock, but only while they still name this process. */
+export const clearServiceFiles = (
+  stateDir: string,
+): Effect.Effect<void, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const registration = yield* readServiceRegistration(stateDir);
+    if (registration?.pid === process.pid) yield* removeFile(serviceJsonPath(path, stateDir));
+    const lock = yield* readServiceLock(stateDir);
+    if (lock?.pid === process.pid) yield* removeFile(serviceLockPath(path, stateDir));
   }).pipe(Effect.ignore);
 
 export const processAlive = (pid: number): boolean => {
@@ -296,32 +395,73 @@ export const probeHealth = async (url: string): Promise<boolean> => {
   }
 };
 
-/** Acquire the single-service lock, replacing a stale one. */
-export const acquireLock = async (stateDir: string): Promise<void> => {
-  await ensureDir(stateDir, 0o700);
-  const existing = await readServiceLock(stateDir);
-  if (existing !== undefined && processAlive(existing.pid)) {
-    const registration = await readServiceRegistration(stateDir);
-    const healthy =
-      registration !== undefined && (await probeHealth(registration.url));
-    if (healthy) {
-      throw new ServeConfigError({
-        message: `A Ballast service is already running (pid ${existing.pid}).`,
-      });
+/** How long a live lock holder may go without registering before its pid is presumed reused. */
+const LOCK_STARTUP_GRACE_MS = 5 * 60_000;
+
+/**
+ * Acquire the single-service lock with an exclusive create. A lock whose pid
+ * is alive belongs to a running or still-starting service (service.json is
+ * written only after warm-up), so it is never taken over; only a dead pid, or
+ * a live one that never registered within the grace period (pid reuse), is
+ * treated as stale.
+ */
+export const acquireLock = (
+  stateDir: string,
+): Effect.Effect<
+  void,
+  ServeConfigError,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* ensureDir(stateDir, 0o700).pipe(Effect.orDie);
+    const lockPath = serviceLockPath(path, stateDir);
+    const create = fs
+      .writeFileString(lockPath, JSON.stringify({ pid: process.pid, startedAt: Date.now() }) + "\n", {
+        flag: "wx",
+        mode: 0o600,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (yield* create) return;
+      const existing = yield* readServiceLock(stateDir);
+      if (existing !== undefined && existing.pid !== process.pid && processAlive(existing.pid)) {
+        const registration = yield* readServiceRegistration(stateDir);
+        const registered = registration !== undefined && registration.pid === existing.pid;
+        const healthy = registered && (yield* Effect.promise(() => probeHealth(registration.url)));
+        const starting = !registered && Date.now() - existing.startedAt < LOCK_STARTUP_GRACE_MS;
+        if (healthy || starting) {
+          return yield* Effect.fail(
+            new ServeConfigError({
+              message: `A Ballast service is already ${healthy ? "running" : "starting"} (pid ${existing.pid}).`,
+            }),
+          );
+        }
+      }
+      yield* removeFile(lockPath).pipe(Effect.ignore);
     }
+    return yield* Effect.fail(
+      new ServeConfigError({ message: "Could not acquire the service lock at " + lockPath }),
+    );
+  });
+
+const constantTimeEqual = (left: string, right: string): boolean => {
+  const a = new TextEncoder().encode(left);
+  const b = new TextEncoder().encode(right);
+  if (a.byteLength !== b.byteLength) return false;
+  let difference = 0;
+  for (let index = 0; index < a.byteLength; index++) {
+    difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
   }
-  await writeServiceLock(stateDir, process.pid);
+  return difference === 0;
 };
 
-export const tokenEquals = (left: string, right: string): boolean => {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
-};
-
-/** Stable hash used for cookie/session comparisons without storing the token. */
-export const tokenDigest = (token: string): string =>
-  createHash("sha256").update(token).digest("base64url");
+export const tokenEquals = constantTimeEqual;
 
 export const hostAllowed = (host: string | undefined, port: number, dev: boolean): boolean => {
   if (host === undefined || host === "") return false;
@@ -353,36 +493,34 @@ export const originAllowed = (
   return allowed.includes(origin);
 };
 
-export const resolveServiceVersion = async (
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): Promise<string> => {
-  if (env["BALLAST_SERVICE_VERSION"] !== undefined && env["BALLAST_SERVICE_VERSION"] !== "") {
-    return env["BALLAST_SERVICE_VERSION"];
-  }
-  const candidates = [
-    join(dirname(fileURLToPath(import.meta.url)), "version.json"),
-    join(fileURLToPath(new URL("../..", import.meta.url)), "version.json"),
-  ];
-  for (const candidate of candidates) {
-    const value = await readJson(candidate);
-    if (typeof value === "object" && value !== null) {
-      const version = (value as { version?: unknown }).version;
-      if (typeof version === "string" && version !== "") return version;
+export const resolveServiceVersion = (): Effect.Effect<
+  string,
+  never,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const env = yield* readEnvironment(["BALLAST_SERVICE_VERSION"]);
+    const configured = envValue(env, "BALLAST_SERVICE_VERSION");
+    if (configured !== undefined) return configured;
+    const moduleDir = yield* path.fromFileUrl(new URL(".", import.meta.url)).pipe(Effect.orDie);
+    const candidates = [
+      path.join(moduleDir, "version.json"),
+      path.join(moduleDir, "..", "version.json"),
+    ];
+    for (const candidate of candidates) {
+      const value = yield* readJson(candidate).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      if (typeof value === "object" && value !== null) {
+        const version = (value as { version?: unknown }).version;
+        if (typeof version === "string" && version !== "") return version;
+      }
     }
-  }
-  return AGENT_VERSION;
-};
+    return AGENT_VERSION;
+  });
 
-export const machineName = (): string => hostname() || basename(homedir());
-
-export const nodeHttpServerOptions = (
-  options: ServeOptions,
-): { readonly host: "127.0.0.1"; readonly port: number } => ({
-  host: "127.0.0.1",
-  port: options.port,
-});
-
-export const httpServerFactory = () => createServer();
+export const machineName = (): string => hostname() || "machine";
 
 export const isAbsoluteProjectPath = isAbsolutePath;
 export const pathExists = fileExists;

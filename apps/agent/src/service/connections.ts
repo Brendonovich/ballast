@@ -1,5 +1,10 @@
-import { createHash } from "node:crypto";
-import { join } from "node:path";
+import * as Crypto from "effect/Crypto";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Stdio from "effect/Stdio";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import * as Base64Url from "effect/encoding/Base64Url";
+import * as Hex from "effect/encoding/Hex";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
@@ -16,17 +21,16 @@ import { FetchHttpClient } from "effect/http";
 import { Socket } from "effect/socket";
 import {
   agentError,
-  fakeFields,
-  obsFields,
+  connectionIntegrations,
   type AgentError,
   type ConnectionApproval,
   type ConnectionAuth,
   type ConnectionField,
+  type ConnectionIntegration,
   type ConnectionMode,
   type ConnectionSummary,
   type ConnectionValue,
   type PermissionStatus,
-  type ScriptRef,
 } from "@ballast/agent-protocol";
 import type { Manifest } from "@ballast/core";
 import { RequestSchemas } from "@ballast/module-obs";
@@ -56,7 +60,7 @@ import type { WebhookRuntime } from "@ballast/module-http/driver";
 import type { WebhookDefinition } from "@ballast/module-http";
 import * as Twitch from "@ballast/module-twitch";
 import { handleFakeRequest } from "../fake.ts";
-import { resolveObsConnectionConfig } from "../connection-config.ts";
+import { obsPasswordEnvKey, resolveObsConnectionConfig } from "../connection-config.ts";
 import type { ConnectionOptions } from "../connection-config.ts";
 import { startObsDriver } from "../obs-driver.ts";
 import type { ObsDriver } from "../obs-driver.ts";
@@ -64,8 +68,10 @@ import { startTwitchAuth } from "../twitch/auth.ts";
 import {
   readStoredTwitchAccount,
   resolveTwitchAppConfig,
+  twitchEnvKeys,
   writeStoredTwitchAccount,
 } from "../twitch/config.ts";
+import { readEnvironment } from "./config.ts";
 import { missingScopes, subscriptionSpecs } from "../twitch/conditions.ts";
 import { TwitchTransportError } from "../twitch/errors.ts";
 import { startCloudTwitchTransport } from "../twitch/cloud.ts";
@@ -89,9 +95,39 @@ export interface ActiveScript {
 export interface ReconcileInput {
   /** Scripts with a live worker generation. */
   readonly running: ReadonlyArray<ActiveScript>;
-  /** Every discovered script with a current manifest, for `usedBy` and scopes. */
+  /** Every discovered script with a current manifest, for bindings and scopes. */
   readonly known: ReadonlyArray<ActiveScript>;
+  /** projectId -> "integration/slot" -> connection instance id. */
+  readonly bindings?: ReadonlyMap<string, ReadonlyMap<string, string>>;
 }
+
+const bindingFor = (
+  input: ReconcileInput,
+  entry: ActiveScript,
+  integration: string,
+  slot: string,
+): string =>
+  input.bindings?.get(entry.projectId)?.get(integration + "/" + slot) ??
+  integration + "/" + slot;
+
+const slotsFor = (
+  input: ReconcileInput,
+  entry: ActiveScript,
+  record: Pick<ConnectionRecord, "id" | "integration">,
+): ReadonlyArray<string> =>
+  entry.manifest.connections
+    .filter(
+      (connection) =>
+        connection.integration === record.integration &&
+        bindingFor(input, entry, connection.integration, connection.slot) === record.id,
+    )
+    .map((connection) => connection.slot);
+
+const usesConnection = (
+  input: ReconcileInput,
+  entry: ActiveScript,
+  record: Pick<ConnectionRecord, "id" | "integration">,
+): boolean => slotsFor(input, entry, record).length > 0;
 
 interface ConnectionRecord {
   readonly id: string;
@@ -160,8 +196,10 @@ interface StoredSecrets {
   readonly secrets: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
-const connectionsJsonPath = (dataDir: string): string => join(dataDir, "connections.json");
-const secretsJsonPath = (dataDir: string): string => join(dataDir, "secrets.json");
+const connectionsJsonPath = (path: Path.Path, dataDir: string): string =>
+  path.join(dataDir, "connections.json");
+const secretsJsonPath = (path: Path.Path, dataDir: string): string =>
+  path.join(dataDir, "secrets.json");
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
@@ -172,148 +210,37 @@ const splitId = (id: string): { integration: string; slot: string } | undefined 
   return { integration: id.slice(0, index), slot: id.slice(index + 1) };
 };
 
-const titleOf = (integration: string): string => {
-  if (integration === "obs") return "OBS Studio";
-  if (integration === "twitch") return "Twitch";
-  if (integration === "fake") return "Fake";
-  if (integration === "vts") return "VTube Studio";
-  if (integration === "keyboard") return "Keyboard";
-  if (integration === "midi") return "MIDI";
-  if (integration === "websocket") return "WebSocket";
-  if (integration === "http") return "HTTP";
-  return integration;
-};
+const integrationDefinition = (integration: string): ConnectionIntegration | undefined =>
+  connectionIntegrations.find((entry) => entry.integration === integration);
+
+const titleOf = (integration: string): string =>
+  integrationDefinition(integration)?.title ?? integration;
 
 const locationOf = (integration: string): ConnectionSummary["location"] =>
-  integration === "twitch" || integration === "http" ? "either" : "local";
+  integrationDefinition(integration)?.location ?? "local";
 
-const textField = (
-  key: string,
-  label: string,
-  description?: string,
-): ConnectionField => ({
-  key,
-  label,
-  kind: "text",
-  required: false,
-  ...(description === undefined ? {} : { description }),
-});
-
-const secretField = (key: string, label: string, description?: string): ConnectionField => ({
-  key,
-  label,
-  kind: "secret",
-  required: false,
-  ...(description === undefined ? {} : { description }),
-});
-
-const selectField = (
-  key: string,
-  label: string,
-  options: ReadonlyArray<string>,
-  description?: string,
-): ConnectionField => ({
-  key,
-  label,
-  kind: "select",
-  required: false,
-  options: [...options],
-  ...(description === undefined ? {} : { description }),
-});
-
-const fieldsFor = (integration: string): ReadonlyArray<ConnectionField> => {
-  if (integration === "obs") return obsFields;
-  if (integration === "fake") return fakeFields;
-  if (integration === "vts") {
-    return [
-      textField("url", "WebSocket URL", "Defaults to ws://127.0.0.1:8001."),
-      textField("pluginName", "Plugin name", "Shown in the VTube Studio approval dialog."),
-      textField("pluginDeveloper", "Plugin developer"),
-      textField("pluginIcon", "Plugin icon (base64, 128x128)"),
-    ];
-  }
-  if (integration === "keyboard") {
-    return [
-      selectField("permission", "macOS permission", ["unknown", "granted", "denied"], "Provided by the shell where it can query Accessibility."),
-    ];
-  }
-  if (integration === "midi") {
-    return [
-      textField("input", "Input port", "Leave empty when the script only sends MIDI."),
-      textField("output", "Output port", "Default output for send requests."),
-    ];
-  }
-  if (integration === "websocket") {
-    return [
-      selectField("mode", "Mode", ["auto", "client", "server"]),
-      textField("url", "Client URL", "ws:// or wss://; required for a client slot."),
-      textField("headers", "Headers (JSON)", 'For example {"authorization":"Bearer ..."}'),
-      secretField("headersSecret", "Secret headers (JSON)", "Merged over the plain headers."),
-      textField("subprotocols", "Subprotocols (comma separated)"),
-      textField("serverHost", "Server host", "Defaults to 127.0.0.1."),
-      textField("serverPort", "Server port", "Required for a server slot."),
-      textField("serverPath", "Server path", "Defaults to every path."),
-    ];
-  }
-  if (integration === "http") {
-    return [
-      textField("baseUrl", "Base URL", "Required for HTTP client requests."),
-      textField("headers", "Default headers (JSON)"),
-      secretField("headersSecret", "Secret headers (JSON)", "Merged over the plain headers."),
-      selectField("authType", "Auth", ["none", "bearer", "basic", "header"]),
-      secretField("authToken", "Bearer token"),
-      textField("authUsername", "Basic auth username"),
-      secretField("authPassword", "Basic auth password"),
-      textField("authHeaderName", "Auth header name"),
-      secretField("authHeaderValue", "Auth header value"),
-      textField("allowedHosts", "Allowed hosts (comma separated)", "The manifest host scopes are always enforced too."),
-      selectField("webhookTransport", "Webhook transport", ["local", "cloud"]),
-      textField("webhookHookId", "Cloud hook id", "Optional stable id; generated from the slot otherwise."),
-      textField("webhookHost", "Webhook host", "Defaults to 127.0.0.1."),
-      textField("webhookPort", "Webhook port", "Defaults to 8787."),
-      textField("webhookPath", "Webhook path", "Defaults to /hooks/<slot>."),
-      selectField("webhookVerification", "Webhook verification", ["none", "shared-secret", "hmac-sha256"]),
-      textField("webhookHeader", "Verification header"),
-      secretField("webhookSecret", "Verification secret"),
-      textField("webhookTimestampHeader", "Timestamp header"),
-      textField("webhookTolerance", "Timestamp tolerance (seconds)"),
-      textField("webhookResponseStatus", "Static response status"),
-      textField("webhookResponseBody", "Static response body"),
-      textField("webhookMaxAgeMs", "Max event age (ms)"),
-      selectField("webhookOnStale", "Stale events", ["drop", "deliver"]),
-    ];
-  }
-  return [
-    ...[
-      {
-        key: "clientId",
-        label: "Client ID",
-        kind: "text" as const,
-        required: false,
-        description: "From your Twitch application; used in local-app mode.",
-      },
-      {
-        key: "clientSecret",
-        label: "Client secret",
-        kind: "secret" as const,
-        required: false,
-        description: "Only used in local-app mode. Never leaves this machine.",
-      },
-      {
-        key: "connection",
-        label: "Cloud connection",
-        kind: "text" as const,
-        required: false,
-        description: "Cloud Twitch connection id or login, for cloud mode.",
-      },
-    ],
-  ];
-};
+const fieldsFor = (integration: string): ReadonlyArray<ConnectionField> =>
+  integrationDefinition(integration)?.fields ?? [];
 
 export interface ConnectionManagerService {
+  /** Integration descriptors for the Add connection dialog. */
+  readonly integrations: () => ReadonlyArray<ConnectionIntegration>;
   readonly summaries: () => Effect.Effect<ReadonlyArray<ConnectionSummary>>;
   readonly summary: (connectionId: string) => Effect.Effect<ConnectionSummary | undefined>;
   readonly require: (connectionId: string) => Effect.Effect<ConnectionSummary, AgentError>;
+  readonly create: (input: {
+    readonly integration: string;
+    readonly label: string;
+    readonly config: Readonly<Record<string, string>>;
+    readonly mode?: ConnectionMode;
+  }) => Effect.Effect<ConnectionSummary, AgentError>;
+  readonly update: (input: {
+    readonly id: string;
+    readonly label?: string;
+    readonly config?: Readonly<Record<string, string>>;
+    readonly mode?: ConnectionMode;
+  }) => Effect.Effect<ConnectionSummary, AgentError>;
+  readonly remove: (id: string) => Effect.Effect<void, AgentError>;
   readonly configure: (input: {
     readonly connectionId: string;
     readonly values: ReadonlyArray<{ readonly key: string; readonly value: string }>;
@@ -338,6 +265,8 @@ export interface ConnectionManagerService {
   readonly request: (input: {
     readonly integration: string;
     readonly slot: string;
+    /** Resolve a bound project slot to a service-level instance. */
+    readonly connectionId?: string;
     readonly request: string;
     readonly input: unknown;
   }) => Effect.Effect<unknown, string>;
@@ -345,6 +274,8 @@ export interface ConnectionManagerService {
     readonly integration: string;
     readonly slot: string;
     readonly source: string;
+    /** The bound connection instance, when the slot has one. */
+    readonly connectionId?: string;
   }) => Effect.Effect<ReadonlyArray<string>, AgentError>;
   readonly close: () => Effect.Effect<void>;
 }
@@ -381,14 +312,24 @@ const noneRecord = (
   detailText: undefined,
 });
 
-const loadStored = async (
+const loadStored = (
   dataDir: string,
-): Promise<{
-  records: ReadonlyArray<ConnectionRecord>;
-  secrets: Readonly<Record<string, Readonly<Record<string, string>>>>;
-}> => {
-  const connectionsValue = await readJson(connectionsJsonPath(dataDir));
-  const secretsValue = await readJson(secretsJsonPath(dataDir));
+): Effect.Effect<
+  {
+    records: ReadonlyArray<ConnectionRecord>;
+    secrets: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  },
+  never,
+  FileSystem.FileSystem | Path.Path
+> =>
+  Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const connectionsValue = yield* readJson(connectionsJsonPath(path, dataDir)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  const secretsValue = yield* readJson(secretsJsonPath(path, dataDir)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   const records: Array<ConnectionRecord> = [];
   if (typeof connectionsValue === "object" && connectionsValue !== null) {
     const list = (connectionsValue as { connections?: unknown }).connections;
@@ -419,6 +360,7 @@ const loadStored = async (
             : titleOf(entry["integration"]);
         records.push({
           ...noneRecord(entry["integration"], entry["slot"]),
+          id: entry["id"],
           mode,
           values,
           label: storedLabel,
@@ -441,7 +383,7 @@ const loadStored = async (
     }
   }
   return { records, secrets };
-};
+  });
 
 export interface ConnectionManagerOptions {
   readonly dataDir: string;
@@ -456,14 +398,35 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const logs = yield* Logs;
       const router = yield* EventRouter;
       const cloud = yield* CloudLink;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
       const context = yield* Effect.context<never>();
+      const platform = yield* Effect.context<
+        | ChildProcessSpawner
+        | Crypto.Crypto
+        | FileSystem.FileSystem
+        | Path.Path
+        | Stdio.Stdio
+      >();
+      const provide = <A, E>(
+        effect: Effect.Effect<
+          A,
+          E,
+          ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Stdio.Stdio
+        >,
+      ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
       const parentScope = yield* Effect.scope;
       const authScopes = new Set<Scope.Closeable>();
 
-      const loaded = yield* Effect.tryPromise({
-        try: () => loadStored(options.dataDir),
-        catch: () => ({ records: [], secrets: {} }),
-      });
+      const loaded = yield* loadStored(options.dataDir).pipe(
+        Effect.catch(() =>
+          Effect.succeed({
+            records: [] as ReadonlyArray<ConnectionRecord>,
+            secrets: {} as Readonly<Record<string, Readonly<Record<string, string>>>>,
+          }),
+        ),
+      );
 
       const state = yield* Ref.make<ReadonlyMap<string, ConnectionRecord>>(
         new Map(
@@ -511,26 +474,33 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         Effect.gen(function* () {
           const records = yield* Ref.get(state);
           const secrets = yield* Ref.get(secretState);
-          yield* Effect.tryPromise({
-            try: async () => {
-              const stored: StoredConnections = {
-                version: 1,
-                connections: [...records.values()].map((record) => ({
-                  id: record.id,
-                  integration: record.integration,
-                  slot: record.slot,
-                  mode: record.mode,
-                  values: record.values,
-                  label: record.label,
-                })),
-              };
-              await ensureDir(options.dataDir);
-              await writeJsonAtomic(connectionsJsonPath(options.dataDir), stored, 0o600);
-              const secretFile: StoredSecrets = { version: 1, secrets };
-              await writeJsonAtomic(secretsJsonPath(options.dataDir), secretFile, 0o600);
-            },
-            catch: (cause) => errorMessage(cause),
-          }).pipe(
+          yield* provide(Effect.gen(function* () {
+            const stored: StoredConnections = {
+              version: 1,
+              connections: [...records.values()].map((record) => ({
+                id: record.id,
+                integration: record.integration,
+                slot: record.slot,
+                mode: record.mode,
+                values: record.values,
+                label: record.label,
+              })),
+            };
+            yield* ensureDir(options.dataDir);
+            yield* writeJsonAtomic(
+              connectionsJsonPath(path, options.dataDir),
+              stored,
+              0o600,
+            );
+            const secretFile: StoredSecrets = { version: 1, secrets };
+            yield* writeJsonAtomic(
+              secretsJsonPath(path, options.dataDir),
+              secretFile,
+              0o600,
+            );
+          })).pipe(
+            Effect.mapError(errorMessage),
+          ).pipe(
             Effect.catch((reason) =>
               logs.write({
                 level: "error",
@@ -593,7 +563,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               Effect.asVoid,
             );
 
-      const requiredFieldsSet = (record: ConnectionRecord): boolean => {
+      const requiredFieldsSet = (
+        record: ConnectionRecord,
+        mode: ConnectionMode = record.mode,
+      ): boolean => {
         const fields = fieldsFor(record.integration);
         const valueOf = (key: string): string | undefined =>
           record.values[key] ?? record.secrets[key];
@@ -601,6 +574,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           return (valueOf("url") ?? "").length > 0;
         }
         if (record.integration === "fake") return true;
+        // Cloud mode uses the machine's linked Twitch account; client id and
+        // secret are only needed for a local-app OAuth flow.
+        if (record.integration === "twitch" && mode === "cloud") return true;
         return fields.some((field) => field.required && (valueOf(field.key) ?? "") === "")
           ? false
           : true;
@@ -622,7 +598,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               entry.manifest.topics
                 .filter(
                   (topic) =>
-                    topic.integration === record.integration && topic.slot === record.slot,
+                    topic.integration === record.integration &&
+                    bindingFor(input, entry, topic.integration, topic.slot) === record.id,
                 )
                 .flatMap((topic) => topic.scopes)
                 .concat(
@@ -630,7 +607,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                     .filter(
                       (request) =>
                         request.integration === record.integration &&
-                        request.slot === record.slot,
+                        bindingFor(input, entry, request.integration, request.slot) ===
+                          record.id,
                     )
                     .flatMap((request) => request.scopes),
                 ),
@@ -664,15 +642,17 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
 
       const summaryOf = (record: ConnectionRecord): ConnectionSummary => {
         const input = Effect.runSync(Ref.get(lastInput));
-        const usedBy: Array<ScriptRef> = input.known
-          .filter((entry) =>
-            entry.manifest.connections.some(
-              (connection) =>
-                connection.integration === record.integration &&
-                connection.slot === record.slot,
-            ),
-          )
-          .map((entry) => ({ projectId: entry.projectId, scriptId: entry.scriptId }));
+        const boundBy: Array<{ readonly projectId: string; readonly slot: string }> = [];
+        for (const entry of input.known) {
+          for (const connection of entry.manifest.connections) {
+            const explicit = input.bindings
+              ?.get(entry.projectId)
+              ?.get(connection.integration + "/" + connection.slot);
+            if (explicit === record.id) {
+              boundBy.push({ projectId: entry.projectId, slot: connection.slot });
+            }
+          }
+        }
         const required = scopesRequiredFor(record);
         const granted =
           record.integration === "twitch"
@@ -713,7 +693,6 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         return {
           id: record.id,
           integration: record.integration,
-          slot: record.slot,
           title: titleOf(record.integration),
           label: record.label,
           location: locationOf(record.integration),
@@ -722,7 +701,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           fields,
           values,
           scopes: { granted, required, missing },
-          usedBy,
+          boundBy,
           ...(record.account === undefined ? {} : { account: record.account }),
           ...(detail === undefined ? {} : { detail }),
           ...(record.lastError === undefined ? {} : { lastError: record.lastError }),
@@ -734,6 +713,24 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             record.integration === "twitch" &&
             (record.account === undefined || missing.length > 0 || record.needsReauth),
         };
+      };
+
+      const callbackPortEnv = yield* readEnvironment(["BALLAST_TWITCH_CALLBACK_PORT"]);
+      const integrations = (): ReadonlyArray<ConnectionIntegration> => {
+        const configured = callbackPortEnv["BALLAST_TWITCH_CALLBACK_PORT"];
+        const port =
+          configured === undefined || configured.trim() === ""
+            ? undefined
+            : Number(configured);
+        const redirectUrl =
+          port !== undefined && Number.isInteger(port) && port > 0 && port <= 65_535
+            ? "http://127.0.0.1:" + port + "/callback"
+            : undefined;
+        return connectionIntegrations.map((entry) =>
+          entry.integration === "twitch" && redirectUrl !== undefined
+            ? { ...entry, redirectUrl }
+            : entry,
+        );
       };
 
       const summaries = (): Effect.Effect<ReadonlyArray<ConnectionSummary>> =>
@@ -768,17 +765,19 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             : record.integration === "twitch"
               ? record.secrets["clientSecret"]
               : undefined;
+        const key = record.integration + "/" + record.slot;
         return {
           connections: new Map<string, string>(
-            primary === undefined || primary === "" ? [] : [[record.id, primary]],
+            primary === undefined || primary === "" ? [] : [[key, primary]],
           ),
           secrets: new Map<string, string>(
-            secret === undefined || secret === "" ? [] : [[record.id, secret]],
+            secret === undefined || secret === "" ? [] : [[key, secret]],
           ),
         };
       };
 
       const twitchAccountSlots = (
+        input: ReconcileInput,
         extra: ReadonlyArray<{
           readonly slot: string;
           readonly identity: TwitchIdentity;
@@ -787,10 +786,19 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         Effect.gen(function* () {
           const map = new Map<string, string>();
           const items = yield* records();
+          const entries = [...input.known, ...input.running];
           for (const item of items) {
             if (item.integration !== "twitch") continue;
-            if (item.identity !== undefined) map.set(item.slot, item.identity.userId);
-            else if (item.account !== undefined) map.set(item.slot, item.account.id);
+            const userId = item.identity?.userId ?? item.account?.id;
+            if (userId === undefined) continue;
+            // Legacy records are named by their slot. Instances are opaque, so
+            // resolve the project requirement slots explicitly bound to them.
+            map.set(item.slot, userId);
+            for (const entry of entries) {
+              for (const slot of slotsFor(input, entry, item)) {
+                map.set(slot, userId);
+              }
+            }
           }
           for (const item of extra) map.set(item.slot, item.identity.userId);
           return map;
@@ -805,23 +813,16 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           const specs: Array<TwitchSubscriptionSpec> = [];
           const seen = new Set<string>();
           for (const entry of input.running) {
-            if (
-              !entry.manifest.connections.some(
-                (connection) =>
-                  connection.integration === record.integration &&
-                  connection.slot === record.slot,
-              )
-            ) {
-              continue;
-            }
-            const next = yield* subscriptionSpecs(entry.manifest, record.slot, accountSlots).pipe(
-              Effect.mapError((error) => agentError("upstream", error.message)),
-            );
-            for (const spec of next) {
-              const key = subscriptionKey(spec);
-              if (seen.has(key)) continue;
-              seen.add(key);
-              specs.push(spec);
+            for (const slot of slotsFor(input, entry, record)) {
+              const next = yield* subscriptionSpecs(entry.manifest, slot, accountSlots).pipe(
+                Effect.mapError((error) => agentError("upstream", error.message)),
+              );
+              for (const spec of next) {
+                const key = subscriptionKey(spec);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                specs.push(spec);
+              }
             }
           }
           return specs;
@@ -914,10 +915,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             }));
             continue;
           }
-          const stored = yield* Effect.tryPromise({
-            try: () => readStoredTwitchAccount(record.slot, options.dataDir),
-            catch: (cause) => new Error(errorMessage(cause)),
-          }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          const stored = yield* provide(readStoredTwitchAccount(record.slot, options.dataDir)).pipe(
+            Effect.mapError((cause) => new Error(errorMessage(cause))),
+            Effect.catch(() => Effect.succeed(undefined)),
+          );
           yield* updateRecord(record.id, (current) => ({
             ...current,
             grantedScopes: stored?.scopes ?? [],
@@ -961,14 +962,14 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
 
           const started = yield* Effect.gen(function* () {
             if (mode === "local-app") {
-              const stored = yield* Effect.tryPromise({
-                try: () => readStoredTwitchAccount(record.slot, options.dataDir),
-                catch: (cause) =>
+              const stored = yield* provide(readStoredTwitchAccount(record.slot, options.dataDir)).pipe(
+                Effect.mapError((cause) =>
                   agentError(
                     "internal",
                     `Could not read the Twitch token: ${errorMessage(cause)}`,
                   ),
-              });
+                ),
+              );
               if (stored === undefined) {
                 return yield* Effect.fail(
                   agentError(
@@ -977,9 +978,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                   ),
                 );
               }
+              const twitchEnv = yield* readEnvironment(twitchEnvKeys(record.slot));
               const resolved = yield* Effect.try({
                 try: () =>
-                  resolveTwitchAppConfig(record.slot, connectionOptions(record), stored),
+                  resolveTwitchAppConfig(record.slot, connectionOptions(record), stored, twitchEnv),
                 catch: (cause) =>
                   agentError("invalid", errorMessage(cause)),
               });
@@ -989,13 +991,13 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 account: stored,
                 store: {
                   save: (account) =>
-                    Effect.tryPromise({
-                      try: () => writeStoredTwitchAccount(account, options.dataDir),
-                      catch: (cause) =>
+                    provide(writeStoredTwitchAccount(account, options.dataDir)).pipe(
+                      Effect.mapError((cause) =>
                         new TwitchTransportError({
                           reason: `Could not store the Twitch token: ${errorMessage(cause)}`,
                         }),
-                    }),
+                      ),
+                    ),
                 },
                 publish,
               }).pipe(
@@ -1006,7 +1008,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               const identity = yield* transport.getToken.pipe(
                 Effect.mapError((error) => agentError("upstream", error.message)),
               );
-              const accountSlots = yield* twitchAccountSlots([{ slot: record.slot, identity }]);
+              const accountSlots = yield* twitchAccountSlots(input, [
+                { slot: record.slot, identity },
+              ]);
               const specs = yield* unionSpecs(record, input, accountSlots);
               if (specs.length > 0) {
                 yield* transport.subscribe(specs).pipe(
@@ -1125,23 +1129,30 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       ): Effect.Effect<ConnectionRecord, AgentError> =>
         Effect.gen(function* () {
           const scope = yield* Scope.make();
+          const obsEnv = yield* readEnvironment([obsPasswordEnvKey(record.slot)]);
           const resolved = yield* Effect.try({
-            try: () => resolveObsConnectionConfig(record.slot, connectionOptions(record)),
+            try: () =>
+              resolveObsConnectionConfig(
+                record.slot,
+                connectionOptions(record),
+                obsEnv,
+              ),
             catch: (cause) => agentError("invalid", errorMessage(cause)),
           });
           const topics = [
             ...new Set(
-              input.running.flatMap((entry) =>
-                entry.manifest.topics
+              input.running.flatMap((entry) => {
+                const slots = new Set(slotsFor(input, entry, record));
+                return entry.manifest.topics
                   .filter(
                     (topic) =>
-                      topic.integration === record.integration && topic.slot === record.slot,
+                      topic.integration === record.integration && slots.has(topic.slot),
                   )
-                  .map((topic) => topic.topic),
-              ),
+                  .map((topic) => topic.topic);
+              }),
             ),
           ];
-          const driver = yield* startObsDriver({
+          const driver = yield* provide(startObsDriver({
             slot: record.slot,
             url: resolved.url,
             ...(resolved.password === undefined ? {} : { password: resolved.password }),
@@ -1165,7 +1176,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           }).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.onError(() => Scope.close(scope, Exit.void)),
-          );
+          ));
           const state: DriverState = {
             kind: "obs",
             scope,
@@ -1268,21 +1279,22 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         });
 
       const topicsFor = (record: ConnectionRecord, input: ReconcileInput) =>
-        input.running.flatMap((entry) =>
-          entry.manifest.topics.filter(
-            (topic) =>
-              topic.integration === record.integration && topic.slot === record.slot,
-          ),
-        );
+        input.running.flatMap((entry) => {
+          const slots = new Set(slotsFor(input, entry, record));
+          return entry.manifest.topics.filter(
+            (topic) => topic.integration === record.integration && slots.has(topic.slot),
+          );
+        });
 
       const scopesFor = (record: ConnectionRecord, input: ReconcileInput): ReadonlyArray<string> =>
         [
           ...new Set(
-            input.running.flatMap((entry) =>
-              entry.manifest.topics
+            input.running.flatMap((entry) => {
+              const slots = new Set(slotsFor(input, entry, record));
+              return entry.manifest.topics
                 .filter(
                   (topic) =>
-                    topic.integration === record.integration && topic.slot === record.slot,
+                    topic.integration === record.integration && slots.has(topic.slot),
                 )
                 .flatMap((topic) => topic.scopes)
                 .concat(
@@ -1290,11 +1302,11 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                     .filter(
                       (request) =>
                         request.integration === record.integration &&
-                        request.slot === record.slot,
+                        slots.has(request.slot),
                     )
                     .flatMap((request) => request.scopes),
-                ),
-            ),
+                );
+            }),
           ),
         ];
 
@@ -1341,8 +1353,14 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         );
       };
 
-      const stableHookId = (slot: string): string =>
-        createHash("sha256").update("ballast-http-webhook:" + slot).digest("base64url").slice(0, 32);
+      const stableHookId = (slot: string): Effect.Effect<string> =>
+        crypto.digest(
+          "SHA-256",
+          new TextEncoder().encode("ballast-http-webhook:" + slot),
+        ).pipe(
+          Effect.map((digest) => Base64Url.encode(digest).slice(0, 32)),
+          Effect.orDie,
+        );
 
       const startVts = (
         record: ConnectionRecord,
@@ -1372,7 +1390,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               ? {}
               : { pluginIcon: record.values["pluginIcon"] }),
             publish: publishFor(record),
-          }).pipe(Layer.provide(NodeSocket.layerWebSocketConstructorWS));
+          }).pipe(
+            Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+            Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
+            Layer.provide(Layer.succeed(Path.Path, path)),
+            Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
+          );
           const built = yield* Layer.buildWithScope(layer, scope).pipe(
             Effect.mapError((error) => agentError("invalid", error.message)),
             Effect.onError(() => Scope.close(scope, Exit.void)),
@@ -1933,7 +1956,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                         ? {}
                         : { body: values["webhookResponseBody"] }),
                     };
-              const hookId = values["webhookHookId"] ?? stableHookId(topic.slot);
+              const hookId = values["webhookHookId"] ?? (yield* stableHookId(topic.slot));
               const maxAgeMs = numberOf(values["webhookMaxAgeMs"]) ?? topic.maxAgeMs;
               definitions.set(topic.slot, {
                 slot: topic.slot,
@@ -2047,13 +2070,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const ensureDriver = (record: ConnectionRecord): Effect.Effect<ConnectionRecord> =>
         Effect.gen(function* () {
           const input = yield* Ref.get(lastInput);
-          const uses = input.running.filter((entry) =>
-            entry.manifest.connections.some(
-              (connection) =>
-                connection.integration === record.integration &&
-                connection.slot === record.slot,
-            ),
-          );
+          const uses = input.running.filter((entry) => usesConnection(input, entry, record));
           const active = uses.length > 0 || record.manual;
           const cloudStatus = yield* cloud.status;
           const mode =
@@ -2152,7 +2169,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 "Twitch requires this account to be reconnected before it can run",
             }));
           }
-          if (!requiredFieldsSet(record)) {
+          if (!requiredFieldsSet(record, mode)) {
             return yield* updateRecord(record.id, (current) => ({
               ...current,
               status: "unconfigured",
@@ -2253,25 +2270,20 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             (record) => record.driver?.kind === "twitch-cloud",
           );
           if (twitchCloud.length === 0) return;
-          const accountSlots = yield* twitchAccountSlots();
+          const accountSlots = yield* twitchAccountSlots(input);
           for (const record of twitchCloud) {
             const driver = record.driver;
             if (driver?.cloudApi === undefined || driver.cloudConnectionId === undefined) {
               continue;
             }
-            const uses = input.running.filter((entry) =>
-              entry.manifest.connections.some(
-                (connection) =>
-                  connection.integration === record.integration &&
-                  connection.slot === record.slot,
-              ),
-            );
+            const uses = input.running.filter((entry) => usesConnection(input, entry, record));
             const owners = new Map<string, string>();
             for (const use of uses) {
-              const owner = `${use.projectId}/${use.scriptId}`;
+              for (const slot of slotsFor(input, use, record)) {
+              const owner = `${use.projectId}/${slot}`;
               const specs = yield* subscriptionSpecs(
                 use.manifest,
-                record.slot,
+                slot,
                 accountSlots,
               ).pipe(
                 Effect.catch((error) => {
@@ -2322,6 +2334,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 ownerSpecs: new Map(current.ownerSpecs).set(owner, key),
                 owners: new Set([...current.owners, owner]),
               }));
+              }
             }
             for (const owner of record.owners) {
               if (owners.has(owner)) continue;
@@ -2354,8 +2367,18 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             const ids = new Set<string>();
             for (const record of yield* records()) ids.add(record.id);
             for (const entry of [...input.known, ...input.running]) {
+              const projectBindings = input.bindings?.get(entry.projectId);
               for (const connection of entry.manifest.connections) {
-                ids.add(`${connection.integration}/${connection.slot}`);
+                if (projectBindings !== undefined) {
+                  const bound = projectBindings.get(
+                    connection.integration + "/" + connection.slot,
+                  );
+                  if (bound !== undefined) ids.add(bound);
+                } else {
+                  ids.add(
+                    bindingFor(input, entry, connection.integration, connection.slot),
+                  );
+                }
               }
             }
             for (const id of ids) yield* ensureRecord(id);
@@ -2388,21 +2411,23 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         readonly mode?: ConnectionMode;
       }): Effect.Effect<ConnectionSummary, AgentError> =>
         Effect.gen(function* () {
-          const parts = splitId(input.connectionId);
-          if (parts === undefined) {
+          const existing = yield* getRecord(input.connectionId);
+          const parts = existing === undefined ? splitId(input.connectionId) : undefined;
+          if (existing === undefined && parts === undefined) {
             return yield* Effect.fail(
               agentError("invalid", `Invalid connection id "${input.connectionId}"`),
             );
           }
-          if (!["obs", "twitch", "fake", "vts", "keyboard", "midi", "websocket", "http"].includes(parts.integration)) {
+          const integration = existing?.integration ?? parts?.integration ?? "";
+          if (integrationDefinition(integration) === undefined) {
             return yield* Effect.fail(
               agentError(
                 "invalid",
-                `Unknown connection integration "${parts.integration}"`,
+                `Unknown connection integration "${integration}"`,
               ),
             );
           }
-          const record = yield* ensureRecord(input.connectionId);
+          const record = existing ?? (yield* ensureRecord(input.connectionId));
           const fields = new Map(fieldsFor(record.integration).map((field) => [field.key, field]));
           const values = { ...record.values };
           const secrets = { ...record.secrets };
@@ -2440,6 +2465,132 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           yield* persist();
           yield* reconcile(yield* Ref.get(lastInput));
           return yield* require(record.id);
+        });
+
+      const create = (input: {
+        readonly integration: string;
+        readonly label: string;
+        readonly config: Readonly<Record<string, string>>;
+        readonly mode?: ConnectionMode;
+      }): Effect.Effect<ConnectionSummary, AgentError> =>
+        Effect.gen(function* () {
+          const label = input.label.trim();
+          if (label === "") {
+            return yield* Effect.fail(agentError("invalid", "A connection label is required"));
+          }
+          const fields = new Map(fieldsFor(input.integration).map((field) => [field.key, field]));
+          if (fields.size === 0) {
+            return yield* Effect.fail(
+              agentError("invalid", `Unknown connection integration "${input.integration}"`),
+            );
+          }
+          const id = `conn_${Hex.encode(yield* crypto.randomBytes(6).pipe(Effect.orDie))}`;
+          const values: Record<string, string> = {};
+          const secrets: Record<string, string> = {};
+          for (const [key, value] of Object.entries(input.config)) {
+            const field = fields.get(key);
+            if (field === undefined) {
+              return yield* Effect.fail(
+                agentError("invalid", `Connection ${input.integration} has no field "${key}"`),
+              );
+            }
+            if (field.kind === "secret") secrets[key] = value;
+            else values[key] = value;
+          }
+          const record: ConnectionRecord = {
+            ...noneRecord(input.integration, id),
+            id,
+            label,
+            values,
+            secrets,
+            mode: input.mode ?? "auto",
+          };
+          yield* Ref.update(state, (current) => {
+            const next = new Map(current);
+            next.set(id, record);
+            return next;
+          });
+          yield* Ref.update(secretState, (current) => ({ ...current, [id]: secrets }));
+          yield* persist();
+          return yield* require(id);
+        });
+
+      const update = (input: {
+        readonly id: string;
+        readonly label?: string;
+        readonly config?: Readonly<Record<string, string>>;
+        readonly mode?: ConnectionMode;
+      }): Effect.Effect<ConnectionSummary, AgentError> =>
+        Effect.gen(function* () {
+          const record = yield* getRecord(input.id);
+          if (record === undefined) {
+            return yield* Effect.fail(agentError("not-found", `No connection "${input.id}"`));
+          }
+          const label = input.label?.trim() ?? record.label;
+          if (label === "") {
+            return yield* Effect.fail(agentError("invalid", "A connection label is required"));
+          }
+          const fields = new Map(fieldsFor(record.integration).map((field) => [field.key, field]));
+          const values = { ...record.values };
+          const secrets = { ...record.secrets };
+          for (const [key, value] of Object.entries(input.config ?? {})) {
+            const field = fields.get(key);
+            if (field === undefined) {
+              return yield* Effect.fail(
+                agentError("invalid", `Connection ${record.integration} has no field "${key}"`),
+              );
+            }
+            if (field.kind === "secret") {
+              if (value === "") delete secrets[key];
+              else secrets[key] = value;
+            } else if (value === "") {
+              delete values[key];
+            } else {
+              values[key] = value;
+            }
+          }
+          yield* updateRecord(input.id, (current) => ({
+            ...current,
+            label,
+            values,
+            secrets,
+            mode: input.mode ?? current.mode,
+            lastError: undefined,
+          }));
+          yield* Ref.update(secretState, (current) => ({ ...current, [input.id]: secrets }));
+          yield* persist();
+          yield* reconcile(yield* Ref.get(lastInput));
+          return yield* require(input.id);
+        });
+
+      const remove = (id: string): Effect.Effect<void, AgentError> =>
+        Effect.gen(function* () {
+          const record = yield* getRecord(id);
+          if (record === undefined) {
+            return yield* Effect.fail(agentError("not-found", `No connection "${id}"`));
+          }
+          const boundBy = summaryOf(record).boundBy;
+          if (boundBy.length > 0) {
+            return yield* Effect.fail(
+              agentError(
+                "conflict",
+                `Connection "${record.label}" is bound to ${boundBy.length} project slot(s); unbind it first`,
+              ),
+            );
+          }
+          yield* closeDriver(record);
+          yield* Ref.update(state, (current) => {
+            if (!current.has(id)) return current;
+            const next = new Map(current);
+            next.delete(id);
+            return next;
+          });
+          yield* Ref.update(secretState, (current) => {
+            const next = { ...current };
+            delete next[id];
+            return next;
+          });
+          yield* persist();
         });
 
       const connect = (connectionId: string): Effect.Effect<ConnectionSummary, AgentError> =>
@@ -2496,12 +2647,13 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 "Cloud Twitch connections are authorized in the Ballast cloud. Link the account there, then pair this machine.",
             };
           }
-          const stored = yield* Effect.tryPromise({
-            try: () => readStoredTwitchAccount(record.slot, options.dataDir),
-            catch: (cause) => new Error(errorMessage(cause)),
-          }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          const stored = yield* provide(readStoredTwitchAccount(record.slot, options.dataDir)).pipe(
+            Effect.mapError((cause) => new Error(errorMessage(cause))),
+            Effect.catch(() => Effect.succeed(undefined)),
+          );
+          const twitchEnv = yield* readEnvironment(twitchEnvKeys(record.slot));
           const config = yield* Effect.try({
-            try: () => resolveTwitchAppConfig(record.slot, connectionOptions(record), stored),
+            try: () => resolveTwitchAppConfig(record.slot, connectionOptions(record), stored, twitchEnv),
             catch: (cause) => agentError("invalid", errorMessage(cause)),
           });
           const required = [
@@ -2523,6 +2675,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           }).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.provide(FetchHttpClient.layer),
+            provide,
             Effect.mapError((cause) => agentError("upstream", errorMessage(cause))),
             Effect.onError(() => Scope.close(scope, Exit.void)),
           );
@@ -2556,11 +2709,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const request = (input: {
         readonly integration: string;
         readonly slot: string;
+        readonly connectionId?: string;
         readonly request: string;
         readonly input: unknown;
       }): Effect.Effect<unknown, string> =>
         Effect.gen(function* () {
-          const id = `${input.integration}/${input.slot}`;
+          const id = input.connectionId ?? `${input.integration}/${input.slot}`;
           const record = yield* getRecord(id);
           if (record === undefined) {
             return yield* Effect.fail(`No connection ${id}`);
@@ -2740,9 +2894,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         readonly integration: string;
         readonly slot: string;
         readonly source: string;
+        readonly connectionId?: string;
       }): Effect.Effect<ReadonlyArray<string>, AgentError> =>
         Effect.gen(function* () {
-          const id = `${source.integration}/${source.slot}`;
+          const id = source.connectionId ?? `${source.integration}/${source.slot}`;
           if (source.integration === "vts") {
             const record = yield* ensureRecord(id);
             if (!record.manual) {
@@ -2941,9 +3096,13 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       yield* Effect.addFinalizer(() => close());
 
       return {
+        integrations,
         summaries,
         summary,
         require,
+        create,
+        update,
+        remove,
         configure,
         connect,
         disconnect,

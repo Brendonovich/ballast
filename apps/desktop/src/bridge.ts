@@ -14,8 +14,6 @@ export const BRIDGE_VERSION = 1 as const;
 
 export const BRIDGE_CHANNELS = {
   serviceStatus: "ballast:service:status",
-  serviceInstall: "ballast:service:install",
-  serviceUninstall: "ballast:service:uninstall",
   serviceStart: "ballast:service:start",
   serviceStop: "ballast:service:stop",
   serviceRestart: "ballast:service:restart",
@@ -28,24 +26,19 @@ export const BRIDGE_CHANNELS = {
   appRetry: "ballast:app:retry",
   appShowLogs: "ballast:app:show-logs",
   appOpenExternal: "ballast:app:open-external",
+  appPickDirectory: "ballast:app:pick-directory",
   serviceStatusEvent: "ballast:event:service-status",
   updateStatusEvent: "ballast:event:update-status",
 } as const;
 
 export type ServicePhase =
-  | "not-installed"
-  | "installed"
+  | "stopped"
   | "starting"
   | "restarting"
   | "stopping"
   | "running"
-  | "installing"
   | "updating"
-  | "uninstalling"
   | "error";
-
-/** Which OS supervisor owns (or would own) the service process. */
-export type ServiceSupervisorKind = "launch-agent" | "scheduled-task" | "process" | "none";
 
 /**
  * A shell-owned permission the agent cannot query itself.
@@ -69,14 +62,8 @@ export interface ServicePaths {
 export interface ServiceStatus {
   readonly schemaVersion: 1;
   readonly phase: ServicePhase;
-  /** The login item is present on disk. */
-  readonly installed: boolean;
   /** A compatible service answered `/health` during this status read. */
   readonly running: boolean;
-  readonly supervisor: ServiceSupervisorKind;
-  readonly loginItemPath: string | null;
-  /** The stage the login item points at (written by the last successful install). */
-  readonly installedVersion: string | null;
   /** The service build shipped with this app (or configured by env). */
   readonly builtVersion: string | null;
   readonly runningVersion: string | null;
@@ -86,6 +73,7 @@ export interface ServiceStatus {
   readonly startedAt: number | null;
   /** From `/health.scripts.needsConsent`; null when the service is not reachable. */
   readonly pendingConsents: number | null;
+  /** A service of another version is running; `start` replaces it with the shipped build. */
   readonly updateAvailable: boolean;
   readonly lastError: string | null;
   /** Shell permissions the background service needs (macOS Accessibility). */
@@ -133,8 +121,7 @@ export interface BallastBridge {
   readonly version: typeof BRIDGE_VERSION;
   readonly service: {
     status(): Promise<ServiceStatus>;
-    install(): Promise<ServiceAction>;
-    uninstall(): Promise<ServiceAction>;
+    /** Start the shipped service, or replace a running one of another version. */
     start(): Promise<ServiceAction>;
     stop(): Promise<ServiceAction>;
     restart(): Promise<ServiceAction>;
@@ -161,6 +148,8 @@ export interface BallastBridge {
     retry(): Promise<void>;
     showLogs(): Promise<void>;
     openExternal(url: string): Promise<void>;
+    /** Native folder picker for project creation; null when cancelled. */
+    pickDirectory(): Promise<string | null>;
   };
   readonly events: {
     onServiceStatus(listener: (status: ServiceStatus) => void): () => void;

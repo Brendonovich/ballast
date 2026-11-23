@@ -4,19 +4,18 @@ import type {
   ConnectionAuth,
   ConnectionMode,
   ConnectionSummary,
-  ConsentRequest,
   HealthStatus,
   LogEntry,
   ParamValue,
   PermissionStatus,
+  ProjectConsentRequest,
   ProjectDetail,
+  ProjectFileContent,
   ProjectSummary,
-  ScriptDetail,
-  ScriptSource,
-  ScriptSummary,
   ServiceEvent,
   ServiceInfo,
   ServiceSnapshot,
+  TimerSummary,
 } from "@ballast/agent-protocol";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
@@ -27,12 +26,9 @@ import type { AgentRuntime, TransportConfig } from "../agent/client.ts";
 import { runResilient } from "../agent/client.ts";
 import { errorMessage } from "../agent/errors.ts";
 
-export type ProjectSelection = string | "all";
-
 export type StreamStatus = "connecting" | "live" | "reconnecting";
 
 export interface CreateAgentStoreOptions {
-  readonly initialProjectId?: ProjectSelection;
   readonly onError?: (message: string) => void;
 }
 
@@ -45,69 +41,81 @@ export interface AgentStore {
   readonly logStatus: Accessor<StreamStatus>;
   readonly lastActionError: Accessor<string | undefined>;
   readonly logs: Accessor<ReadonlyArray<LogEntry>>;
-  readonly details: Accessor<Readonly<Record<string, ScriptDetail>>>;
-  readonly detailLoading: Accessor<ReadonlyArray<string>>;
-  readonly detailErrors: Accessor<Readonly<Record<string, string>>>;
-  readonly sourceRevisions: Accessor<Readonly<Record<string, number>>>;
-  readonly selectedProjectId: Accessor<ProjectSelection | undefined>;
   readonly pending: Accessor<ReadonlyArray<string>>;
+  readonly projects: () => ReadonlyArray<ProjectSummary>;
+  readonly project: (projectId: string) => ProjectSummary | undefined;
+  readonly projectDetail: (projectId: string) => ProjectDetail | undefined;
+  readonly projectErrorMessage: (projectId: string) => string | undefined;
+  readonly projectConsent: (projectId: string) => ProjectConsentRequest | undefined;
+  readonly projectRevision: (projectId: string) => number;
+  readonly projectFileRevision: (projectId: string) => number;
+  readonly connections: () => ReadonlyArray<ConnectionSummary>;
+  readonly connection: (connectionId: string) => ConnectionSummary | undefined;
+  readonly cloud: () => CloudStatus | undefined;
   readonly start: () => void;
   readonly whenReady: () => Promise<void>;
   readonly dispose: () => Promise<void>;
   readonly isPending: (key: string) => boolean;
-  readonly isDetailLoading: (key: string) => boolean;
+  readonly isProjectLoading: (projectId: string) => boolean;
   readonly clearActionError: () => void;
-  readonly selectProject: (projectId: ProjectSelection) => void;
-  readonly currentProject: () => ProjectSummary | undefined;
-  readonly projects: () => ReadonlyArray<ProjectSummary>;
-  readonly project: (projectId: string) => ProjectSummary | undefined;
-  readonly scripts: (projectId?: string) => ReadonlyArray<ScriptSummary>;
-  readonly visibleScripts: () => ReadonlyArray<ScriptSummary>;
-  readonly projectScriptCount: (projectId: string) => number;
-  readonly runningScriptCount: (projectId?: string) => number;
-  readonly script: (projectId: string, scriptId: string) => ScriptSummary | undefined;
-  readonly detail: (projectId: string, scriptId: string) => ScriptDetail | undefined;
-  readonly consents: () => ReadonlyArray<ConsentRequest>;
-  readonly consent: (consentId: string) => ConsentRequest | undefined;
-  readonly connections: () => ReadonlyArray<ConnectionSummary>;
-  readonly connection: (connectionId: string) => ConnectionSummary | undefined;
-  readonly cloud: () => CloudStatus | undefined;
   readonly refresh: () => Promise<boolean>;
-  readonly fetchScript: (
-    projectId: string,
-    scriptId: string,
-    force?: boolean,
-  ) => Promise<ScriptDetail | undefined>;
-  readonly fetchScriptSource: (
-    projectId: string,
-    scriptId: string,
-  ) => Promise<ScriptSource | undefined>;
-  readonly scriptSourceRevision: (projectId: string, scriptId: string) => number;
+  readonly refreshProjectConsents: () => Promise<void>;
+  readonly fetchProject: (projectId: string, force?: boolean) => Promise<ProjectDetail | undefined>;
+  readonly createProject: (
+    name: string,
+    directory?: string,
+  ) => Promise<ProjectDetail | undefined>;
   readonly addProject: (
     path: string,
     name?: string,
   ) => Promise<ProjectDetail | undefined>;
   readonly removeProject: (projectId: string) => Promise<boolean>;
-  readonly planScript: (projectId: string, scriptId: string) => Promise<ScriptDetail | undefined>;
-  readonly startScript: (projectId: string, scriptId: string) => Promise<ScriptDetail | undefined>;
-  readonly stopScript: (projectId: string, scriptId: string) => Promise<ScriptDetail | undefined>;
-  readonly restartScript: (
+  readonly startProject: (projectId: string) => Promise<ProjectDetail | undefined>;
+  readonly stopProject: (projectId: string) => Promise<ProjectDetail | undefined>;
+  readonly restartProject: (projectId: string) => Promise<ProjectDetail | undefined>;
+  readonly setProjectParam: (
     projectId: string,
-    scriptId: string,
-  ) => Promise<ScriptDetail | undefined>;
-  readonly setScriptParam: (
-    projectId: string,
-    scriptId: string,
     key: string,
     value: ParamValue,
-  ) => Promise<ScriptDetail | undefined>;
-  readonly setScriptEnabled: (
+  ) => Promise<ProjectDetail | undefined>;
+  readonly approveProjectConsent: (
+    consentId: string,
+  ) => Promise<ProjectDetail | undefined>;
+  readonly rejectProjectConsent: (
+    consentId: string,
+  ) => Promise<ProjectDetail | undefined>;
+  readonly listProjectFiles: (
     projectId: string,
-    scriptId: string,
-    enabled: boolean,
-  ) => Promise<ScriptDetail | undefined>;
-  readonly approveConsent: (consentId: string) => Promise<ScriptDetail | undefined>;
-  readonly rejectConsent: (consentId: string) => Promise<ScriptDetail | undefined>;
+  ) => Promise<{ readonly entry: string; readonly files: ReadonlyArray<{ readonly path: string; readonly kind: "file" | "directory" }> } | undefined>;
+  readonly readProjectFile: (
+    projectId: string,
+    path: string,
+  ) => Promise<ProjectFileContent | undefined>;
+  readonly listTimers: (projectId: string) => Promise<ReadonlyArray<TimerSummary> | undefined>;
+  readonly cancelTimer: (
+    projectId: string,
+    timer: string,
+    key: string,
+  ) => Promise<boolean>;
+  readonly setProjectBinding: (
+    projectId: string,
+    integration: string,
+    slot: string,
+    instanceId: string | null,
+  ) => Promise<ProjectDetail | undefined>;
+  readonly createConnection: (request: {
+    readonly integration: string;
+    readonly label: string;
+    readonly config: Readonly<Record<string, string>>;
+    readonly mode?: ConnectionMode;
+  }) => Promise<ConnectionSummary | undefined>;
+  readonly updateConnection: (request: {
+    readonly id: string;
+    readonly label?: string;
+    readonly config?: Readonly<Record<string, string>>;
+    readonly mode?: ConnectionMode;
+  }) => Promise<ConnectionSummary | undefined>;
+  readonly deleteConnection: (connectionId: string) => Promise<boolean>;
   readonly configureConnection: (
     connectionId: string,
     values: ReadonlyArray<{ readonly key: string; readonly value: string }>,
@@ -133,34 +141,8 @@ export interface AgentStore {
     permission: "accessibility",
     status: PermissionStatus,
   ) => Promise<boolean>;
-  readonly restartService: (reason?: string) => Promise<boolean>;
   readonly shutdownService: (force?: boolean) => Promise<boolean>;
 }
-
-export const scriptKey = (projectId: string, scriptId: string): string =>
-  `${projectId}\u0000${scriptId}`;
-
-const selectionStorageKey = "ballast.project";
-const selectedMissing = "all";
-
-const readStoredSelection = (): ProjectSelection | undefined => {
-  if (typeof window === "undefined") return undefined;
-  try {
-    const value = window.localStorage.getItem(selectionStorageKey);
-    return value === null || value === "" ? undefined : value;
-  } catch {
-    return undefined;
-  }
-};
-
-const storeSelection = (value: ProjectSelection): void => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(selectionStorageKey, value);
-  } catch {
-    // Storage can be disabled; selection is still kept in memory.
-  }
-};
 
 const upsertBy = <A>(
   items: ReadonlyArray<A>,
@@ -179,14 +161,6 @@ const removeBy = <A>(
   predicate: (value: A) => boolean,
 ): ReadonlyArray<A> => items.filter((item) => !predicate(item));
 
-const withoutPendingConsent = (detail: ScriptDetail): ScriptDetail => {
-  const { pendingConsent, ...rest } = detail;
-  return pendingConsent === undefined ? detail : rest;
-};
-
-const byName = (a: ScriptSummary, b: ScriptSummary): number =>
-  a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
-
 type Outcome<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly message: string };
@@ -194,8 +168,7 @@ type Outcome<A> =
 /**
  * The single reactive source of truth for the UI. `WatchService` supplies the
  * snapshot and incremental events, `StreamLogs` fills the log buffer, and
- * mutations write their returned detail straight back so screens never race a
- * re-read.
+ * project mutations write their returned detail straight back.
  */
 export const createAgentStore = (
   runtime: AgentRuntime,
@@ -206,19 +179,24 @@ export const createAgentStore = (
   const [logStatus, setLogStatus] = createSignal<StreamStatus>("connecting");
   const [lastActionError, setLastActionError] = createSignal<string>();
   const [logs, setLogs] = createSignal<ReadonlyArray<LogEntry>>([]);
-  const [details, setDetails] = createSignal<Readonly<Record<string, ScriptDetail>>>({});
-  const [detailLoading, setDetailLoading] = createSignal<ReadonlyArray<string>>([]);
-  const [detailErrors, setDetailErrors] = createSignal<Readonly<Record<string, string>>>({});
-  const [sourceRevisions, setSourceRevisions] = createSignal<
+  const [projectDetails, setProjectDetails] = createSignal<
+    Readonly<Record<string, ProjectDetail>>
+  >({});
+  const [projectLoading, setProjectLoading] = createSignal<ReadonlyArray<string>>([]);
+  const [projectErrors, setProjectErrors] = createSignal<Readonly<Record<string, string>>>({});
+  const [projectConsents, setProjectConsents] = createSignal<
+    Readonly<Record<string, ProjectConsentRequest>>
+  >({});
+  const [projectRevisions, setProjectRevisions] = createSignal<Readonly<Record<string, number>>>(
+    {},
+  );
+  const [projectFileRevisions, setProjectFileRevisions] = createSignal<
     Readonly<Record<string, number>>
   >({});
-  const [selectedProjectId, setSelectedProjectId] = createSignal<ProjectSelection | undefined>(
-    options.initialProjectId ?? readStoredSelection(),
-  );
   const [pending, setPending] = createSignal<ReadonlyArray<string>>([]);
 
   const handles: Array<() => void> = [];
-  const inFlight = new Map<string, Promise<ScriptDetail | undefined>>();
+  const inFlightProjects = new Map<string, Promise<ProjectDetail | undefined>>();
   let started = false;
   let disposed = false;
   let lastLogSeq = 0;
@@ -234,21 +212,24 @@ export const createAgentStore = (
 
   const markPending = (key: string, on: boolean): void => {
     setPending((current) =>
-      on ? (current.includes(key) ? current : [...current, key]) : current.filter((entry) => entry !== key),
+      on
+        ? current.includes(key)
+          ? current
+          : [...current, key]
+        : current.filter((entry) => entry !== key),
     );
   };
 
   const execute = async <A, E>(
     key: string,
     effect: Effect.Effect<A, E>,
-    options?: { readonly ignoreError?: (message: string) => boolean },
   ): Promise<Outcome<A>> => {
     markPending(key, true);
     try {
       return { ok: true, value: await runtime.run(effect) };
     } catch (error) {
       const message = errorMessage(error);
-      if (!options?.ignoreError?.(message)) notifyError(message);
+      notifyError(message);
       return { ok: false, message };
     } finally {
       markPending(key, false);
@@ -258,89 +239,114 @@ export const createAgentStore = (
   const projects = (): ReadonlyArray<ProjectSummary> => snapshot()?.projects ?? [];
   const project = (projectId: string): ProjectSummary | undefined =>
     projects().find((entry) => entry.id === projectId);
-  const scripts = (projectId?: string): ReadonlyArray<ScriptSummary> =>
-    (snapshot()?.scripts ?? [])
-      .filter((entry) => projectId === undefined || entry.projectId === projectId)
-      .slice()
-      .sort(byName);
-  const visibleScripts = (): ReadonlyArray<ScriptSummary> => {
-    const selection = selectedProjectId();
-    if (selection === undefined || selection === "all") {
-      return scripts();
-    }
-    return scripts(selection);
-  };
-  const currentProject = (): ProjectSummary | undefined => {
-    const selection = selectedProjectId();
-    return typeof selection === "string" && selection !== "all"
-      ? project(selection)
-      : undefined;
-  };
-  const projectScriptCount = (projectId: string): number => scripts(projectId).length;
-  const runningScriptCount = (projectId?: string): number =>
-    scripts(projectId).filter((entry) => entry.status === "running").length;
-  const script = (projectId: string, scriptId: string): ScriptSummary | undefined =>
-    scripts(projectId).find((entry) => entry.id === scriptId);
-  const detail = (projectId: string, scriptId: string): ScriptDetail | undefined =>
-    details()[scriptKey(projectId, scriptId)];
-  const consents = (): ReadonlyArray<ConsentRequest> => snapshot()?.consents ?? [];
-  const consent = (consentId: string): ConsentRequest | undefined =>
-    consents().find((entry) => entry.id === consentId);
+  const projectDetail = (projectId: string): ProjectDetail | undefined =>
+    projectDetails()[projectId];
+  const projectErrorMessage = (projectId: string): string | undefined =>
+    projectErrors()[projectId];
+  const projectConsent = (projectId: string): ProjectConsentRequest | undefined =>
+    projectConsents()[projectId];
+  const projectRevision = (projectId: string): number => projectRevisions()[projectId] ?? 0;
+  const projectFileRevision = (projectId: string): number =>
+    projectFileRevisions()[projectId] ?? 0;
   const connections = (): ReadonlyArray<ConnectionSummary> =>
     snapshot()?.connections ?? [];
   const connection = (connectionId: string): ConnectionSummary | undefined =>
     connections().find((entry) => entry.id === connectionId);
   const cloud = (): CloudStatus | undefined => snapshot()?.cloud;
 
-  const syncSelection = (
-    nextProjects: ReadonlyArray<ProjectSummary>,
-    info: ServiceInfo | undefined,
+  const readyNow = (): void => {
+    readyResolve?.();
+    readyResolve = undefined;
+  };
+
+  const upsertSummary = (summary: ProjectSummary): void => {
+    setSnapshot((current) => {
+      if (current === undefined) return current;
+      return {
+        ...current,
+        projects: upsertBy(current.projects, summary, (entry) => entry.id),
+      };
+    });
+  };
+
+  const bumpRevision = (projectId: string): void => {
+    setProjectRevisions((current) => ({
+      ...current,
+      [projectId]: (current[projectId] ?? 0) + 1,
+    }));
+  };
+
+  const bumpFileRevision = (projectId: string): void => {
+    setProjectFileRevisions((current) => ({
+      ...current,
+      [projectId]: (current[projectId] ?? 0) + 1,
+    }));
+  };
+
+  const setProjectConsent = (consent: ProjectConsentRequest | undefined): void => {
+    if (consent === undefined) return;
+    setProjectConsents((current) => ({ ...current, [consent.projectId]: consent }));
+  };
+
+  const clearProjectConsent = (projectId: string): void => {
+    setProjectConsents((current) => {
+      if (current[projectId] === undefined) return current;
+      const next = { ...current };
+      delete next[projectId];
+      return next;
+    });
+  };
+
+  const applyProjectDetail = (detail: ProjectDetail): void => {
+    setProjectDetails((current) => ({ ...current, [detail.summary.id]: detail }));
+    upsertSummary(detail.summary);
+    if (detail.pendingConsent === undefined) clearProjectConsent(detail.summary.id);
+    else setProjectConsent(detail.pendingConsent);
+    setProjectErrors((current) => {
+      if (current[detail.summary.id] === undefined) return current;
+      const next = { ...current };
+      delete next[detail.summary.id];
+      return next;
+    });
+  };
+
+  const removeProjectState = (projectId: string): void => {
+    setSnapshot((current) => {
+      if (current === undefined) return current;
+      return {
+        ...current,
+        projects: removeBy(current.projects, (entry) => entry.id === projectId),
+        connections: current.connections.map((connection) => ({
+          ...connection,
+          boundBy: connection.boundBy.filter((ref) => ref.projectId !== projectId),
+        })),
+      };
+    });
+    setProjectDetails((current) => {
+      const next = { ...current };
+      delete next[projectId];
+      return next;
+    });
+    clearProjectConsent(projectId);
+  };
+
+  const applyLocalBinding = (
+    projectId: string,
+    slot: string,
+    instanceId: string | null,
   ): void => {
-    const selection = selectedProjectId();
-    if (selection === "all") return;
-    if (selection !== undefined && nextProjects.some((entry) => entry.id === selection)) {
-      return;
-    }
-    const stored = readStoredSelection();
-    const storedProject =
-      stored === undefined || stored === "all"
-        ? undefined
-        : nextProjects.find((entry) => entry.id === stored);
-    const fallback =
-      storedProject ??
-      nextProjects.find((entry) => entry.id === info?.defaultProjectId) ??
-      nextProjects[0];
-    const next = fallback?.id ?? selectedMissing;
-    setSelectedProjectId(next);
-    storeSelection(next);
-  };
-
-  const upsertSummary = (summary: ScriptSummary): void => {
     setSnapshot((current) => {
       if (current === undefined) return current;
       return {
         ...current,
-        scripts: upsertBy(current.scripts, summary, (entry) => scriptKey(entry.projectId, entry.id)),
-      };
-    });
-  };
-
-  const upsertConsent = (entry: ConsentRequest): void => {
-    setSnapshot((current) => {
-      if (current === undefined) return current;
-      return {
-        ...current,
-        consents: upsertBy(current.consents, entry, (candidate) => candidate.id),
-      };
-    });
-  };
-
-  const removeConsent = (consentId: string): void => {
-    setSnapshot((current) => {
-      if (current === undefined) return current;
-      return {
-        ...current,
-        consents: removeBy(current.consents, (entry) => entry.id === consentId),
+        connections: current.connections.map((connection) => {
+          const boundBy = connection.boundBy.filter(
+            (ref) => !(ref.projectId === projectId && ref.slot === slot),
+          );
+          return connection.id === instanceId
+            ? { ...connection, boundBy: [...boundBy, { projectId, slot }] }
+            : { ...connection, boundBy };
+        }),
       };
     });
   };
@@ -362,148 +368,49 @@ export const createAgentStore = (
     });
   };
 
-  const attachConsent = (entry: ConsentRequest): void => {
-    const key = scriptKey(entry.projectId, entry.scriptId);
-    setDetails((current) => {
-      const existing = current[key];
-      if (existing === undefined) return current;
-      return { ...current, [key]: { ...existing, pendingConsent: entry } };
-    });
-  };
-
-  const applyDetail = (next: ScriptDetail): void => {
-    const key = scriptKey(next.summary.projectId, next.summary.id);
-    setDetails((current) => ({ ...current, [key]: next }));
-    upsertSummary(next.summary);
-    if (next.pendingConsent === undefined) {
-      removeConsent(
-        consentForScript(next.summary.projectId, next.summary.id)?.id ?? "",
-      );
-    } else {
-      upsertConsent(next.pendingConsent);
-    }
-  };
-
-  const consentForScript = (
-    projectId: string,
-    scriptId: string,
-  ): ConsentRequest | undefined =>
-    consents().find((entry) => entry.projectId === projectId && entry.scriptId === scriptId);
-
-  const applyScriptEvent = (summary: ScriptSummary): void => {
-    upsertSummary(summary);
-    const key = scriptKey(summary.projectId, summary.id);
-    setDetails((current) => {
-      const existing = current[key];
-      if (existing === undefined) return current;
-      const merged: ScriptDetail = { ...existing, summary };
-      return {
-        ...current,
-        [key]:
-          summary.status === "needs-consent"
-            ? merged
-            : withoutPendingConsent(merged),
-      };
-    });
-  };
-
   const applyEvent = (event: ServiceEvent): void => {
     switch (event._tag) {
       case "snapshot": {
         setSnapshot(event.snapshot);
         setWatchStatus("live");
-        syncSelection(event.snapshot.projects, event.snapshot.info);
-        setDetails((current) => {
-          const next: Record<string, ScriptDetail> = {};
-          for (const [key, entry] of Object.entries(current)) {
-            const summary = event.snapshot.scripts.find(
-              (candidate) => scriptKey(candidate.projectId, candidate.id) === key,
-            );
-            if (summary === undefined) continue;
-            const consent = event.snapshot.consents.find(
-              (candidate) =>
-                candidate.projectId === summary.projectId && candidate.scriptId === summary.id,
-            );
-            const merged: ScriptDetail = { ...entry, summary };
-            next[key] =
-              consent === undefined
-                ? withoutPendingConsent(merged)
-                : { ...withoutPendingConsent(merged), pendingConsent: consent };
-          }
-          return next;
-        });
-        readyResolve?.();
-        readyResolve = undefined;
+        for (const entry of event.snapshot.projects) bumpRevision(entry.id);
+        readyNow();
         return;
       }
       case "project": {
-        const current = snapshot();
-        if (current === undefined) return;
-        const nextSnapshot: ServiceSnapshot = {
-          ...current,
-          projects: upsertBy(current.projects, event.project, (entry) => entry.id),
-        };
-        setSnapshot(nextSnapshot);
-        syncSelection(nextSnapshot.projects, nextSnapshot.info);
+        upsertSummary(event.project);
+        bumpRevision(event.project.id);
+        bumpFileRevision(event.project.id);
+        return;
+      }
+      case "project-changed": {
+        upsertSummary(event.project);
+        bumpRevision(event.project.id);
+        bumpFileRevision(event.project.id);
+        return;
+      }
+      case "reload-failed": {
+        bumpRevision(event.projectId);
+        bumpFileRevision(event.projectId);
+        return;
+      }
+      case "project-file-changed": {
+        bumpFileRevision(event.projectId);
+        return;
+      }
+      case "project-consent": {
+        setProjectConsent(event.consent);
+        bumpRevision(event.consent.projectId);
+        return;
+      }
+      case "project-consent-resolved": {
+        clearProjectConsent(event.projectId);
+        upsertSummary(event.project);
+        bumpRevision(event.projectId);
         return;
       }
       case "project-removed": {
-        const current = snapshot();
-        if (current === undefined) return;
-        const removedScripts = current.scripts.filter(
-          (entry) => entry.projectId === event.projectId,
-        );
-        const nextSnapshot: ServiceSnapshot = {
-          ...current,
-          projects: removeBy(current.projects, (entry) => entry.id === event.projectId),
-          scripts: removeBy(current.scripts, (entry) => entry.projectId === event.projectId),
-          consents: removeBy(current.consents, (entry) => entry.projectId === event.projectId),
-        };
-        setSnapshot(nextSnapshot);
-        setDetails((currentDetails) => {
-          const next = { ...currentDetails };
-          for (const removed of removedScripts) {
-            delete next[scriptKey(removed.projectId, removed.id)];
-          }
-          return next;
-        });
-        syncSelection(nextSnapshot.projects, nextSnapshot.info);
-        return;
-      }
-      case "script": {
-        applyScriptEvent(event.script);
-        return;
-      }
-      case "script-source-changed": {
-        const key = scriptKey(event.projectId, event.scriptId);
-        setSourceRevisions((current) => ({
-          ...current,
-          [key]: (current[key] ?? 0) + 1,
-        }));
-        return;
-      }
-      case "script-removed": {
-        const key = scriptKey(event.projectId, event.scriptId);
-        setSnapshot((current) => {
-          if (current === undefined) return current;
-          return {
-            ...current,
-            scripts: removeBy(
-              current.scripts,
-              (entry) => entry.projectId === event.projectId && entry.id === event.scriptId,
-            ),
-            consents: removeBy(
-              current.consents,
-              (entry) => entry.projectId === event.projectId && entry.scriptId === event.scriptId,
-            ),
-          };
-        });
-        setDetails((current) => {
-          if (current[key] === undefined) return current;
-          const next = { ...current };
-          delete next[key];
-          return next;
-        });
+        removeProjectState(event.projectId);
         return;
       }
       case "connection": {
@@ -514,28 +421,14 @@ export const createAgentStore = (
         setCloud(event.cloud);
         return;
       }
-      case "consent": {
-        upsertConsent(event.consent);
-        attachConsent(event.consent);
-        return;
-      }
-      case "consent-resolved": {
-        removeConsent(event.consentId);
-        applyScriptEvent(event.script);
-        const key = scriptKey(event.projectId, event.scriptId);
-        setDetails((current) => {
-          const existing = current[key];
-          if (existing === undefined) return current;
-          return { ...current, [key]: withoutPendingConsent({ ...existing, summary: event.script }) };
-        });
-        return;
-      }
       case "health": {
         setSnapshot((current) =>
           current === undefined ? current : { ...current, health: event.health },
         );
         return;
       }
+      default:
+        return;
     }
   };
 
@@ -590,7 +483,6 @@ export const createAgentStore = (
         ),
       ),
     );
-
   };
 
   const whenReady = (): Promise<void> => ready;
@@ -602,11 +494,6 @@ export const createAgentStore = (
     await runtime.dispose();
   };
 
-  const selectProject = (projectId: ProjectSelection): void => {
-    setSelectedProjectId(projectId);
-    storeSelection(projectId);
-  };
-
   const refresh = async (): Promise<boolean> => {
     const outcome = await execute(
       "service:refresh",
@@ -614,86 +501,101 @@ export const createAgentStore = (
         const info = yield* runtime.client.GetServiceInfo();
         const health = yield* runtime.client.GetHealth();
         const projectList = yield* runtime.client.ListProjects();
-        const scriptList = yield* runtime.client.ListScripts({});
+        const projectConsentList =
+          runtime.transport.kind === "mock"
+            ? { consents: [] }
+            : yield* runtime.client.ListProjectConsents({});
         const connectionList = yield* runtime.client.ListConnections();
         const cloudStatus = yield* runtime.client.GetCloudStatus();
-        const consentList = yield* runtime.client.ListConsents({});
-        return { info, health, projectList, scriptList, connectionList, cloudStatus, consentList };
+        return { info, health, projectList, projectConsentList, connectionList, cloudStatus };
       }),
     );
     if (!outcome.ok) return false;
+    const consents: Record<string, ProjectConsentRequest> = {};
+    for (const consent of outcome.value.projectConsentList.consents) {
+      consents[consent.projectId] = consent;
+    }
+    setProjectConsents(consents);
     const next: ServiceSnapshot = {
       info: outcome.value.info,
       health: outcome.value.health,
       projects: outcome.value.projectList.projects,
-      scripts: outcome.value.scriptList.scripts,
+      scripts: [],
       connections: outcome.value.connectionList.connections,
       cloud: outcome.value.cloudStatus,
-      consents: outcome.value.consentList.consents,
+      consents: [],
     };
     setSnapshot(next);
     setWatchStatus("live");
-    syncSelection(next.projects, next.info);
+    readyNow();
     return true;
   };
 
-  const fetchScript = async (
+  const refreshProjectConsents = async (): Promise<void> => {
+    if (runtime.transport.kind === "mock") return;
+    const outcome = await execute(
+      "project-consents:list",
+      runtime.client.ListProjectConsents({}),
+    );
+    if (!outcome.ok) return;
+    const consents: Record<string, ProjectConsentRequest> = {};
+    for (const consent of outcome.value.consents) consents[consent.projectId] = consent;
+    setProjectConsents(consents);
+  };
+
+  const fetchProject = async (
     projectId: string,
-    scriptId: string,
     force = false,
-  ): Promise<ScriptDetail | undefined> => {
-    const key = scriptKey(projectId, scriptId);
+  ): Promise<ProjectDetail | undefined> => {
     if (!force) {
-      const cached = details()[key];
+      const cached = projectDetails()[projectId];
       if (cached !== undefined) return cached;
     }
-    const existing = inFlight.get(key);
+    const existing = inFlightProjects.get(projectId);
     if (existing !== undefined) return existing;
 
-    const promise = (async (): Promise<ScriptDetail | undefined> => {
-      setDetailLoading((current) =>
-        current.includes(key) ? current : [...current, key],
+    const promise = (async (): Promise<ProjectDetail | undefined> => {
+      setProjectLoading((current) =>
+        current.includes(projectId) ? current : [...current, projectId],
       );
       const outcome = await execute(
-        `script:${key}:load`,
-        runtime.client.GetScript({ projectId, scriptId }),
+        `project:${projectId}:load`,
+        runtime.client.GetProject({ projectId }),
       );
-      setDetailLoading((current) => current.filter((entry) => entry !== key));
+      setProjectLoading((current) => current.filter((entry) => entry !== projectId));
       if (!outcome.ok) {
-        setDetailErrors((current) => ({ ...current, [key]: outcome.message }));
+        setProjectErrors((current) => ({ ...current, [projectId]: outcome.message }));
         return undefined;
       }
-      setDetailErrors((current) => {
-        if (current[key] === undefined) return current;
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-      applyDetail(outcome.value);
+      applyProjectDetail(outcome.value);
       return outcome.value;
     })();
 
-    inFlight.set(key, promise);
+    inFlightProjects.set(projectId, promise);
     try {
       return await promise;
     } finally {
-      inFlight.delete(key);
+      inFlightProjects.delete(projectId);
     }
   };
 
-  const fetchScriptSource = async (
-    projectId: string,
-    scriptId: string,
-  ): Promise<ScriptSource | undefined> => {
+  const createProject = async (
+    name: string,
+    directory?: string,
+  ): Promise<ProjectDetail | undefined> => {
     const outcome = await execute(
-      `script:${scriptKey(projectId, scriptId)}:source`,
-      runtime.client.GetScriptSource({ projectId, scriptId }),
+      "project:create",
+      runtime.client.CreateProject({
+        name,
+        ...(directory === undefined || directory.trim() === ""
+          ? {}
+          : { directory: directory.trim() }),
+      }),
     );
-    return outcome.ok ? outcome.value : undefined;
+    if (!outcome.ok) return undefined;
+    applyProjectDetail(outcome.value);
+    return outcome.value;
   };
-
-  const scriptSourceRevision = (projectId: string, scriptId: string): number =>
-    sourceRevisions()[scriptKey(projectId, scriptId)] ?? 0;
 
   const addProject = async (
     path: string,
@@ -707,15 +609,7 @@ export const createAgentStore = (
       }),
     );
     if (!outcome.ok) return undefined;
-    setSnapshot((current) => {
-      if (current === undefined) return current;
-      return {
-        ...current,
-        projects: upsertBy(current.projects, outcome.value.summary, (entry) => entry.id),
-      };
-    });
-    const current = snapshot();
-    if (current !== undefined) syncSelection(current.projects, current.info);
+    applyProjectDetail(outcome.value);
     return outcome.value;
   };
 
@@ -725,119 +619,167 @@ export const createAgentStore = (
       runtime.client.RemoveProject({ projectId }),
     );
     if (!outcome.ok) return false;
-    const current = snapshot();
-    if (current !== undefined) {
-      const nextSnapshot: ServiceSnapshot = {
-        ...current,
-        projects: removeBy(current.projects, (entry) => entry.id === projectId),
-        scripts: removeBy(current.scripts, (entry) => entry.projectId === projectId),
-        consents: removeBy(current.consents, (entry) => entry.projectId === projectId),
-      };
-      setSnapshot(nextSnapshot);
-      syncSelection(nextSnapshot.projects, nextSnapshot.info);
-    }
-    setDetails((currentDetails) => {
-      const next = { ...currentDetails };
-      for (const [key, entry] of Object.entries(currentDetails)) {
-        if (entry.summary.projectId === projectId) delete next[key];
-      }
-      return next;
-    });
+    removeProjectState(projectId);
     return true;
   };
 
-  const runScriptAction = async (
+  const runProjectAction = async (
     key: string,
-    effect: Effect.Effect<ScriptDetail, unknown>,
-    options?: { readonly ignoreError?: (message: string) => boolean },
-  ): Promise<ScriptDetail | undefined> => {
-    const outcome = await execute(key, effect, options);
+    effect: Effect.Effect<ProjectDetail, unknown>,
+  ): Promise<ProjectDetail | undefined> => {
+    const outcome = await execute(key, effect);
     if (!outcome.ok) return undefined;
-    applyDetail(outcome.value);
+    applyProjectDetail(outcome.value);
+    bumpRevision(projectIdOfDetail(outcome.value));
     return outcome.value;
   };
 
-  const planScript = (
-    projectId: string,
-    scriptId: string,
-  ): Promise<ScriptDetail | undefined> =>
-    runScriptAction(
-      `script:${scriptKey(projectId, scriptId)}:plan`,
-      runtime.client.PlanScript({ projectId, scriptId }),
+  const projectIdOfDetail = (detail: ProjectDetail): string => detail.summary.id;
+
+  const startProject = (projectId: string): Promise<ProjectDetail | undefined> =>
+    runProjectAction(
+      `project:${projectId}:start`,
+      runtime.client.StartProject({ projectId }),
     );
 
-  const startScript = (
-    projectId: string,
-    scriptId: string,
-  ): Promise<ScriptDetail | undefined> =>
-    runScriptAction(
-      `script:${scriptKey(projectId, scriptId)}:start`,
-      runtime.client.StartScript({ projectId, scriptId }),
-      { ignoreError: (message) => message.includes("needs consent before it can start") },
+  const stopProject = (projectId: string): Promise<ProjectDetail | undefined> =>
+    runProjectAction(
+      `project:${projectId}:stop`,
+      runtime.client.StopProject({ projectId }),
     );
 
-  const stopScript = (
-    projectId: string,
-    scriptId: string,
-  ): Promise<ScriptDetail | undefined> =>
-    runScriptAction(
-      `script:${scriptKey(projectId, scriptId)}:stop`,
-      runtime.client.StopScript({ projectId, scriptId }),
+  const restartProject = (projectId: string): Promise<ProjectDetail | undefined> =>
+    runProjectAction(
+      `project:${projectId}:restart`,
+      runtime.client.RestartProject({ projectId }),
     );
 
-  const restartScript = (
+  const setProjectParam = (
     projectId: string,
-    scriptId: string,
-  ): Promise<ScriptDetail | undefined> =>
-    runScriptAction(
-      `script:${scriptKey(projectId, scriptId)}:restart`,
-      runtime.client.RestartScript({ projectId, scriptId }),
-      { ignoreError: (message) => message.includes("needs consent before it can start") },
-    );
-
-  const setScriptParam = (
-    projectId: string,
-    scriptId: string,
     key: string,
     value: ParamValue,
-  ): Promise<ScriptDetail | undefined> =>
-    runScriptAction(
-      `script:${scriptKey(projectId, scriptId)}:param:${key}`,
-      runtime.client.SetScriptParam({ projectId, scriptId, key, value }),
+  ): Promise<ProjectDetail | undefined> =>
+    runProjectAction(
+      `project:${projectId}:param:${key}`,
+      runtime.client.SetProjectParam({ projectId, key, value }),
     );
 
-  const setScriptEnabled = (
+  const approveProjectConsent = (consentId: string): Promise<ProjectDetail | undefined> =>
+    runProjectAction(
+      `project-consent:${consentId}:approve`,
+      runtime.client.ApproveProjectConsent({ consentId }),
+    );
+
+  const rejectProjectConsent = (consentId: string): Promise<ProjectDetail | undefined> =>
+    runProjectAction(
+      `project-consent:${consentId}:reject`,
+      runtime.client.RejectProjectConsent({ consentId }),
+    );
+
+  const listProjectFiles = async (
     projectId: string,
-    scriptId: string,
-    enabled: boolean,
-  ): Promise<ScriptDetail | undefined> =>
-    runScriptAction(
-      `script:${scriptKey(projectId, scriptId)}:enabled`,
-      runtime.client.SetScriptEnabled({ projectId, scriptId, enabled }),
-    );
-
-  const approveConsent = async (
-    consentId: string,
-  ): Promise<ScriptDetail | undefined> => {
+  ): Promise<{ readonly entry: string; readonly files: ReadonlyArray<{ readonly path: string; readonly kind: "file" | "directory" }> } | undefined> => {
     const outcome = await execute(
-      `consent:${consentId}:approve`,
-      runtime.client.ApproveConsent({ consentId }),
+      `project:${projectId}:files`,
+      runtime.client.ListProjectFiles({ projectId }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const readProjectFile = async (
+    projectId: string,
+    path: string,
+  ): Promise<ProjectFileContent | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:file:${path}`,
+      runtime.client.ReadProjectFile({ projectId, path }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const listTimers = async (
+    projectId: string,
+  ): Promise<ReadonlyArray<TimerSummary> | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:timers`,
+      runtime.client.ListTimers({ projectId }),
+    );
+    return outcome.ok ? outcome.value.timers : undefined;
+  };
+
+  const cancelTimer = async (
+    projectId: string,
+    timer: string,
+    key: string,
+  ): Promise<boolean> => {
+    const outcome = await execute(
+      `project:${projectId}:timer:${timer}:${key}:cancel`,
+      runtime.client.CancelTimer({ projectId, timer, key }),
+    );
+    return outcome.ok ? outcome.value.cancelled : false;
+  };
+
+  const setProjectBinding = async (
+    projectId: string,
+    integration: string,
+    slot: string,
+    instanceId: string | null,
+  ): Promise<ProjectDetail | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:binding:${integration}:${slot}`,
+      runtime.client.SetProjectBinding({ projectId, integration, slot, instanceId }),
     );
     if (!outcome.ok) return undefined;
-    applyDetail(outcome.value);
+    applyProjectDetail(outcome.value);
+    applyLocalBinding(projectId, slot, instanceId);
+    bumpRevision(projectId);
     return outcome.value;
   };
 
-  const rejectConsent = async (
-    consentId: string,
-  ): Promise<ScriptDetail | undefined> => {
+  const createConnection = async (request: {
+    readonly integration: string;
+    readonly label: string;
+    readonly config: Readonly<Record<string, string>>;
+    readonly mode?: ConnectionMode;
+  }): Promise<ConnectionSummary | undefined> => {
     const outcome = await execute(
-      `consent:${consentId}:reject`,
-      runtime.client.RejectConsent({ consentId }),
+      "connection:create",
+      runtime.client.CreateConnection(request),
     );
     if (!outcome.ok) return undefined;
-    applyDetail(outcome.value);
+    upsertConnection(outcome.value);
     return outcome.value;
+  };
+
+  const updateConnection = async (request: {
+    readonly id: string;
+    readonly label?: string;
+    readonly config?: Readonly<Record<string, string>>;
+    readonly mode?: ConnectionMode;
+  }): Promise<ConnectionSummary | undefined> => {
+    const outcome = await execute(
+      `connection:${request.id}:update`,
+      runtime.client.UpdateConnection(request),
+    );
+    if (!outcome.ok) return undefined;
+    upsertConnection(outcome.value);
+    return outcome.value;
+  };
+
+  const deleteConnection = async (connectionId: string): Promise<boolean> => {
+    const outcome = await execute(
+      `connection:${connectionId}:delete`,
+      runtime.client.DeleteConnection({ id: connectionId }),
+    );
+    if (!outcome.ok) return false;
+    setSnapshot((current) => {
+      if (current === undefined) return current;
+      return {
+        ...current,
+        connections: removeBy(current.connections, (entry) => entry.id === connectionId),
+      };
+    });
+    return true;
   };
 
   const configureConnection = async (
@@ -939,16 +881,6 @@ export const createAgentStore = (
     return outcome.ok;
   };
 
-  const restartService = async (reason?: string): Promise<boolean> => {
-    const outcome = await execute(
-      "service:restart",
-      runtime.client.RestartService({
-        ...(reason === undefined ? {} : { reason }),
-      }),
-    );
-    return outcome.ok;
-  };
-
   const shutdownService = async (force?: boolean): Promise<boolean> => {
     const outcome = await execute(
       "service:shutdown",
@@ -960,7 +892,8 @@ export const createAgentStore = (
   };
 
   const isPending = (key: string): boolean => pending().includes(key);
-  const isDetailLoading = (key: string): boolean => detailLoading().includes(key);
+  const isProjectLoading = (projectId: string): boolean =>
+    projectLoading().includes(projectId);
   const clearActionError = (): void => setLastActionError(undefined);
 
   return {
@@ -972,47 +905,43 @@ export const createAgentStore = (
     logStatus,
     lastActionError,
     logs,
-    details,
-    detailLoading,
-    detailErrors,
-    sourceRevisions,
-    selectedProjectId,
     pending,
+    projects,
+    project,
+    projectDetail,
+    projectErrorMessage,
+    projectConsent,
+    projectRevision,
+    projectFileRevision,
+    connections,
+    connection,
+    cloud,
     start,
     whenReady,
     dispose,
     isPending,
-    isDetailLoading,
+    isProjectLoading,
     clearActionError,
-    selectProject,
-    currentProject,
-    projects,
-    project,
-    scripts,
-    visibleScripts,
-    projectScriptCount,
-    runningScriptCount,
-    script,
-    detail,
-    consents,
-    consent,
-    connections,
-    connection,
-    cloud,
     refresh,
-    fetchScript,
-    fetchScriptSource,
-    scriptSourceRevision,
+    refreshProjectConsents,
+    fetchProject,
+    createProject,
     addProject,
     removeProject,
-    planScript,
-    startScript,
-    stopScript,
-    restartScript,
-    setScriptParam,
-    setScriptEnabled,
-    approveConsent,
-    rejectConsent,
+    startProject,
+    stopProject,
+    restartProject,
+    setProjectParam,
+    approveProjectConsent,
+    rejectProjectConsent,
+    listProjectFiles,
+    readProjectFile,
+    listTimers,
+    cancelTimer,
+    setProjectBinding,
+    createConnection,
+    updateConnection,
+    deleteConnection,
     configureConnection,
     connectConnection,
     disconnectConnection,
@@ -1021,7 +950,6 @@ export const createAgentStore = (
     pairCloud,
     unpairCloud,
     reportShellPermission,
-    restartService,
     shutdownService,
   };
 };

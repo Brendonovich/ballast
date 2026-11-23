@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -11,7 +12,6 @@ import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
 import type { LiveAgentClient } from "../src/service/client.ts";
 import { readServiceRegistration } from "../src/service/config.ts";
-import { timerStorePath } from "../src/service/timers.ts";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const bin = fileURLToPath(new URL("../src/bin.ts", import.meta.url));
@@ -128,7 +128,7 @@ const startService = (root: string): Effect.Effect<Service, Error> =>
       "service.json",
       () =>
         Effect.promise(async () => {
-          const registration = await readServiceRegistration(join(root, "state"));
+          const registration = await Effect.runPromise(readServiceRegistration(join(root, "state")).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)));
           return registration?.pid === child.pid ? registration : undefined;
         }),
       30_000,
@@ -167,6 +167,7 @@ const call = <A, E>(
   use: (client: LiveAgentClient) => Effect.Effect<A, E>,
 ): Effect.Effect<A, E | Error> =>
   withAgentClient(use, envFor(root)).pipe(
+    Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer),
     Effect.mapError((error) => {
       if (error instanceof Error) return error;
       if (typeof error === "object" && error !== null) {
@@ -277,6 +278,7 @@ describe("durable timers through the service", () => {
         client.SetScriptParam({ ...started, key: "schedule", value: false }),
       );
       yield* Effect.sleep("6.5 seconds");
+      yield* service.stop();
 
       const restarted = yield* startService(root);
       yield* Effect.addFinalizer(() => restarted.stop());
@@ -361,7 +363,7 @@ describe("durable timers through the service", () => {
       const root = yield* makeProject(timerScript({ delay: "60 seconds", onStale: "deliver", maxAgeMs: 60_000 }));
       const project = join(root, "project");
       yield* Effect.promise(() => mkdir(join(project, ".ballast"), { recursive: true }));
-      yield* Effect.promise(() => writeFile(timerStorePath(project), "{ this is not json", "utf8"));
+      yield* Effect.promise(() => writeFile(join(project, ".ballast", "timers.json"), "{ this is not json", "utf8"));
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
@@ -370,12 +372,12 @@ describe("durable timers through the service", () => {
       // The corrupt file is gone; write a valid store so project removal has a
       // file to delete without requiring another worker generation.
       yield* Effect.promise(() =>
-        writeFile(timerStorePath(project), JSON.stringify({ version: 1, timers: [] }), "utf8"),
+        writeFile(join(project, ".ballast", "timers.json"), JSON.stringify({ version: 1, timers: [] }), "utf8"),
       );
       yield* call(root, (client) => client.RemoveProject({ projectId: started.projectId }));
       yield* Effect.promise(async () => {
         try {
-          await readFile(timerStorePath(project), "utf8");
+          await readFile(join(project, ".ballast", "timers.json"), "utf8");
           throw new Error("timers.json should be gone");
         } catch (cause) {
           if (cause instanceof Error && cause.message.includes("should be gone")) throw cause;

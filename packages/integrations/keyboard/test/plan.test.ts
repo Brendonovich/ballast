@@ -9,7 +9,7 @@ const example = fileURLToPath(
 const callRequest = fileURLToPath(new URL("./fixtures/call-request.ts", import.meta.url));
 
 describe("plan keyboard scripts", () => {
-  it.effect("records the connection, KeyDown, a filtered Hotkey and the tap request", () =>
+  it.effect("records the connection, KeyDown, a filtered Hotkey and keyboard namespace", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
@@ -38,7 +38,7 @@ describe("plan keyboard scripts", () => {
             maxAgeMs: 60_000,
           },
         ],
-        requests: [{ integration: "keyboard", slot: "main", request: "keyboard/tap", scopes: [] }],
+        requests: [{ integration: "keyboard", slot: "main", request: "keyboard/*", scopes: [] }],
         unresolved: [],
         timers: [],
         workflows: [],

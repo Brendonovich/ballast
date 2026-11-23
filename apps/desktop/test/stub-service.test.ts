@@ -40,7 +40,7 @@ async function startStub(): Promise<Stub> {
   const stateDir = path.join(root, "state");
   const dataDir = path.join(root, "data");
   await mkdir(stateDir, { recursive: true });
-  const child = spawn(process.execPath, [stubMain, "serve", "--standalone"], {
+  const child = spawn(process.execPath, [stubMain, "serve"], {
     env: {
       ...process.env,
       BALLAST_STATE_DIR: stateDir,
@@ -122,18 +122,6 @@ describe("stub service (serve contract used by the launcher)", () => {
     expect(response.status).toBe(202);
     expect(await exitCode(stub.child)).toBe(0);
     await expect(stat(path.join(stub.stateDir, "service.json"))).rejects.toThrow();
-  });
-
-  it("exits 75 on restart so launchd / Task Scheduler starts a new generation", async () => {
-    const stub = await startStub();
-    const response = await fetch(stub.url + "/restart", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + stub.token },
-    });
-    expect(response.status).toBe(202);
-    expect(await exitCode(stub.child)).toBe(75);
-    // Exit 75 is a restart, not a stop: the registration is cleaned and the
-    // supervisor starts a fresh generation that rewrites it.
   });
 
   it("requires the bearer token for control endpoints and exits 0 on SIGTERM", async () => {

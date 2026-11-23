@@ -13,7 +13,9 @@ export interface Param<A> extends Effect.Effect<A> {
 
 export interface ParamOptions<A extends ParamDefault> {
   readonly title?: string;
-  /** Source of dynamic enum options, e.g. the live OBS scene list. */
+  /** Help text shown by the UI. */
+  readonly description?: string;
+  /** Source of dynamic options, e.g. the live OBS scene list. */
   readonly options?: ParamOptionSource;
   readonly default?: A;
 }
@@ -39,6 +41,7 @@ const toManifest = <A extends ParamDefault>(
   type,
   ...(source === undefined ? {} : { source }),
   ...(options.title === undefined ? {} : { title: options.title }),
+  ...(options.description === undefined ? {} : { description: options.description }),
   ...(options.default === undefined ? {} : { default: options.default }),
   ...(options.options === undefined ? {} : { options: options.options }),
 });
@@ -129,6 +132,27 @@ export const boolean = (
     options,
     (value) => (typeof value === "boolean" ? value : (options.default ?? false)),
     options.default ?? false,
+    captureSource(2),
+  );
+
+/**
+ * A multi-select list of strings. `options` uses the same dynamic source as
+ * `Param.string` (for example `OBS.scenes(obs)`); the UI renders a
+ * multi-picker and the value remains schema-typed as `readonly string[]`.
+ */
+export const strings = (
+  key: string,
+  options: ParamOptions<readonly string[]> = {},
+): Effect.Effect<Param<readonly string[]>> =>
+  declare(
+    "strings",
+    key,
+    options,
+    (value) =>
+      Array.isArray(value) && value.every((item) => typeof item === "string")
+        ? value
+        : (options.default ?? []),
+    options.default ?? [],
     captureSource(2),
   );
 

@@ -228,20 +228,11 @@ export default Effect.gen(function* () {
 });
 ~~~
 
-The declaration can also be split:
-
-~~~ts
-const cooldown = yield* Ballast.Timer.make("cooldown", {
-  payload: CooldownEnded,
-  onStale: "deliver",
-});
-yield* cooldown.subscribe((fire) => ...);
-~~~
-
-`Timer.make`/<code>Timer.subscribe</code> run in init. <code>after</code> and
-<code>cancel</code> are I/O and must run in handlers or `Ballast.run`. Calling
-either during plan dies with `TimerCalledDuringPlanError`, the same rule as a
-request client.
+`Timer.subscribe` is the only declaration form: it declares the timer,
+registers its handler and returns the handle. There is no separate define and
+register step. <code>after</code> and <code>cancel</code> are I/O and must run in
+handlers or `Ballast.run`. Calling either during plan dies with
+`TimerCalledDuringPlanError`, the same rule as a request client.
 
 The handle exposes:
 
@@ -251,7 +242,6 @@ interface Timer<A> {
   readonly onStale: "drop" | "deliver";
   readonly maxAgeMs: number;
   readonly payloadFingerprint: string;
-  readonly subscribe: (handler: (fire: TimerFire<A>) => Effect.Effect<void>) => Effect.Effect<void>;
   readonly after: (key: string, after: Duration.Input, payload: A) => Effect.Effect<void>;
   readonly cancel: (key: string) => Effect.Effect<void>;
 }
@@ -266,9 +256,6 @@ interface TimerFire<A> {
   readonly lateByMs: number;
 }
 ~~~
-
-There is also `Ballast.Timer.unit(name, options)` for a timer with no payload;
-its <code>after</code> takes only the key and duration.
 
 ### Semantics
 
@@ -434,9 +421,8 @@ The design is chosen to make these checks possible without executing handlers:
 2. **Plan is I/O-free and declaration-complete.** Scheduling, cancelling and
    request calls in init die with a typed error. A plan that succeeds cannot
    have scheduled a timer or called an integration from init. A timer enters the
-   manifest only when its handler is subscribed, so a `Timer.make` without a
-   `subscribe` cannot silently become a durable schedule (the host also rejects
-   scheduling an undeclared timer).
+   manifest when `Timer.subscribe` runs, so a timer cannot be declared without
+   a handler (the host also rejects scheduling an undeclared timer).
 3. **The host validates at the RPC boundary.** `ScheduleTimer` rejects an
    unknown timer name, a payload that does not encode against the declared
    schema, and a fingerprint that differs from the applied manifest. These are
@@ -781,8 +767,8 @@ ignored; the instance is already marked fired on the host.
 - `packages/core/src/manifest.ts` — additive `TimerManifest`, `timers` field,
   `timerManifestKey`; decoding default for old manifests.
 - `packages/core/src/services.ts` — `ManifestRecorderService.timer`.
-- `packages/core/src/timer.ts` — `Timer.make`/`Timer.subscribe`, plan/runtime
-  host layers, payload schema/fingerprint, `TimerFire`, `TimerRuntime`.
+- `packages/core/src/timer.ts` — `Timer.subscribe`, plan/runtime host layers,
+  payload schema/fingerprint, `TimerFire`, `TimerRuntime`.
 - `packages/core/src/timer-store.ts` — persisted snapshot schema, reference
   scheduler, TestClock-friendly clock injection, late policy.
 - `packages/core/src/script.ts` — `TimerHost` added to the script host

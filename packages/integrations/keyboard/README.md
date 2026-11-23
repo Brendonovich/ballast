@@ -9,18 +9,19 @@ import * as Keyboard from "@ballast/module-keyboard";
 
 const keyboard = yield* Keyboard.Connection("main");
 
-yield* Keyboard.KeyDown.subscribe(keyboard, (event) =>
+yield* Keyboard.KeyDown.subscribe("key-down", keyboard, (event) =>
   Effect.log(`${event.key} with ctrl=${event.ctrl}`),
 );
 
 yield* Keyboard.Hotkey.subscribe(
+  "hotkey",
   keyboard,
   (event) => Effect.log(event.combo),
   { keys: ["Ctrl", "Shift", "F1"] },
 );
 
-const tap = yield* Keyboard.Tap(keyboard);
-const toggle = yield* Keyboard.Toggle(keyboard);
+yield* keyboard.tap({ key: "F1" });
+yield* keyboard.toggle({ key: "A", state: "down" });
 ```
 
 - `KeyDown` / `KeyUp` payloads: `{ key, code, ctrl, shift, alt, meta, at }`.
@@ -33,10 +34,12 @@ const toggle = yield* Keyboard.Toggle(keyboard);
   `keyboard/<slot>/keyboard/Hotkey#<combo>/<state>`.
 - **Exact modifiers**: Ctrl+F1 does not fire while Shift is also held. A key
   release reports the modifiers held at its press.
-- `Tap` (`keyboard/tap`) and `Toggle` (`keyboard/toggle`) are requests backed
-  by libuiohook's `keyTap` / `keyToggle`. `Toggle` is a matching down/up pair
-  for push-to-talk.
-- `keys(slot)` is a `ParamOptionSource` containing every `KeyName`.
+- `Keyboard.Connection` grants the whole `keyboard/*` namespace. The handle
+  methods `tap` and `toggle` are backed by libuiohook's `keyTap` /
+  `keyToggle`. `toggle` is a matching down/up pair for push-to-talk. The macOS
+  Accessibility permission is connection-wide, not a per-request approval.
+- `keys(keyboard)` takes the keyboard connection handle and returns a
+  `ParamOptionSource` containing every `KeyName`.
 
 ## Driver (`@ballast/module-keyboard/driver`)
 

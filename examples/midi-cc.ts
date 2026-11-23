@@ -6,14 +6,12 @@ export default Effect.gen(function* () {
   const midi = yield* Midi.Connection("controller");
   const output = yield* Ballast.Param.string("output", {
     title: "MIDI output",
-    options: Midi.outputs("controller"),
+    options: Midi.outputs(midi),
   });
-  const sendNote = yield* Midi.SendNoteOn(midi);
-
   yield* Midi.ControlChange.subscribe("control-change", midi, (event) =>
     Effect.gen(function* () {
       if (event.control !== 7) return;
-      yield* sendNote({
+      yield* midi.noteOn({
         device: yield* output,
         channel: event.channel,
         note: 60,

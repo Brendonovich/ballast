@@ -128,6 +128,8 @@ export async function adoptService(config: DesktopConfig): Promise<AdoptedServic
   if (found === undefined) return undefined;
   const health = await probeHealth(found.registration.url);
   if (health === undefined) return undefined;
+  // A stale file can name a port another process now holds; never adopt (or signal) it.
+  if (health.pid !== null && health.pid !== found.registration.pid) return undefined;
 
   const apiVersion = health.apiVersion ?? found.registration.apiVersion;
   const compatible = apiVersion === SUPPORTED_AGENT_API_VERSION;
