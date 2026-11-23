@@ -28,7 +28,9 @@ export const EchoOutputSchema = Schema.Struct({ text: Schema.String });
 
 export interface FakeClient extends Ballast.ConnectionRef<Integration> {
   /** Echo text back. The plan client dies if it is called. */
-  readonly echo: (input: EchoInput) => Effect.Effect<EchoOutput>;
+  readonly echo: (
+    input: EchoInput,
+  ) => Effect.Effect<EchoOutput, never, Ballast.Runtime>;
 }
 
 const call = <A, B>(
@@ -38,7 +40,7 @@ const call = <A, B>(
   inputSchema: Schema.Codec<A, unknown, never, never>,
   outputSchema: Schema.Codec<B, unknown, never, never>,
   input: A,
-): Effect.Effect<B> =>
+): Effect.Effect<B, never, Ballast.Runtime> =>
   host.granted<A, B>({
     integration: INTEGRATION,
     slot: connection.slot,

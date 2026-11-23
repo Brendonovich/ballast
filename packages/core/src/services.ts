@@ -11,6 +11,7 @@ import type {
   WorkflowManifest,
 } from "./manifest.ts";
 import type { RequestRef } from "./request.ts";
+import type { DeclarationSource } from "./source.ts";
 
 /**
  * Plan-only sink for everything a script declares. The planner owns the
@@ -29,6 +30,13 @@ export interface ManifestRecorderService {
   readonly timer: (timer: TimerManifest) => Effect.Effect<void>;
   readonly workflow: (workflow: WorkflowManifest) => Effect.Effect<void>;
   readonly run: (run: RunManifest) => Effect.Effect<void>;
+  /** Read of a param while init is being evaluated (a plan error). */
+  readonly paramRead?: (read: ParamRead) => Effect.Effect<void>;
+}
+
+export interface ParamRead {
+  readonly key: string;
+  readonly source?: DeclarationSource;
 }
 
 export class ManifestRecorder extends Context.Service<ManifestRecorder, ManifestRecorderService>()(

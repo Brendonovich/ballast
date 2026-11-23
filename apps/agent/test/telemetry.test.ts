@@ -56,6 +56,7 @@ describe("service telemetry", () => {
           delivered.push(payload);
         },
         deliverTimer: () => undefined,
+        updateParams: () => undefined,
         close: Effect.void,
       };
 
@@ -90,6 +91,7 @@ describe("service telemetry", () => {
           delivered.push(payload);
         },
         deliverTimer: () => undefined,
+        updateParams: () => undefined,
         close: Effect.void,
       };
 

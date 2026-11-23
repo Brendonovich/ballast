@@ -84,30 +84,30 @@ export interface HttpClient extends Ballast.ConnectionRef<Integration> {
   readonly request: <A = string>(
     input: HttpScriptRequest,
     options?: HttpRequestOptions<A>,
-  ) => Effect.Effect<HttpResponse<A>>;
+  ) => Effect.Effect<HttpResponse<A>, never, Ballast.Runtime>;
   readonly get: <A = string>(
     path: string,
     options?: HttpRequestOptions<A>,
-  ) => Effect.Effect<HttpResponse<A>>;
+  ) => Effect.Effect<HttpResponse<A>, never, Ballast.Runtime>;
   readonly delete: <A = string>(
     path: string,
     options?: HttpRequestOptions<A>,
-  ) => Effect.Effect<HttpResponse<A>>;
+  ) => Effect.Effect<HttpResponse<A>, never, Ballast.Runtime>;
   readonly post: <A = string>(
     path: string,
     body: HttpRequestBody,
     options?: HttpRequestOptions<A>,
-  ) => Effect.Effect<HttpResponse<A>>;
+  ) => Effect.Effect<HttpResponse<A>, never, Ballast.Runtime>;
   readonly put: <A = string>(
     path: string,
     body: HttpRequestBody,
     options?: HttpRequestOptions<A>,
-  ) => Effect.Effect<HttpResponse<A>>;
+  ) => Effect.Effect<HttpResponse<A>, never, Ballast.Runtime>;
   readonly patch: <A = string>(
     path: string,
     body: HttpRequestBody,
     options?: HttpRequestOptions<A>,
-  ) => Effect.Effect<HttpResponse<A>>;
+  ) => Effect.Effect<HttpResponse<A>, never, Ballast.Runtime>;
 }
 
 /**
@@ -139,7 +139,7 @@ export const Client = (
     const execute = <A>(
       input: HttpScriptRequest,
       options?: HttpRequestOptions<A>,
-    ): Effect.Effect<HttpResponse<A>> =>
+    ): Effect.Effect<HttpResponse<A>, never, Ballast.Runtime> =>
       Effect.gen(function* () {
         const headers = {
           ...(input.headers ?? {}),
@@ -188,7 +188,7 @@ export interface WebhookJsonTopic<A> {
   readonly subscribe: (
     name: string,
     hook: WebhookRef,
-    handler: (delivery: A) => Effect.Effect<void>,
+    handler: (delivery: A) => Effect.Effect<void, never, Ballast.Runtime>,
     options?: WebhookSubscribeOptions,
   ) => Effect.Effect<void, never, Ballast.EventHost>;
 }
@@ -209,7 +209,7 @@ const webhookTopic = (
 const subscribeWebhook = (
   name: string,
   hook: WebhookRef,
-  handler: (delivery: WebhookDelivery) => Effect.Effect<void>,
+  handler: (delivery: WebhookDelivery) => Effect.Effect<void, never, Ballast.Runtime>,
   options?: WebhookSubscribeOptions,
 ): Effect.Effect<void, never, Ballast.EventHost> =>
   webhookTopic(hook.slot, options).subscribe(name, hook, handler);
@@ -248,7 +248,7 @@ export interface WebhookFunction {
   readonly subscribe: (
     name: string,
     hook: WebhookRef,
-    handler: (delivery: WebhookDelivery) => Effect.Effect<void>,
+    handler: (delivery: WebhookDelivery) => Effect.Effect<void, never, Ballast.Runtime>,
     options?: WebhookSubscribeOptions,
   ) => Effect.Effect<void, never, Ballast.EventHost>;
   readonly json: <A>(

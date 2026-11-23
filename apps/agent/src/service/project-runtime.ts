@@ -940,7 +940,10 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const session = yield* startRuntimeSession({
           bundlePath: bundle.path,
           generation,
-          settings: { get: (key) => record.params[key] },
+          settings: {
+            get: (key) => record.params[key],
+            snapshot: () => record.params,
+          },
           request: requestHandler(record, requirements),
           registerTimer: (name) => timerDeclaration(name) === undefined ? Effect.die(new Error("Timer " + name + " is not declared")) : timers.registerName({ projectId: record.project.id, generation, name }),
           scheduleTimer: (input) => {
@@ -1241,8 +1244,17 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         yield* saveSettings(record.project, { enabled: record.enabled, params });
         const next = yield* setRecord({ ...record, params });
         if (next.session !== undefined) {
-          const restarted = yield* startWithRuntimeErrors(next);
-          return yield* detailOf(restarted);
+          // Settings live in the worker; push the value so its next read sees
+          // it. Do not restart: the generation and worker pid stay the same.
+          next.session.updateParams({ [key]: value });
+          yield* logs.write({
+            level: "info",
+            source: "agent",
+            projectId: next.project.id,
+            unitKind: "param",
+            unitName: key,
+            message: "param " + key + " updated",
+          });
         }
         return yield* detailOf(next);
       }));

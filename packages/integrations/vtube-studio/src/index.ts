@@ -23,7 +23,7 @@ const call = <K extends ScriptRequestName>(
   connection: Ballast.ConnectionRef<typeof INTEGRATION>,
   name: K,
   input: VTubeStudioRequests[K]["input"],
-): Effect.Effect<VTubeStudioRequests[K]["output"]> => {
+): Effect.Effect<VTubeStudioRequests[K]["output"], never, Ballast.Runtime> => {
   const schemas = RequestSchemas[name];
   return host.granted<VTubeStudioRequests[K]["input"], VTubeStudioRequests[K]["output"]>({
     integration: INTEGRATION,
@@ -37,8 +37,12 @@ const call = <K extends ScriptRequestName>(
 };
 
 export type VTubeStudioRequestMethod<K extends ScriptRequestName> = {} extends VTubeStudioRequests[K]["input"]
-  ? (input?: VTubeStudioRequests[K]["input"]) => Effect.Effect<VTubeStudioRequests[K]["output"]>
-  : (input: VTubeStudioRequests[K]["input"]) => Effect.Effect<VTubeStudioRequests[K]["output"]>;
+  ? (
+      input?: VTubeStudioRequests[K]["input"],
+    ) => Effect.Effect<VTubeStudioRequests[K]["output"], never, Ballast.Runtime>
+  : (
+      input: VTubeStudioRequests[K]["input"],
+    ) => Effect.Effect<VTubeStudioRequests[K]["output"], never, Ballast.Runtime>;
 
 /**
  * The typed client for a VTube Studio connection slot. Method names are the

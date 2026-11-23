@@ -98,10 +98,12 @@ export interface ClientOptions {
 }
 
 export interface WebSocketSender {
-  readonly send: (message: WebSocketOutboundMessage) => Effect.Effect<void>;
-  readonly text: (text: string) => Effect.Effect<void>;
-  readonly binary: (bytes: Uint8Array) => Effect.Effect<void>;
-  readonly json: (value: unknown) => Effect.Effect<void>;
+  readonly send: (
+    message: WebSocketOutboundMessage,
+  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly text: (text: string) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly binary: (bytes: Uint8Array) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly json: (value: unknown) => Effect.Effect<void, never, Ballast.Runtime>;
 }
 
 export interface WebSocketClient
@@ -167,14 +169,34 @@ export interface ServerOptions {
 }
 
 export interface WebSocketServerSender {
-  readonly send: (clientId: string, message: WebSocketOutboundMessage) => Effect.Effect<void>;
-  readonly broadcast: (message: WebSocketOutboundMessage) => Effect.Effect<WebSocketBroadcastResult>;
-  readonly text: (clientId: string, text: string) => Effect.Effect<void>;
-  readonly binary: (clientId: string, bytes: Uint8Array) => Effect.Effect<void>;
-  readonly json: (clientId: string, value: unknown) => Effect.Effect<void>;
-  readonly broadcastText: (text: string) => Effect.Effect<WebSocketBroadcastResult>;
-  readonly broadcastBinary: (bytes: Uint8Array) => Effect.Effect<WebSocketBroadcastResult>;
-  readonly broadcastJson: (value: unknown) => Effect.Effect<WebSocketBroadcastResult>;
+  readonly send: (
+    clientId: string,
+    message: WebSocketOutboundMessage,
+  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly broadcast: (
+    message: WebSocketOutboundMessage,
+  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  readonly text: (
+    clientId: string,
+    text: string,
+  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly binary: (
+    clientId: string,
+    bytes: Uint8Array,
+  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly json: (
+    clientId: string,
+    value: unknown,
+  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  readonly broadcastText: (
+    text: string,
+  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  readonly broadcastBinary: (
+    bytes: Uint8Array,
+  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  readonly broadcastJson: (
+    value: unknown,
+  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
 }
 
 export interface WebSocketServer

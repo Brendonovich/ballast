@@ -33,4 +33,4 @@ export default Effect.gen(function* () {
       yield* Effect.log(`cooldown started for ${user}`);
     }),
   );
-});
+}) satisfies Ballast.Project;

@@ -52,6 +52,12 @@ still open, and what to build next.
   worker and publishes `reload-failed` with the file/line. State is project-scoped:
   `.ballast/settings.json` (`enabled`, `params`) and `.ballast/applied.json`. This is a clean
   reset; old per-script state is not migrated.
+- **Live params and runtime types.** A param change is pushed to the running
+  worker's `Settings` Ref; the next read in a handler or `Ballast.run` loop sees
+  it without a restart or generation change. `Ballast.Runtime` makes param,
+  request and timer/workflow reads type errors in init; the gate's generated
+  entry check reports a clear message, and `satisfies Ballast.Project` gives the
+  editor the same error at the offending line.
 - **Cloud.** Cloudflare Worker/Alchemy app for OAuth, Twitch EventSub and webhook ingress, machine
   pairing/relay, and a per-machine RPC link. It typechecks and has protocol/unit tests; a deployed
   end-to-end run is still a next task.

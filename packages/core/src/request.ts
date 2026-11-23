@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { Schema } from "effect";
 import type { RequestManifest } from "./manifest.ts";
+import { Runtime } from "./runtime.ts";
 import { ManifestRecorder, RequestClients } from "./services.ts";
 import type { ManifestRecorderService, RequestClientsService } from "./services.ts";
 
@@ -28,7 +29,9 @@ export interface RequestSpec<A, B> {
   readonly outputSchema?: Schema.Codec<B, unknown, never, never>;
 }
 
-export type RequestClient<A, B> = (input: A) => Effect.Effect<B>;
+export type RequestClient<A, B> = (
+  input: A,
+) => Effect.Effect<B, never, Runtime>;
 
 export const toRequestManifest = (request: RequestRef<unknown, unknown>): RequestManifest => ({
   integration: request.integration,

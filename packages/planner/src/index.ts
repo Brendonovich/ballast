@@ -8,7 +8,11 @@ export type {
   UnitChange,
   UnitKind,
 } from "./project-plan.ts";
-export { typecheckProject, TypecheckError } from "./typecheck.ts";
+export {
+  typecheckProject,
+  TypecheckError,
+  RUNTIME_IN_INIT_MESSAGE,
+} from "./typecheck.ts";
 export type { TypecheckDiagnostic, TypecheckResult } from "./typecheck.ts";
 export { runPlan, runPlanInfo, decodeManifest, PlanError } from "./plan.ts";
 export type { PlanOptions, PlannedScript } from "./plan.ts";

@@ -70,13 +70,25 @@ export type {
 export type Integration = typeof INTEGRATION;
 
 export interface MidiClient extends Ballast.ConnectionRef<Integration> {
-  readonly noteOn: (input: NoteOnInput) => Effect.Effect<RequestOutput>;
-  readonly noteOff: (input: NoteOffInput) => Effect.Effect<RequestOutput>;
-  readonly controlChange: (input: ControlChangeInput) => Effect.Effect<RequestOutput>;
-  readonly programChange: (input: ProgramChangeInput) => Effect.Effect<RequestOutput>;
-  readonly pitchBend: (input: PitchBendInput) => Effect.Effect<RequestOutput>;
+  readonly noteOn: (
+    input: NoteOnInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
+  readonly noteOff: (
+    input: NoteOffInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
+  readonly controlChange: (
+    input: ControlChangeInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
+  readonly programChange: (
+    input: ProgramChangeInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
+  readonly pitchBend: (
+    input: PitchBendInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
   /** Send a complete raw message. The first byte must be a status byte. */
-  readonly raw: (input: RawInput) => Effect.Effect<RequestOutput>;
+  readonly raw: (
+    input: RawInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
 }
 
 const call = <A, B>(
@@ -86,7 +98,7 @@ const call = <A, B>(
   inputSchema: Schema.Codec<A, unknown, never, never>,
   outputSchema: Schema.Codec<B, unknown, never, never>,
   input: A,
-): Effect.Effect<B> =>
+): Effect.Effect<B, never, Ballast.Runtime> =>
   host.granted<A, B>({
     integration: INTEGRATION,
     slot: connection.slot,

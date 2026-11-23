@@ -11,6 +11,8 @@ import type { RuntimeHostHandlers, SettingValue } from "@ballast/core";
 
 export interface RuntimeSettings {
   readonly get: (key: string) => string | number | boolean | ReadonlyArray<string> | undefined;
+  /** Initial values copied into the worker's Settings Ref. */
+  readonly snapshot?: () => Readonly<Record<string, SettingValue>>;
 }
 
 export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
@@ -67,6 +69,8 @@ export interface RuntimeSession {
   readonly deliver: (topicKey: string, payload: unknown) => void;
   /** Post one durable timer fire to the worker. */
   readonly deliverTimer: (fire: RuntimeTimerFire) => void;
+  /** Push live param values; the worker's next Param read sees them. */
+  readonly updateParams: (values: Readonly<Record<string, SettingValue>>) => void;
   readonly close: Effect.Effect<void>;
 }
 
@@ -179,6 +183,24 @@ export const startRuntimeSession = (
           });
         }
       },
+      updateParams: (values) => {
+        if (closed || worker === undefined) {
+          onLog({
+            level: "warn",
+            message: `Params could not be delivered: worker generation ${options.generation} is ${closed ? "closed" : "not started"}`,
+          });
+          return;
+        }
+        try {
+          worker.postMessage({ kind: "params", values });
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          onLog({
+            level: "error",
+            message: `Params could not be delivered to worker generation ${options.generation}: ${message}`,
+          });
+        }
+      },
       deliverTimer: (fire) => {
         if (closed || worker === undefined) {
           onLog({
@@ -233,6 +255,7 @@ export const startRuntimeSession = (
               workerData: {
                 rpcPort: channel.port2,
                 generation: options.generation,
+                settings: options.settings.snapshot?.() ?? {},
               },
               transferList: [channel.port2],
               stdout: true,

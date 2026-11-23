@@ -23,4 +23,4 @@ export default Effect.gen(function* () {
   yield* Midi.RawMessage.subscribe("raw-message", midi, (event) =>
     Effect.log(`raw ${event.data.join(" ")}`),
   );
-});
+}) satisfies Ballast.Project;

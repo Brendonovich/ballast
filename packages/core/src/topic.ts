@@ -8,6 +8,7 @@ import type { OnStale, TopicCondition, TopicManifest } from "./manifest.ts";
 import type { DeclarationSource } from "./source.ts";
 import { captureSource } from "./source.ts";
 import { withUnitHandler } from "./unit.ts";
+import { provideRuntime, Runtime } from "./runtime.ts";
 import { EventBus, ManifestRecorder } from "./services.ts";
 import type { EventBusService, ManifestRecorderService } from "./services.ts";
 
@@ -49,7 +50,7 @@ export interface Topic<
   readonly subscribe: (
     name: string,
     connection: ConnectionRef<Integration>,
-    handler: (event: A) => Effect.Effect<void, never, never>,
+    handler: (event: A) => Effect.Effect<void, never, Runtime>,
     options?: Options,
   ) => Effect.Effect<void, never, EventHost>;
 }
@@ -100,7 +101,7 @@ export const Topic = <A, Integration extends string, Options = void>(
         host.subscribe(
           bound,
           connection,
-          withUnitHandler(name, handler),
+          withUnitHandler(name, (event) => provideRuntime(handler(event))),
           name,
           source,
         ),

@@ -11,4 +11,4 @@ export default Effect.gen(function* () {
       yield* Effect.log(text);
     }),
   );
-});
+}) satisfies Ballast.Project;

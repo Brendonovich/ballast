@@ -199,7 +199,11 @@ const resolutionKey = async (
   return resolved.join("\u0000");
 };
 
-const hashProject = async (projectRoot: string, configPath: string): Promise<string> => {
+const hashProject = async (
+  projectRoot: string,
+  configPaths: ReadonlyArray<string>,
+  entry: string | undefined,
+): Promise<string> => {
   const files: Array<string> = [];
   await walk(projectRoot, files);
   files.sort();
@@ -218,16 +222,20 @@ const hashProject = async (projectRoot: string, configPath: string): Promise<str
       hash.update("\u0000");
     }
   }
-  // The generated config lives under .ballast/ and is skipped by walk; the
-  // project tsconfig is included both there and here so its exact bytes key
-  // the cache even when it is the resolved config.
-  const configText = await readFile(configPath, "utf8");
-  hash.update("config\u0000" + configPath + "\u0000");
-  hash.update(configText);
-  hash.update("\u0000");
-  const parsedConfig = parseTsconfig(configText);
-  if (parsedConfig !== undefined) {
-    hash.update("resolution\u0000" + (await resolutionKey(projectRoot, parsedConfig)) + "\u0000");
+  // Configs and the generated entry check live under .ballast/ and are
+  // skipped by walk; hash their exact bytes so either changing invalidates.
+  for (const configPath of configPaths) {
+    const configText = await readFile(configPath, "utf8");
+    hash.update("config\u0000" + configPath + "\u0000");
+    hash.update(configText);
+    hash.update("\u0000");
+    const parsedConfig = parseTsconfig(configText);
+    if (parsedConfig !== undefined) {
+      hash.update("resolution\u0000" + (await resolutionKey(projectRoot, parsedConfig)) + "\u0000");
+    }
+  }
+  if (entry !== undefined) {
+    hash.update("entry\u0000" + entry + "\u0000");
   }
   hash.update(process.env["BALLAST_TSGO_VERSION"] ?? "local");
   return hash.digest("hex");
@@ -375,29 +383,151 @@ const cacheable = (result: TypecheckResult): boolean => {
   return !/TS(?:2688|6053|5083):/.test(text);
 };
 
+export const RUNTIME_IN_INIT_MESSAGE =
+  "This reads a runtime value (param/request/timer) during init. Move it inside a subscribe handler, Ballast.run, or a timer/workflow body";
+
+interface EntryCheck {
+  readonly config: string;
+  readonly file: string;
+}
+
+/**
+ * Write a generated assignment that widens the entry's requirements by
+ * excluding Ballast.Runtime. If the default export requires Runtime, the
+ * assignment fails and the diagnostic is mapped back to the entry file.
+ */
+const ensureEntryCheck = async (
+  projectRoot: string,
+  baseConfig: string,
+  entry: string,
+): Promise<EntryCheck> => {
+  const directory = join(projectRoot, ".ballast");
+  const file = join(directory, "entry-check.ts");
+  const config = join(directory, "tsconfig.check.json");
+  await mkdir(directory, { recursive: true });
+  const importPath = relative(directory, entry).split("\\").join("/");
+  const entryImport = importPath.startsWith(".") ? importPath : "./" + importPath;
+  await writeFile(
+    file,
+    [
+      'import type { Effect } from "effect";',
+      'import type * as Ballast from "@ballast/core";',
+      `import entry from "${entryImport}";`,
+      "",
+      "type Requirement = typeof entry extends Effect.Effect<unknown, unknown, infer R> ? R : never;",
+      "const noRuntime: Effect.Effect<unknown, unknown, Exclude<Requirement, Ballast.Runtime>> = entry;",
+      "void noRuntime;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const extendsPath = relative(directory, baseConfig).split("\\").join("/");
+  await writeFile(
+    config,
+    JSON.stringify(
+      {
+        extends: extendsPath.startsWith(".") ? extendsPath : "./" + extendsPath,
+        compilerOptions: {
+          noEmit: true,
+          composite: false,
+          declaration: false,
+          declarationMap: false,
+          emitDeclarationOnly: false,
+          sourceMap: false,
+          incremental: false,
+        },
+        files: ["./entry-check.ts"],
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+  return { config, file };
+};
+
 /**
  * Run `tsgo` for a project. Uses the project tsconfig when present, otherwise
  * a generated config covering the project and the workspace Ballast packages.
  * Results are cached by a hash of project sources, the resolved config and the
  * real paths its type roots resolve to (so a repointed `types/current` is a
- * new key).
+ * new key). When an entry is given, a generated check also rejects entry
+ * effects that require `Ballast.Runtime` (a param/request/timer read in init).
  */
 export const typecheckProject = (
   projectRoot: string,
+  options: { readonly entry?: string } = {},
 ): Effect.Effect<TypecheckResult, TypecheckError> =>
   Effect.gen(function* () {
     const root = resolve(projectRoot);
+    const entry = options.entry === undefined ? undefined : resolve(options.entry);
     const config = yield* Effect.promise(() => ensureConfig(root));
-    const key = yield* Effect.promise(() => hashProject(root, config));
+    const check =
+      entry === undefined
+        ? undefined
+        : yield* Effect.promise(() => ensureEntryCheck(root, config, entry));
+    const runConfig = check?.config ?? config;
+    const key = yield* Effect.promise(() =>
+      hashProject(
+        root,
+        check === undefined ? [config] : [config, check.config, check.file],
+        entry,
+      ),
+    );
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
     const result = yield* Effect.tryPromise({
-      try: () => runTsgo(root, config),
+      try: () => runTsgo(root, runConfig),
       catch: (cause) =>
         new TypecheckError(`tsgo failed to start: ${String(cause)}`),
     });
-    const diagnostics = parseDiagnostics(result.output, root);
+    const parsed = parseDiagnostics(result.output, root);
+    const entryFile =
+      entry === undefined ? undefined : relative(root, entry).split("\\").join("/");
+    const checkFile =
+      check === undefined ? undefined : relative(root, check.file).split("\\").join("/");
+    const runtimeMessage = "TS_INIT_RUNTIME: " + RUNTIME_IN_INIT_MESSAGE;
+    const entryRuntime =
+      entryFile === undefined
+        ? []
+        : parsed
+            .filter(
+              (diagnostic) =>
+                diagnostic.file === entryFile &&
+                /^TS(?:1360|2322|2345|2375):/.test(diagnostic.message) &&
+                /Runtime|Project/.test(diagnostic.message),
+            )
+            .map((diagnostic) => ({ ...diagnostic, message: runtimeMessage }));
+    const diagnostics = (() => {
+      if (entryFile === undefined || checkFile === undefined) return parsed;
+      if (entryRuntime.length > 0) {
+        const positions = new Set(
+          entryRuntime.map((diagnostic) => diagnostic.file + ":" + diagnostic.line + ":" + diagnostic.column),
+        );
+        return [
+          ...entryRuntime,
+          ...parsed.filter(
+            (diagnostic) =>
+              diagnostic.file !== checkFile &&
+              !positions.has(diagnostic.file + ":" + diagnostic.line + ":" + diagnostic.column),
+          ),
+        ];
+      }
+      const withoutCheck = parsed.filter((diagnostic) => diagnostic.file !== checkFile);
+      // Preserve real project diagnostics. The generated check also reports
+      // the entry's own errors through its import; those must not replace them
+      // with the init-runtime message.
+      if (withoutCheck.length > 0) return withoutCheck;
+      const runtimeCheck = parsed.filter(
+        (diagnostic) =>
+          diagnostic.file === checkFile &&
+          /^TS(?:2322|2345|2375):/.test(diagnostic.message) &&
+          /Runtime/.test(diagnostic.message),
+      );
+      if (runtimeCheck.length === 0) return withoutCheck;
+      return [{ file: entryFile, line: 1, column: 1, message: runtimeMessage }];
+    })();
     const checked: TypecheckResult = {
       ok: result.code === 0,
       diagnostics,

@@ -4,6 +4,7 @@ import {
   type ConnectionManifest,
   type Manifest,
   type ParamManifest,
+  type ParamRead,
   type RequestManifest,
   type RunManifest,
   type TimerManifest,
@@ -72,7 +73,16 @@ const upsertRequest = (
  * idempotent per key so declaring the same topic twice (or the same request
  * via two capabilities) yields one manifest entry with merged scopes.
  */
-export const makeManifestRecorder = (ref: Ref.Ref<Manifest>): ManifestRecorderService => ({
+export const makeManifestRecorder = (
+  ref: Ref.Ref<Manifest>,
+  reads?: Ref.Ref<ReadonlyArray<ParamRead>>,
+): ManifestRecorderService => ({
+  ...(reads === undefined
+    ? {}
+    : {
+        paramRead: (read: ParamRead) =>
+          Ref.update(reads, (current) => [...current, read]),
+      }),
   project: (project) =>
     Ref.update(ref, (manifest) => ({
       ...manifest,

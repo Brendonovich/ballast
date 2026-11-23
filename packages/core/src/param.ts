@@ -1,14 +1,33 @@
 import * as Effect from "effect/Effect";
 import * as Effectable from "effect/Effectable";
 import * as Option from "effect/Option";
+import type { DeclarationSource } from "./source.ts";
 import type { ParamDefault, ParamManifest, ParamOptionSource, ParamType } from "./manifest.ts";
 import { currentPhase } from "./phase.ts";
+import { Runtime } from "./runtime.ts";
 import { captureSource } from "./source.ts";
 import { ManifestRecorder, Settings } from "./services.ts";
 
-export interface Param<A> extends Effect.Effect<A> {
+export class ParamReadDuringInitError extends Error {
   readonly key: string;
-  readonly get: Effect.Effect<A>;
+  readonly source: DeclarationSource | undefined;
+
+  constructor(key: string, source: DeclarationSource | undefined) {
+    super(
+      `Param "${key}" was read during init` +
+        (source === undefined ? "" : ` at ${source.file}:${source.line}:${source.column}`) +
+        ". Read params inside handlers/runs, not in init.",
+    );
+    this.name = "ParamReadDuringInitError";
+    this.key = key;
+    this.source = source;
+  }
+}
+
+export interface Param<A> extends Effect.Effect<A, never, Runtime> {
+  readonly key: string;
+  /** Reads the current value. A settings change is visible on the next read. */
+  readonly get: Effect.Effect<A, never, Runtime>;
 }
 
 export interface ParamOptions<A extends ParamDefault> {
@@ -20,7 +39,10 @@ export interface ParamOptions<A extends ParamDefault> {
   readonly default?: A;
 }
 
-const makeParam = <A>(key: string, get: Effect.Effect<A>): Param<A> =>
+const makeParam = <A>(
+  key: string,
+  get: Effect.Effect<A, never, Runtime>,
+): Param<A> =>
   Object.assign(
     { key, get },
     Effectable.Prototype<Param<A>>({
@@ -68,6 +90,25 @@ const readSetting = <A extends ParamDefault>(
     Effect.map((value) => (value === undefined ? fallback : decode(value))),
   );
 
+const planRead = (
+  key: string,
+  source: DeclarationSource | undefined,
+): Effect.Effect<never, never, Runtime> =>
+  Effect.gen(function* () {
+    const recorder = yield* Effect.serviceOption(ManifestRecorder);
+    yield* Option.match(recorder, {
+      onNone: () => Effect.void,
+      onSome: (service) =>
+        service.paramRead === undefined
+          ? Effect.void
+          : service.paramRead({
+              key,
+              ...(source === undefined ? {} : { source }),
+            }),
+    });
+    return yield* Effect.die(new ParamReadDuringInitError(key, source));
+  });
+
 const declare = <A extends ParamDefault>(
   type: ParamType,
   key: string,
@@ -88,14 +129,7 @@ const declare = <A extends ParamDefault>(
         onSome: (service) => service.param(toManifest(type, key, options, source, manifestDefault)),
       });
 
-      return makeParam(
-        key,
-        Effect.die(
-          new Error(
-            `Param "${key}" was read during plan. Init must declare params; handlers and Ballast.run read them.`,
-          ),
-        ),
-      );
+      return makeParam(key, planRead(key, source));
     }
 
     return makeParam(key, readSetting(key, decode, fallback));

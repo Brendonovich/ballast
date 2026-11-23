@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { OnStale, TimerManifest } from "./manifest.ts";
 import type { DeclarationSource } from "./source.ts";
+import { provideRuntime, Runtime } from "./runtime.ts";
 import { captureSource } from "./source.ts";
 import { ManifestRecorder } from "./services.ts";
 import type { ManifestRecorderService } from "./services.ts";
@@ -89,9 +90,9 @@ export interface Timer<A> {
     key: string,
     after: Duration.Input,
     payload: A,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, never, Runtime>;
   /** Cancel a pending or fired instance. Cancelling a missing key is a no-op. */
-  readonly cancel: (key: string) => Effect.Effect<void>;
+  readonly cancel: (key: string) => Effect.Effect<void, never, Runtime>;
 }
 
 export class TimerCalledDuringPlanError extends Error {
@@ -213,8 +214,8 @@ interface TimerImplementation<A> {
     key: string,
     after: Duration.Input,
     payload: A,
-  ) => Effect.Effect<void>;
-  readonly cancel: (key: string) => Effect.Effect<void>;
+  ) => Effect.Effect<void, never, Runtime>;
+  readonly cancel: (key: string) => Effect.Effect<void, never, Runtime>;
 }
 
 const makeTimer = <A>(
@@ -338,7 +339,7 @@ export const TimerHostRuntime: Layer.Layer<TimerHost> = Layer.effect(
 export const subscribe = <A>(
   name: string,
   payload: Schema.Codec<A, unknown, never, never>,
-  handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
+  handler: (fire: TimerFire<A>) => Effect.Effect<void, never, Runtime>,
   options: Omit<TimerOptions<A>, "payload"> = {},
 ): Effect.Effect<Timer<A>, never, TimerHost> => {
   const source = captureSource(2);
@@ -349,6 +350,6 @@ export const subscribe = <A>(
       ...options,
       ...(source === undefined ? {} : { source }),
     };
-    return host.subscribe(spec, handler);
+    return host.subscribe(spec, (fire) => provideRuntime(handler(fire)));
   });
 };

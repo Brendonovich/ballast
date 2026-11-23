@@ -53,16 +53,18 @@ const normalizeSource = (
 };
 
 /**
- * Map raw bundle locations captured by core's `captureSource` back through
- * rolldown's source map. Only named declarations are captured in the
- * prototype, so unnamed subscriptions keep no source field.
+ * Build a mapper from raw bundle locations captured by core's `captureSource`
+ * back through rolldown's source map.
  */
-export const mapManifestSources = (
-  manifest: Manifest,
+export const makeSourceMapper = (
   sourceMapPath: string,
   bundlePath: string,
   projectRoot: string,
-): Manifest => {
+): ((source: {
+  readonly file: string;
+  readonly line: number;
+  readonly column: number;
+}) => { readonly file: string; readonly line: number; readonly column: number }) => {
   const raw = readFileSync(sourceMapPath, "utf8");
   const parsed = JSON.parse(raw);
   const consumer = new SourceMapConsumer(parsed);
@@ -76,7 +78,7 @@ export const mapManifestSources = (
   };
   const bundle = canonical(bundlePath);
 
-  const map = (source: { readonly file: string; readonly line: number; readonly column: number }) => {
+  return (source) => {
     if (canonical(source.file) !== bundle) return source;
     const original = consumer.originalPositionFor({
       line: source.line,
@@ -91,6 +93,20 @@ export const mapManifestSources = (
       column: original.column + 1,
     };
   };
+};
+
+/**
+ * Map raw bundle locations captured by core's `captureSource` back through
+ * rolldown's source map. Only named declarations are captured in the
+ * prototype, so unnamed subscriptions keep no source field.
+ */
+export const mapManifestSources = (
+  manifest: Manifest,
+  sourceMapPath: string,
+  bundlePath: string,
+  projectRoot: string,
+): Manifest => {
+  const map = makeSourceMapper(sourceMapPath, bundlePath, projectRoot);
 
   return {
     ...manifest,

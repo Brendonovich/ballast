@@ -1,3 +1,4 @@
+import * as Ballast from "@ballast/core";
 import * as OBS from "@ballast/module-obs";
 import * as Twitch from "@ballast/module-twitch";
 import * as Workflow from "@ballast/workflow";
@@ -106,4 +107,4 @@ export default Effect.gen(function* () {
       );
     }),
   );
-});
+}) satisfies Ballast.Project;

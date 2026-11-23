@@ -62,6 +62,10 @@ export class RuntimeParamStore implements RuntimeSettings {
   get(key: string): RunParamValue | undefined {
     return this.values.get(key);
   }
+
+  snapshot(): Readonly<Record<string, RunParamValue>> {
+    return Object.fromEntries(this.values);
+  }
 }
 
 const resolveDir = (path: Path.Path): Effect.Effect<string> =>

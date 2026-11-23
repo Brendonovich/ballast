@@ -11,6 +11,7 @@ import * as Activity from "effect/workflow/Activity";
 import * as DurableDeferred from "effect/workflow/DurableDeferred";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { TestClock } from "effect/testing";
+import { Runtime } from "@ballast/core";
 import * as BW from "../src/index.ts";
 
 const Payload = Schema.Struct({ id: Schema.String });
@@ -49,10 +50,14 @@ const startEngine = (
     });
   });
 
-const provideEngine = <A, E>(
-  effect: Effect.Effect<A, E, WorkflowEngine.WorkflowEngine>,
+const provideEngine = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
   engine: WorkflowEngine.WorkflowEngine["Service"],
-) => Effect.provideService(effect, WorkflowEngine.WorkflowEngine, engine);
+) =>
+  effect.pipe(
+    Effect.provideService(Runtime, {}),
+    Effect.provideService(WorkflowEngine.WorkflowEngine, engine),
+  );
 
 describe("@ballast/workflow", () => {
   it.effect("runs activity -> durable sleep -> activity and only runs each activity once", () =>

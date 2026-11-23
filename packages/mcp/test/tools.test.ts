@@ -490,6 +490,9 @@ describe("guide", () => {
     expect(GUIDE).toContain("Effect.catchTag");
     expect(GUIDE).toContain("Param.strings");
     expect(GUIDE).toContain("OBS.scenes(obs)");
+    expect(GUIDE).toContain("satisfies Ballast.Project");
+    expect(GUIDE).toContain("Values are live");
+    expect(GUIDE).toContain("Ballast.Runtime");
     expect(GUIDE).not.toContain("Timer.unit");
     expect(GUIDE).not.toContain("being removed");
   });

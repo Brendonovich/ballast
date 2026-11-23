@@ -10,6 +10,7 @@ import type { EventHost } from "./topic.ts";
 import { ManifestRecorder, ScriptRunner } from "./services.ts";
 import type { EventBus, RequestClients, ScriptRunnerService, Settings } from "./services.ts";
 import { TimerHost, TimerHostPlan, TimerHostRuntime } from "./timer.ts";
+import { provideRuntime, Runtime } from "./runtime.ts";
 import { captureSource } from "./source.ts";
 import { withUnit } from "./unit.ts";
 
@@ -54,6 +55,13 @@ type ScriptProvidedServices =
  * ```
  */
 export type Script<E = never> = Effect.Effect<void, E, ScriptHostServices>;
+
+/**
+ * The type a project entry can `satisfies` so an editor rejects a param or
+ * request read in init: such a read leaves `Ballast.Runtime` in the effect's
+ * requirements, which this type does not include.
+ */
+export type Project<E = never> = Script<E>;
 
 interface ScriptRunnerState {
   readonly service: ScriptRunnerService;
@@ -147,7 +155,7 @@ export const evaluateScript = <E, R extends ScriptHostServices>(
  */
 export const run = (
   name: string,
-  effect: Effect.Effect<void, never, never>,
+  effect: Effect.Effect<void, never, Runtime>,
 ): Effect.Effect<void, never, ScriptRunner> => {
   const source = captureSource(2);
   return Effect.gen(function* () {
@@ -163,7 +171,7 @@ export const run = (
       return;
     }
     const runner = yield* ScriptRunner;
-    yield* runner.run(name, effect);
+    yield* runner.run(name, provideRuntime(effect));
   });
 };
 

@@ -173,6 +173,7 @@ describe("@ballast/core plan phase", () => {
           yield* call({ text: "no" });
         });
 
+      // @ts-expect-error calling a request client in init requires Runtime
       const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
@@ -197,6 +198,7 @@ describe("@ballast/core plan phase", () => {
           yield* echo({ text: "no" });
         });
 
+      // @ts-expect-error calling a request client in init requires Runtime
       const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
@@ -213,6 +215,7 @@ describe("@ballast/core plan phase", () => {
         return yield* prefix;
       }).pipe(
         Effect.provideService(Ballast.ScriptPhase, "runtime"),
+        Effect.provideService(Ballast.Runtime, {}),
         Effect.provideService(Ballast.Settings, {
           get: (key) => Effect.succeed(key === "prefix" ? "hi" : undefined),
         }),
@@ -232,11 +235,12 @@ describe("@ballast/core plan phase", () => {
           yield* prefix;
         });
 
+      // @ts-expect-error reading a param in init requires Runtime
       const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
-        expect(Cause.pretty(exit.cause)).toContain("read during plan");
+        expect(Cause.pretty(exit.cause)).toContain("read during init");
       }
     }),
   );

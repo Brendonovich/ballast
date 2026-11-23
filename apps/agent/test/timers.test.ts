@@ -411,6 +411,9 @@ describe("durable timers through the service", () => {
       yield* call(root, (client) =>
         client.SetProjectParam({ ...started, key: "n", value: 2 }),
       );
+      // Param changes are live and do not restart, so force the generation
+      // swap explicitly to exercise handing the timer to the new worker.
+      yield* call(root, (client) => client.RestartProject({ projectId: started.projectId }));
       yield* waitFor("the restarted timer with n=2", () =>
         call(root, (client) => client.ListTimers({ projectId: started.projectId })).pipe(
           Effect.map((result) =>

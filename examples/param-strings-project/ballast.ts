@@ -16,4 +16,4 @@ export default Effect.gen(function* () {
       yield* Effect.log("scenes: " + (yield* scenes).join(", "));
     }),
   );
-});
+}) satisfies Ballast.Project;

@@ -1,3 +1,4 @@
+import * as Ballast from "@ballast/core";
 import * as Keyboard from "@ballast/module-keyboard";
 import { Effect } from "effect";
 
@@ -18,4 +19,4 @@ export default Effect.gen(function* () {
   yield* Keyboard.KeyDown.subscribe("key-down", keyboard, (event) =>
     Effect.log(`key ${event.key} down`),
   );
-});
+}) satisfies Ballast.Project;

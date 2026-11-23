@@ -67,9 +67,13 @@ export type Integration = typeof INTEGRATION;
 
 export interface KeyboardClient extends Ballast.ConnectionRef<Integration> {
   /** Tap a key once, optionally holding modifiers, on the streamer's machine. */
-  readonly tap: (input: TapInput) => Effect.Effect<RequestOutput>;
+  readonly tap: (
+    input: TapInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
   /** Press or release a key without a matching tap, for push-to-talk style keys. */
-  readonly toggle: (input: ToggleInput) => Effect.Effect<RequestOutput>;
+  readonly toggle: (
+    input: ToggleInput,
+  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
 }
 
 const call = <A, B>(
@@ -79,7 +83,7 @@ const call = <A, B>(
   inputSchema: Schema.Codec<A, unknown, never, never>,
   outputSchema: Schema.Codec<B, unknown, never, never>,
   input: A,
-): Effect.Effect<B> =>
+): Effect.Effect<B, never, Ballast.Runtime> =>
   host.granted<A, B>({
     integration: INTEGRATION,
     slot: connection.slot,
@@ -179,7 +183,9 @@ export const Hotkey: Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions> = 
       host.subscribe(
         metadata,
         connection,
-        Ballast.withUnitHandler(name, handler),
+        Ballast.withUnitHandler(name, (event) =>
+          Ballast.provideRuntime(handler(event)),
+        ),
         name,
         Ballast.captureSource(1),
       ),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import type { Runtime } from "@ballast/core";
 import {
   GetSceneListResponseSchema,
   SetCurrentProgramSceneResponseSchema,
@@ -10,7 +11,9 @@ import {
  * The method call scripts write. Typechecking this function proves
  * `GetSceneList().scenes[0].sceneName` is a string rather than unknown.
  */
-const firstSceneName = (obs: ObsClient): Effect.Effect<string> =>
+const firstSceneName = (
+  obs: ObsClient,
+): Effect.Effect<string, never, Runtime> =>
   obs.GetSceneList().pipe(
     Effect.map((response) => {
       const scene = response.scenes[0];

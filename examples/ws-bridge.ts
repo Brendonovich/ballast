@@ -1,3 +1,4 @@
+import * as Ballast from "@ballast/core";
 import * as WebSocket from "@ballast/module-websocket";
 import { Effect, Schema } from "effect";
 
@@ -23,4 +24,4 @@ export default Effect.gen(function* () {
       }
     }),
   );
-});
+}) satisfies Ballast.Project;

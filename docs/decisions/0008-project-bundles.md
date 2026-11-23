@@ -292,6 +292,34 @@ save path for a whole project because a failed bundle must not replace a
 running one. The plan worker can run typecheck and bundle in parallel only if
 the typecheck result gates the cutover, not the planning itself.
 
+### Runtime reads and live params
+
+Init declares; handlers and runs read. That rule is enforced in the type system,
+not only at runtime:
+
+- `Ballast.Runtime` is a marker service. Subscription handlers, `Ballast.run`
+  bodies, timer handlers and workflow bodies (and activities) accept effects
+  that require it and provide it at their boundary. Declarations do not require
+  it.
+- `Param<A>` is `Effect<A, never, Ballast.Runtime>`. Request clients (OBS and
+  the other generated/local clients, HTTP, `account.helix` calls) and timer
+  `after`/`cancel` and workflow `execute`/`resolve` carry the same requirement.
+  `Connection`, `Account`, `helix(name)`, `Param.*`, `subscribe`,
+  `Timer.subscribe`, `Workflow.make` and `run` itself do not.
+- The typecheck gate writes `.ballast/entry-check.ts` and a check config that
+  extends the project/generated config, and asserts the entry's requirements
+  contain no `Ballast.Runtime`. A failure is reported at the entry with
+  "This reads a runtime value (param/request/timer) during init. Move it inside
+  a subscribe handler, Ballast.run, or a timer/workflow body". If the project
+  writes `export default ... satisfies Ballast.Project`, the editor reports the
+  same violation at the offending `satisfies` line; the gate keeps a runtime
+  guard that names the declaration for untyped/hand-written entries.
+- A param value changed while the project runs is pushed to the worker's
+  `Settings` Ref over the existing worker channel. The next `yield* param`
+  read in an in-flight handler or run loop sees the new value. There is no
+  restart and no generation change. Option-backed enum/strings validation still
+  applies; changing a binding still restarts; a stopped project only saves.
+
 ### Enable/disable
 
 Enable/disable is **per project only**. There is no per-unit enable. Stopping a

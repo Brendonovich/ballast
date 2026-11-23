@@ -39,7 +39,7 @@ export default Effect.gen(function* () {
         }
       }),
     );
-});
+}) satisfies Ballast.Project;
 `],
   ["scripts/cheer-alert.ts", `import * as Ballast from "@ballast/core";
 import * as Twitch from "@ballast/module-twitch";
@@ -69,7 +69,7 @@ export default Effect.gen(function* () {
         yield* Effect.log(event.user.login + " cheered " + event.bits + " bits");
       }),
     );
-});
+}) satisfies Ballast.Project;
 `],
   ["scripts/tick-echo.ts", `import * as Ballast from "@ballast/core";
 import * as Fake from "@ballast/fake";
@@ -90,7 +90,7 @@ export default Effect.gen(function* () {
         yield* Effect.log(echoed);
       }),
     );
-});
+}) satisfies Ballast.Project;
 `],
   ["scripts/scene-rotation.ts", `import * as Ballast from "@ballast/core";
 import * as OBS from "@ballast/module-obs";
@@ -123,6 +123,6 @@ export default Effect.gen(function* () {
         );
       }),
     );
-});
+}) satisfies Ballast.Project;
 `],
 ]);

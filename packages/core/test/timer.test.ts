@@ -136,6 +136,7 @@ describe("@ballast/core timers", () => {
       });
 
       const exit = yield* Ballast.providePlan(
+        // @ts-expect-error scheduling a timer in init requires Runtime
         Ballast.evaluateScript(script, "plan"),
         makeRecorder(ref),
       ).pipe(Effect.exit);
@@ -280,9 +281,10 @@ describe("@ballast/core timers", () => {
         yield* cooldown.after("user:1", "1 minute", { user: "1" });
       });
 
-      yield* Ballast.evaluateScript(script, "runtime").pipe(
-        Effect.provideService(Ballast.Timer.TimerRuntime, runtime),
-      );
+      yield* Ballast.evaluateScript(
+        script.pipe(Effect.provideService(Ballast.Runtime, {})),
+        "runtime",
+      ).pipe(Effect.provideService(Ballast.Timer.TimerRuntime, runtime));
 
       expect(scheduled).toHaveLength(1);
       expect(scheduled[0]?.key).toBe("user:1");

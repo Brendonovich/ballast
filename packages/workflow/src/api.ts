@@ -10,7 +10,13 @@ import * as Workflow from "effect/workflow/Workflow";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import type { Scope } from "effect/Scope";
 import type { Input as DurationInput } from "effect/Duration";
-import { ManifestRecorder, captureSource, currentPhase } from "@ballast/core";
+import {
+  ManifestRecorder,
+  Runtime as BallastRuntime,
+  captureSource,
+  currentPhase,
+  provideRuntime,
+} from "@ballast/core";
 import type { WorkflowManifest } from "@ballast/core";
 
 export { Activity, DurableClock, DurableDeferred, Workflow };
@@ -37,7 +43,8 @@ export interface WorkflowHandle<
     },
   ) => Effect.Effect<
     Discard extends true ? string : Success["Type"],
-    Discard extends true ? never : Error["Type"]
+    Discard extends true ? never : Error["Type"],
+    BallastRuntime
   >;
   readonly executionId: (payload: Payload["~type.make.in"]) => Effect.Effect<string>;
   /** Resolve a deferred that the workflow is waiting on. */
@@ -48,7 +55,7 @@ export interface WorkflowHandle<
     executionId: string,
     deferred: DurableDeferred.DurableDeferred<DeferredSuccess, DeferredError>,
     exit: Exit.Exit<DeferredSuccess["Type"], DeferredError["Type"]>,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, never, BallastRuntime>;
 }
 
 const stableJson = (value: unknown): string => {
@@ -119,7 +126,10 @@ export const make = <
   ) => Effect.Effect<
     Success["Type"],
     Error["Type"],
-    WorkflowEngine.WorkflowEngine | WorkflowEngine.WorkflowInstance | Scope
+    | WorkflowEngine.WorkflowEngine
+    | WorkflowEngine.WorkflowInstance
+    | Scope
+    | BallastRuntime
   >,
 ): Effect.Effect<
     WorkflowHandle<Tag, Schema.Struct<Fields> & NoServices, Success, Error>
@@ -145,7 +155,11 @@ export const make = <
 
     const engine = yield* Effect.serviceOption(WorkflowEngine.WorkflowEngine);
     if (Option.isSome(engine)) {
-      yield* Effect.scoped(engine.value.register(workflow, execute));
+      yield* Effect.scoped(
+        engine.value.register(workflow, (payload, _executionId) =>
+          provideRuntime(execute(payload)),
+        ),
+      );
     } else {
       const phase = yield* currentPhase;
       if (phase === "runtime") {
@@ -174,7 +188,8 @@ export const make = <
       },
     ): Effect.Effect<
       Discard extends true ? string : Success["Type"],
-      Discard extends true ? never : Error["Type"]
+      Discard extends true ? never : Error["Type"],
+      BallastRuntime
     > =>
       Effect.serviceOption(WorkflowEngine.WorkflowEngine).pipe(
         Effect.flatMap(
@@ -246,12 +261,16 @@ export const make = <
 export const activity = <A, E, R>(
   name: string,
   schema: Schema.Schema<A> & NoServices,
-  execute: Effect.Effect<A, E, R>,
-): Activity.Activity<Schema.Schema<A> & NoServices, Schema.Never, R> =>
-  Activity.make<R, typeof schema, typeof Schema.Never>({
+  execute: Effect.Effect<A, E, R | BallastRuntime>,
+): Activity.Activity<
+  Schema.Schema<A> & NoServices,
+  Schema.Never,
+  Exclude<R, BallastRuntime>
+> =>
+  Activity.make<Exclude<R, BallastRuntime>, typeof schema, typeof Schema.Never>({
     name,
     success: schema,
-    execute: execute.pipe(Effect.orDie),
+    execute: provideRuntime(execute).pipe(Effect.orDie),
   });
 
 /** Always-durable sleep. Unlike DurableClock.sleep, this never uses the <60s in-memory path. */
@@ -284,5 +303,5 @@ export const resolve = <
   executionId: string,
   deferred: DurableDeferred.DurableDeferred<DeferredSuccess, DeferredError>,
   exit: Exit.Exit<DeferredSuccess["Type"], DeferredError["Type"]>,
-): Effect.Effect<void> =>
+): Effect.Effect<void, never, BallastRuntime> =>
   handle.resolve(executionId, deferred, exit);

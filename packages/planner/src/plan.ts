@@ -6,10 +6,18 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { ManifestSchema, emptyManifest, evaluateScript, providePlan, type Manifest } from "@ballast/core";
+import {
+  ManifestSchema,
+  emptyManifest,
+  evaluateScript,
+  providePlan,
+  type DeclarationSource,
+  type Manifest,
+  type ParamRead,
+} from "@ballast/core";
 import { bundlePlanScript } from "./bundle.ts";
 import { makeManifestRecorder, normalizeManifest } from "./recorder.ts";
-import { mapManifestSources } from "./source-map.ts";
+import { makeSourceMapper, mapManifestSources } from "./source-map.ts";
 
 export class PlanError extends Data.TaggedError("PlanError")<{
   readonly message: string;
@@ -60,6 +68,30 @@ const titleFromId = (scriptId: string): string => {
 
 const isScriptEffect = (value: unknown): value is Effect.Effect<unknown, unknown, never> =>
   Effect.isEffect(value);
+
+interface ParamReadFailure {
+  readonly key: string;
+  readonly source: DeclarationSource | undefined;
+}
+
+const isDeclarationSource = (value: unknown): value is DeclarationSource =>
+  typeof value === "object" &&
+  value !== null &&
+  "file" in value &&
+  typeof value.file === "string" &&
+  "line" in value &&
+  typeof value.line === "number" &&
+  "column" in value &&
+  typeof value.column === "number";
+
+/** The plan bundle has its own copy of core, so brand by shape not instanceof. */
+const isParamReadFailure = (value: unknown): value is ParamReadFailure => {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("name" in value) || value.name !== "ParamReadDuringInitError") return false;
+  if (!("key" in value) || typeof value.key !== "string") return false;
+  if (!("source" in value) || value.source === undefined) return true;
+  return isDeclarationSource(value.source);
+};
 
 /**
  * Evaluate one script's default export with plan services and return the
@@ -119,13 +151,35 @@ export const runPlanInfo = (
         ? exportedTitle
         : titleFromId(scriptId);
     const ref = yield* Ref.make(emptyManifest(projectId, projectEntry));
-    const recorder = makeManifestRecorder(ref);
+    const reads = yield* Ref.make<ReadonlyArray<ParamRead>>([]);
+    const recorder = makeManifestRecorder(ref, reads);
 
     const exit = yield* providePlan(evaluateScript(Effect.asVoid(script), "plan"), recorder).pipe(
       Effect.exit,
     );
 
     if (Exit.isFailure(exit)) {
+      const failure = Cause.squash(exit.cause);
+      if (isParamReadFailure(failure)) {
+        const recorded = yield* Ref.get(reads);
+        const source = failure.source ?? recorded.at(-1)?.source;
+        const mapped =
+          source === undefined || bundle.sourceMap === undefined
+            ? source
+            : makeSourceMapper(bundle.sourceMap, bundle.path, projectRoot ?? dirname(absoluteEntry))(
+                source,
+              );
+        const location =
+          mapped === undefined
+            ? ""
+            : ` at ${mapped.file}:${mapped.line}:${mapped.column}`;
+        return yield* Effect.fail(
+          new PlanError({
+            message:
+              `Param "${failure.key}" was read during init${location}. Read params inside handlers/runs, not in init.`,
+          }),
+        );
+      }
       return yield* Effect.fail(new PlanError({ message: Cause.pretty(exit.cause) }));
     }
 

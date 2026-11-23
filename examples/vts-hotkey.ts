@@ -26,4 +26,4 @@ export default Effect.gen(function* () {
       yield* vts.HotkeyTrigger({ hotkeyID: name });
     }),
   );
-});
+}) satisfies Ballast.Project;

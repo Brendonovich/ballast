@@ -5,10 +5,12 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as Predicate from "effect/Predicate";
 import * as References from "effect/References";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type { Scope } from "effect/Scope";
 import { ScriptPhase } from "./phase.ts";
 import { makeRuntimeRpcClient } from "./runtime-rpc.ts";
+import type { SettingValue } from "./runtime-rpc.ts";
 import { evaluateScript } from "./script.ts";
 import { EventBus, RequestClients, Settings } from "./services.ts";
 import type {
@@ -23,12 +25,18 @@ import type { TimerFire, TimerRuntimeService } from "./timer.ts";
 interface RuntimeWorkerData {
   readonly rpcPort: MessagePort;
   readonly generation: number;
+  readonly settings: Readonly<Record<string, SettingValue>>;
 }
 
 interface RuntimeEventMessage {
   readonly kind: "event";
   readonly key: string;
   readonly payload: unknown;
+}
+
+interface RuntimeParamsMessage {
+  readonly kind: "params";
+  readonly values: Readonly<Record<string, SettingValue>>;
 }
 
 interface RuntimeTimerMessage {
@@ -74,6 +82,13 @@ const isRuntimeEventMessage = (value: unknown): value is RuntimeEventMessage =>
   Predicate.isString(value.key) &&
   Predicate.hasProperty("payload")(value);
 
+const isRuntimeParamsMessage = (value: unknown): value is RuntimeParamsMessage =>
+  Predicate.isObject(value) &&
+  Predicate.hasProperty("kind")(value) &&
+  value.kind === "params" &&
+  Predicate.hasProperty("values")(value) &&
+  Predicate.isObject(value.values);
+
 const isRuntimeTimerMessage = (value: unknown): value is RuntimeTimerMessage =>
   Predicate.isObject(value) &&
   Predicate.hasProperty("kind")(value) &&
@@ -92,6 +107,28 @@ const isRuntimeTimerMessage = (value: unknown): value is RuntimeTimerMessage =>
   Predicate.hasProperty("lateByMs")(value) &&
   Predicate.isNumber(value.lateByMs);
 
+const isSettingValue = (value: unknown): value is SettingValue =>
+  value === null ||
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
+
+const parseSettings = (value: unknown): Readonly<Record<string, SettingValue>> => {
+  if (value === undefined) return {};
+  if (!Predicate.isObject(value)) {
+    throw new Error("Runtime worker settings must be an object");
+  }
+  const settings: Record<string, SettingValue> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isSettingValue(entry)) {
+      throw new Error(`Runtime worker setting "${key}" is not a JSON value`);
+    }
+    settings[key] = entry;
+  }
+  return settings;
+};
+
 const parseWorkerData = (value: unknown): RuntimeWorkerData => {
   if (!Predicate.isObject(value)) {
     throw new Error("Runtime worker started without workerData");
@@ -105,7 +142,13 @@ const parseWorkerData = (value: unknown): RuntimeWorkerData => {
   ) {
     throw new Error("Runtime worker started without a generation");
   }
-  return { rpcPort: value.rpcPort, generation: value.generation };
+  return {
+    rpcPort: value.rpcPort,
+    generation: value.generation,
+    settings: parseSettings(
+      Predicate.hasProperty("settings")(value) ? value.settings : undefined,
+    ),
+  };
 };
 
 const runtimeProgram = (
@@ -119,6 +162,9 @@ const runtimeProgram = (
     }
 
     const client = yield* makeRuntimeRpcClient(data.rpcPort);
+    const settingsRef = yield* Ref.make<ReadonlyMap<string, SettingValue>>(
+      new Map(Object.entries(data.settings)),
+    );
     const handlers = new Map<
       string,
       Set<(event: unknown) => Effect.Effect<void, never, never>>
@@ -182,10 +228,14 @@ const runtimeProgram = (
 
     const settings: SettingsService = {
       get: (key) =>
-        client.GetSetting({ key }).pipe(
-          Effect.orDie,
-          Effect.map((value) => (value === null ? undefined : value)),
-        ),
+        Effect.gen(function* () {
+          const values = yield* Ref.get(settingsRef);
+          if (values.has(key)) return values.get(key);
+          return yield* client.GetSetting({ key }).pipe(
+            Effect.orDie,
+            Effect.map((value) => (value === null ? undefined : value)),
+          );
+        }),
     };
 
     const requestClients: RequestClientsService = {
@@ -224,6 +274,17 @@ const runtimeProgram = (
       yield* Effect.acquireRelease(
         Effect.sync(() => {
           const listener = (message: unknown) => {
+            if (isRuntimeParamsMessage(message)) {
+              // Update synchronously: the next queued event must observe the
+              // new value, not race a forked Ref update.
+              const next = new Map(settingsRef.ref.current);
+              for (const [key, entry] of Object.entries(message.values)) {
+                if (isSettingValue(entry)) next.set(key, entry);
+              }
+              settingsRef.ref.current = next;
+              return;
+            }
+
             if (isRuntimeEventMessage(message)) {
               const subscribed = handlers.get(message.key);
               if (subscribed === undefined) return;

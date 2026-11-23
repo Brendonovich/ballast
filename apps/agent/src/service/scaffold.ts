@@ -167,7 +167,7 @@ const entry = (name: string): string =>
     '      yield* Effect.log(value + " from Ballast");',
     "    }),",
     "  );",
-    "});",
+    "}) satisfies Ballast.Project;",
     "",
   ].join("\n");
 

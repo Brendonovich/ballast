@@ -5,7 +5,7 @@ import { startAlerts } from "./src/alerts.ts";
 
 export const title = "Stream";
 
-const script: Ballast.Script = Effect.gen(function* () {
+const script: Ballast.Project = Effect.gen(function* () {
   const fake = yield* Fake.Connection("main");
   yield* startAlerts(fake);
 });

@@ -17,4 +17,4 @@ export default Effect.gen(function* () {
       yield* obs.SetCurrentProgramScene({ sceneName: target });
     }),
   );
-});
+}) satisfies Ballast.Project;

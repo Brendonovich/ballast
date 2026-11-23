@@ -42,6 +42,8 @@ export type {
   UnresolvedManifest,
 } from "./manifest.ts";
 export { ScriptPhase, currentPhase } from "./phase.ts";
+export { Runtime, provideRuntime } from "./runtime.ts";
+export type { RuntimeService } from "./runtime.ts";
 export { captureSource } from "./source.ts";
 export type { DeclarationSource } from "./source.ts";
 export { UnitName, withUnit, withUnitHandler } from "./unit.ts";
@@ -55,6 +57,7 @@ export {
 } from "./services.ts";
 export type {
   ManifestRecorderService,
+  ParamRead,
   SettingsService,
   EventBusService,
   RequestClientsService,
@@ -81,6 +84,7 @@ export type { RequestRef, RequestSpec, RequestClient, RequestHostService } from 
 export { Connection, toConnectionManifest } from "./connection.ts";
 export type { ConnectionRef, ConnectionSpec } from "./connection.ts";
 export * as Param from "./param.ts";
+export { ParamReadDuringInitError } from "./param.ts";
 export * as Timer from "./timer.ts";
 export type {
   TimerFire,
@@ -118,6 +122,7 @@ export { evaluateScript, run, phase, recordProject } from "./script.ts";
 export { providePlan } from "./plan-host.ts";
 export type {
   Script,
+  Project,
   ScriptRuntime,
   ScriptRuntimeContext,
   ScriptHostServices,

@@ -40,7 +40,7 @@ export const planProject = (
           }),
       ),
     );
-    const checked = yield* typecheckProject(entry.root);
+    const checked = yield* typecheckProject(entry.root, { entry: entry.entryFile });
     if (!checked.ok) {
       const first = checked.diagnostics[0];
       return yield* Effect.fail(

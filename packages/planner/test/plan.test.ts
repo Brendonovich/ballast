@@ -240,6 +240,95 @@ describe("plan", () => {
     }),
   );
 
+  it.effect("rejects a runtime read in init with the entry and a clear message", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-init-runtime-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      yield* Effect.promise(() =>
+        writeFile(
+          join(root, "ballast.ts"),
+          [
+            'import * as Ballast from "@ballast/core";',
+            'import { Effect } from "effect";',
+            "",
+            "export default Effect.gen(function* () {",
+            '  const greeting = yield* Ballast.Param.string("greeting");',
+            "  yield* Effect.log(yield* greeting);",
+            "});",
+            "",
+          ].join("\n"),
+          "utf8",
+        ),
+      );
+
+      const error = yield* planProject(root).pipe(Effect.flip);
+      expect(error.message).toContain("ballast.ts:1:1");
+      expect(error.message).toContain("This reads a runtime value");
+      expect(error.message).toContain("inside a subscribe handler, Ballast.run");
+    }),
+  );
+
+  it.effect("uses the user's Project satisfies location for an init read", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-init-project-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      yield* Effect.promise(() =>
+        writeFile(
+          join(root, "ballast.ts"),
+          [
+            'import * as Ballast from "@ballast/core";',
+            'import { Effect } from "effect";',
+            "",
+            "export default Effect.gen(function* () {",
+            '  const greeting = yield* Ballast.Param.string("greeting");',
+            "  yield* Effect.log(yield* greeting);",
+            "}) satisfies Ballast.Project;",
+            "",
+          ].join("\n"),
+          "utf8",
+        ),
+      );
+
+      const error = yield* planProject(root).pipe(Effect.flip);
+      expect(error.message).toContain("ballast.ts:7:");
+      expect(error.message).toContain("This reads a runtime value");
+    }),
+  );
+
+  it.effect("names the declaration when a single-file plan reads a param in init", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-init-plan-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      const file = join(root, "ballast.ts");
+      yield* Effect.promise(() =>
+        writeFile(
+          file,
+          [
+            'import * as Ballast from "@ballast/core";',
+            'import { Effect } from "effect";',
+            "",
+            "export default Effect.gen(function* () {",
+            '  const greeting = yield* Ballast.Param.string("greeting");',
+            "  yield* Effect.log(yield* greeting);",
+            "});",
+            "",
+          ].join("\n"),
+          "utf8",
+        ),
+      );
+
+      const error = yield* plan(file).pipe(Effect.flip);
+      expect(error.message).toContain('Param "greeting" was read during init at ballast.ts:');
+      expect(error.message).toContain("Read params inside handlers/runs, not in init");
+    }),
+  );
+
   it.effect("records requests without calling them", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);

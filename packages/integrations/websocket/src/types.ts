@@ -121,6 +121,12 @@ export interface WebSocketJsonTopic<A> {
   readonly subscribe: (
     name: string,
     connection: { readonly slot: string },
-    handler: (event: A) => import("effect/Effect").Effect<void>,
+    handler: (
+      event: A,
+    ) => import("effect/Effect").Effect<
+      void,
+      never,
+      import("@ballast/core").Runtime
+    >,
   ) => import("effect/Effect").Effect<void, never, import("@ballast/core").EventHost>;
 }
