@@ -1,10 +1,14 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type {
+  ApiManifest,
+  ArtifactManifest,
   ConnectionManifest,
+  DatabaseManifest,
   ParamManifest,
   RequestManifest,
   RunManifest,
+  StoreManifest,
   TimerManifest,
   TopicManifest,
   UnresolvedManifest,
@@ -30,6 +34,10 @@ export interface ManifestRecorderService {
   readonly timer: (timer: TimerManifest) => Effect.Effect<void>;
   readonly workflow: (workflow: WorkflowManifest) => Effect.Effect<void>;
   readonly run: (run: RunManifest) => Effect.Effect<void>;
+  readonly artifact: (artifact: ArtifactManifest) => Effect.Effect<void>;
+  readonly api: (api: ApiManifest) => Effect.Effect<void>;
+  readonly store: (store: StoreManifest) => Effect.Effect<void>;
+  readonly database: (database: DatabaseManifest) => Effect.Effect<void>;
   /** Read of a param while init is being evaluated (a plan error). */
   readonly paramRead?: (read: ParamRead) => Effect.Effect<void>;
 }

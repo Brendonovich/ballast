@@ -10,7 +10,14 @@ import {
 } from "../../lib/format.ts";
 import { StatusDot, cx } from "../../ui/primitives.tsx";
 
-const kinds: ReadonlyArray<UnitKind> = ["topic", "timer", "workflow", "param", "run"];
+const kinds: ReadonlyArray<UnitKind> = [
+  "topic",
+  "timer",
+  "workflow",
+  "param",
+  "run",
+  "database",
+];
 
 export const UnitsPanel = (props: {
   readonly units: ReadonlyArray<UnitSummary>;

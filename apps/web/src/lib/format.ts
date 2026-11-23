@@ -142,6 +142,7 @@ const unitKindLabelValue: Record<UnitKind, string> = {
   workflow: "Workflow",
   param: "Param",
   run: "Run",
+  database: "Database",
 };
 
 export const unitKindLabel = (kind: UnitKind): string => unitKindLabelValue[kind];
@@ -152,6 +153,7 @@ const unitKindPluralValue: Record<UnitKind, string> = {
   workflow: "Workflows",
   param: "Params",
   run: "Runs",
+  database: "Databases",
 };
 
 export const unitKindPlural = (kind: UnitKind): string => unitKindPluralValue[kind];

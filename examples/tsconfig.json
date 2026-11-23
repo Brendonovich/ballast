@@ -8,6 +8,8 @@
     "src",
     "tick-echo.ts",
     "obs-scene.ts",
+    "obs-sceneify.ts",
+    "sceneify-stream",
     "redeem-to-scene.ts",
     "keyboard-hotkey.ts",
     "midi-cc.ts",
@@ -15,6 +17,7 @@
     "webhook-to-obs.ts",
     "ws-bridge.ts",
     "timer-cooldown.ts",
+    "database.ts",
     "redeem-takeover.ts",
     "param-strings-project/ballast.ts",
     "stream"
@@ -34,6 +37,9 @@
     },
     {
       "path": "../packages/integrations/obs"
+    },
+    {
+      "path": "../packages/integrations/sceneify"
     },
     {
       "path": "../packages/integrations/twitch"

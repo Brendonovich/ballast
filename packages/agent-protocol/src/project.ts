@@ -19,7 +19,14 @@ export const SourceLocation = Schema.Struct({
 });
 export type SourceLocation = typeof SourceLocation.Type;
 
-export const UnitKind = Schema.Literals(["topic", "timer", "workflow", "param", "run"]);
+export const UnitKind = Schema.Literals([
+  "topic",
+  "timer",
+  "workflow",
+  "param",
+  "run",
+  "database",
+]);
 export type UnitKind = typeof UnitKind.Type;
 
 export const UnitStatus = Schema.Literals(["active", "waiting", "error"]);
@@ -85,6 +92,46 @@ export const ManifestRunUnit = Schema.Struct({
 });
 export type ManifestRunUnit = typeof ManifestRunUnit.Type;
 
+export const ManifestArtifactUnit = Schema.Struct({
+  name: Schema.String,
+  entry: Schema.String,
+  title: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+  source: Schema.optionalKey(SourceLocation),
+});
+export type ManifestArtifactUnit = typeof ManifestArtifactUnit.Type;
+
+export const ManifestApiProcedure = Schema.Struct({
+  name: Schema.String,
+  kind: Schema.Literals(["query", "action", "stream"]),
+  stream: Schema.Boolean,
+  payloadSchema: Schema.optionalKey(Schema.Unknown),
+  successSchema: Schema.optionalKey(Schema.Unknown),
+  errorSchema: Schema.optionalKey(Schema.Unknown),
+});
+export type ManifestApiProcedure = typeof ManifestApiProcedure.Type;
+
+export const ManifestApi = Schema.Struct({
+  source: Schema.optionalKey(SourceLocation),
+  procedures: Schema.Array(ManifestApiProcedure),
+});
+export type ManifestApi = typeof ManifestApi.Type;
+
+export const ManifestStoreUnit = Schema.Struct({
+  name: Schema.String,
+  kind: Schema.Literal("counter"),
+  source: Schema.optionalKey(SourceLocation),
+  initial: Schema.optionalKey(Schema.Number),
+});
+export type ManifestStoreUnit = typeof ManifestStoreUnit.Type;
+
+/** A project-local SQLite file at `.ballast/db/<name>.sqlite`. */
+export const ManifestDatabaseUnit = Schema.Struct({
+  name: Schema.String,
+  source: Schema.optionalKey(SourceLocation),
+});
+export type ManifestDatabaseUnit = typeof ManifestDatabaseUnit.Type;
+
 /** The project manifest on the wire. Activities stay out of it. */
 export const ProjectManifest = Schema.Struct({
   project: Schema.Struct({
@@ -99,6 +146,10 @@ export const ProjectManifest = Schema.Struct({
   workflows: Schema.Array(ManifestWorkflowUnit),
   runs: Schema.Array(ManifestRunUnit),
   unresolved: Schema.Array(UnresolvedEntry),
+  artifacts: Schema.optionalKey(Schema.Array(ManifestArtifactUnit)),
+  api: Schema.optionalKey(ManifestApi),
+  stores: Schema.optionalKey(Schema.Array(ManifestStoreUnit)),
+  databases: Schema.optionalKey(Schema.Array(ManifestDatabaseUnit)),
 });
 export type ProjectManifest = typeof ProjectManifest.Type;
 
@@ -112,6 +163,9 @@ export const emptyProjectManifest = (id: string, entry: string): ProjectManifest
   workflows: [],
   runs: [],
   unresolved: [],
+  artifacts: [],
+  stores: [],
+  databases: [],
 });
 
 /** One project-level consent request; there is no per-script consent. */
@@ -238,8 +292,21 @@ export const ProjectDiagnostic = Schema.Struct({
 });
 export type ProjectDiagnostic = typeof ProjectDiagnostic.Type;
 
+export const ProjectChangeKind = Schema.Literals([
+  "topic",
+  "timer",
+  "workflow",
+  "param",
+  "run",
+  "artifact",
+  "api",
+  "store",
+  "database",
+]);
+export type ProjectChangeKind = typeof ProjectChangeKind.Type;
+
 export const ProjectUnitChange = Schema.Struct({
-  kind: UnitKind,
+  kind: ProjectChangeKind,
   name: Schema.String,
   change: Schema.Literals(["added", "removed", "changed"]),
   before: Schema.optionalKey(Schema.Unknown),
@@ -272,5 +339,7 @@ export const CreateProjectRequest = Schema.Struct({
   name: Schema.String,
   /** Absolute destination; defaults to <projects dir>/<slug(name)>. */
   directory: Schema.optionalKey(Schema.String),
+  /** Copy the Solid artifact template into the new project. */
+  artifact: Schema.optionalKey(Schema.Boolean),
 });
 export type CreateProjectRequest = typeof CreateProjectRequest.Type;

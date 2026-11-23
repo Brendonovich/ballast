@@ -30,7 +30,8 @@ export default Effect.gen(function* () {
 - `OBS.Connection(slot)` records a local connection and the whole `obs/*`
   request namespace in the manifest. OBS has no scopes, so the connection is
   the grant. The returned client has one method per obs-websocket request
-  (147 in the v5 protocol) and is itself a `ConnectionRef<"obs">`.
+  (147 in the v5 protocol plus 4 undocumented private-settings requests) and
+  is itself a `ConnectionRef<"obs">`.
 - Every event is a topic object, e.g. `OBS.CurrentProgramSceneChanged`, with
   `subscribe(connection, handler)`. Subscribing records `obs/<EventName>` as a
   topic and infers the handler payload from the generated schema. The core
@@ -39,6 +40,9 @@ export default Effect.gen(function* () {
 - Generated event payload types are named `<EventName>Payload` (schema
   `<EventName>PayloadSchema`) so the topic object can use the event name
   itself without collisions.
+- Subscription history is on by default, but generated high-volume topics
+  (`InputVolumeMeters`, `InputActiveStateChanged`, `InputShowStateChanged`,
+  `SceneItemTransformChanged`) set `history: false`. A subscription can opt in.
 - `OBS.scenes(obs)` takes the OBS connection handle and records
   `options: { integration: "obs", slot: obs.slot, source: "scenes" }` on a
   param. The agent resolves it with `GetSceneList` before starting a run and
@@ -47,6 +51,11 @@ export default Effect.gen(function* () {
 
 Init only declares. Request clients acquired through `OBS.Connection` die with
 `RequestCalledDuringPlanError` if called during planning.
+
+## Declarative scenes
+
+Declared scenes, inputs and filters live in `@ballast/module-sceneify`, which
+builds on this module's client. See [sceneify.md](./sceneify.md).
 
 ## Protocol generation
 
@@ -79,6 +88,11 @@ affordable. Validation is "light" where the protocol is vague:
   `Schema.NullOr`; the list lives in `scripts/generate.ts`. Everything else is
   required.
 - Request fields use `valueOptional` from the protocol.
+- obs-websocket implements four requests it leaves out of `protocol.json` on
+  purpose: `Get/SetSourcePrivateSettings` and `Get/SetSceneItemPrivateSettings`
+  ("Intentionally undocumented" in its request handlers). The generator adds
+  them from `UNDOCUMENTED_REQUESTS`; Sceneify stores ownership metadata
+  through them.
 
 Request input is decoded by the agent driver before sending, so bad payloads
 fail with `Invalid <Request> input: ...` instead of reaching OBS. The runtime

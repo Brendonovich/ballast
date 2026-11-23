@@ -192,6 +192,37 @@ describe("project scaffolding and checks", () => {
     120_000,
   );
 
+  it.live("scaffolds the Solid artifact template and typechecks it", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-artifact-scaffold-")));
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore));
+      const service = yield* startService(root);
+      yield* Effect.addFinalizer(() => service.stop());
+
+      const created = yield* call(root, (client) =>
+        client.CreateProject({ name: "Artifact Template", artifact: true }),
+      );
+      const projectRoot = join(root, "projects", "artifact-template");
+      const entry = yield* Effect.promise(() => readFile(join(projectRoot, "ballast.ts"), "utf8"));
+      expect(entry).toContain("Ballast.Artifact(\"dashboard\"");
+      expect(entry).toContain("Ballast.Store.counter");
+      expect(entry).not.toContain("Ballast.Store.log");
+      expect(
+        (yield* Effect.promise(() => stat(join(projectRoot, "artifacts", "dashboard", "main.tsx")))).isFile(),
+      ).toBe(true);
+      expect(
+        (yield* Effect.promise(() => stat(join(projectRoot, "src", "api.ts")))).isFile(),
+      ).toBe(true);
+
+      const check = yield* call(root, (client) =>
+        client.CheckProject({ projectId: created.summary.id }),
+      );
+      expect(check.ok).toBe(true);
+      expect((check.manifest?.artifacts ?? []).some((artifact) => artifact.name === "dashboard")).toBe(true);
+    }),
+    120_000,
+  );
+
   it.live("prepares the shared type root on startup and whenever a project is added or planned", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-types-lifecycle-")));

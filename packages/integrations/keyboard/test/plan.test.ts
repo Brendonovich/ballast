@@ -26,6 +26,8 @@ describe("plan keyboard scripts", () => {
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: false,
+            schemaFingerprint: expect.any(String),
             condition: { keys: "Ctrl+Shift+F1", state: "down" },
           },
           {
@@ -36,6 +38,8 @@ describe("plan keyboard scripts", () => {
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: false,
+            schemaFingerprint: expect.any(String),
           },
         ],
         requests: [{ integration: "keyboard", slot: "main", request: "keyboard/*", scopes: [] }],
@@ -43,6 +47,9 @@ describe("plan keyboard scripts", () => {
         timers: [],
         workflows: [],
         runs: [],
+        artifacts: [],
+        stores: [],
+        databases: [],
       });
     }),
   );

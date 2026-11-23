@@ -25,6 +25,8 @@ import { startObsDriver } from "./obs-driver.ts";
 import type { ObsDriver } from "./obs-driver.ts";
 import { startRuntimeSession } from "./runtime-session.ts";
 import type { RuntimeSession, RuntimeSettings } from "./runtime-session.ts";
+import { startRunDatabases } from "./service/database.ts";
+import type { RunDatabases } from "./service/database.ts";
 import { authorizeTwitchAccount } from "./twitch/auth.ts";
 import {
   readStoredTwitchAccount,
@@ -278,6 +280,7 @@ const startWorker = (
   params: RuntimeParamStore,
   request: RequestHandler,
   timers: RunTimerHandlers,
+  databases: RunDatabases,
 ) =>
   Effect.gen(function* () {
     const bundle = yield* Effect.provideContext(
@@ -293,6 +296,7 @@ const startWorker = (
       settings: params,
       request,
       ...timers,
+      databaseExecute: databases.execute,
     });
     console.log(`[run] started worker generation ${generation}`);
     return session;
@@ -369,6 +373,10 @@ export const runScript = (options: RunOptions) =>
         "HOME",
       ]);
       const entry = path.resolve(options.entry);
+      const databases = yield* startRunDatabases(
+        path.join(path.dirname(entry), ".ballast", "db"),
+      );
+      yield* Effect.addFinalizer(() => databases.close);
       const initialContent = yield* readEntry(entry);
       const bus = new AgentEventBus();
       const obsSlots = new Map<string, ObsSlotState>();
@@ -644,6 +652,7 @@ export const runScript = (options: RunOptions) =>
           new RuntimeParamStore(initialValues),
           requestHandler,
           timerHandlers(initialManifest),
+          databases,
         ),
         content: initialContent,
       };
@@ -747,6 +756,7 @@ export const runScript = (options: RunOptions) =>
             new RuntimeParamStore(nextValues),
             requestHandler,
             timerHandlers(nextManifest),
+            databases,
           ).pipe(
             Effect.catch((error) => {
               console.error(`[run] could not start worker: ${error.message}`);

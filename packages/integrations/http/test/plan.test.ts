@@ -25,6 +25,8 @@ describe("plan HTTP scripts", () => {
           scopes: ["http:webhook:kofi"],
           onStale: "drop",
           maxAgeMs: 60_000,
+          history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
+          schemaFingerprint: expect.any(String),
           condition: { hook: "kofi" },
         },
       ]);

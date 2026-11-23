@@ -88,6 +88,9 @@ const startService = (root: string): Effect.Effect<Service, Error> =>
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    // Drain the service's pipes; an unread pipe eventually blocks the child.
+    child.stdout?.on("data", () => {});
+    child.stderr?.on("data", () => {});
     yield* waitFor("service", () =>
       Effect.promise(async () => {
         const registration = await Effect.runPromise(readServiceRegistration(join(root, "state")).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.provide(NodeCrypto.layer)));
@@ -284,8 +287,14 @@ describe("connection instances", () => {
       yield* call(root, (client) => approve(client, addedB.summary.id));
       yield* call(root, (client) => client.StartProject({ projectId: addedB.summary.id }));
 
-      obsA.emit("CurrentProgramSceneChanged", { sceneName: "A" });
-      obsB.emit("CurrentProgramSceneChanged", { sceneName: "B" });
+      obsA.emit("CurrentProgramSceneChanged", {
+        sceneName: "A",
+        sceneUuid: "uuid-A",
+      });
+      obsB.emit("CurrentProgramSceneChanged", {
+        sceneName: "B",
+        sceneUuid: "uuid-B",
+      });
       yield* waitForScene(root, addedA.summary.id, "A");
       yield* waitForScene(root, addedB.summary.id, "B");
 
@@ -301,7 +310,10 @@ describe("connection instances", () => {
         }),
       );
       expect(rebound.summary.status).toBe("running");
-      obsB.emit("CurrentProgramSceneChanged", { sceneName: "B-after-rebind" });
+      obsB.emit("CurrentProgramSceneChanged", {
+        sceneName: "B-after-rebind",
+        sceneUuid: "uuid-B-after-rebind",
+      });
       yield* waitForScene(root, addedA.summary.id, "B-after-rebind");
       yield* waitForScene(root, addedB.summary.id, "B-after-rebind");
 

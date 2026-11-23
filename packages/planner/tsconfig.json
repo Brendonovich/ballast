@@ -6,7 +6,13 @@
     "types": ["node"]
   },
   "include": ["src", "test"],
-  "exclude": ["test/fixtures/type-error", "test/fixtures/project", "test/fixtures/duplicate"],
+  "exclude": [
+    "test/fixtures/type-error",
+    "test/fixtures/project",
+    "test/fixtures/duplicate",
+    "test/fixtures/artifact-type-error",
+    "test/fixtures/duplicate-api"
+  ],
   "references": [
     {
       "path": "../core"

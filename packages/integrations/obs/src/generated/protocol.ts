@@ -608,6 +608,18 @@ export const GetSceneItemLockedResponseSchema = Schema.Struct({
 });
 export type GetSceneItemLockedResponse = Schema.Schema.Type<typeof GetSceneItemLockedResponseSchema>;
 
+export const GetSceneItemPrivateSettingsRequestSchema = Schema.Struct({
+  "canvasUuid": Schema.optional(Schema.String),
+  "sceneName": Schema.optional(Schema.String),
+  "sceneUuid": Schema.optional(Schema.String),
+  "sceneItemId": Schema.Number,
+});
+export type GetSceneItemPrivateSettingsRequest = Schema.Schema.Type<typeof GetSceneItemPrivateSettingsRequestSchema>;
+export const GetSceneItemPrivateSettingsResponseSchema = Schema.Struct({
+  "sceneItemSettings": Schema.Record(Schema.String, Schema.Unknown),
+});
+export type GetSceneItemPrivateSettingsResponse = Schema.Schema.Type<typeof GetSceneItemPrivateSettingsResponseSchema>;
+
 export const GetSceneItemSourceRequestSchema = Schema.Struct({
   "canvasUuid": Schema.optional(Schema.String),
   "sceneName": Schema.optional(Schema.String),
@@ -721,6 +733,17 @@ export const GetSourceFilterListResponseSchema = Schema.Struct({
   "filters": Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 export type GetSourceFilterListResponse = Schema.Schema.Type<typeof GetSourceFilterListResponseSchema>;
+
+export const GetSourcePrivateSettingsRequestSchema = Schema.Struct({
+  "canvasUuid": Schema.optional(Schema.String),
+  "sourceName": Schema.optional(Schema.String),
+  "sourceUuid": Schema.optional(Schema.String),
+});
+export type GetSourcePrivateSettingsRequest = Schema.Schema.Type<typeof GetSourcePrivateSettingsRequestSchema>;
+export const GetSourcePrivateSettingsResponseSchema = Schema.Struct({
+  "sourceSettings": Schema.Record(Schema.String, Schema.Unknown),
+});
+export type GetSourcePrivateSettingsResponse = Schema.Schema.Type<typeof GetSourcePrivateSettingsResponseSchema>;
 
 export const GetSourceScreenshotRequestSchema = Schema.Struct({
   "canvasUuid": Schema.optional(Schema.String),
@@ -1206,6 +1229,17 @@ export type SetSceneItemLockedRequest = Schema.Schema.Type<typeof SetSceneItemLo
 export const SetSceneItemLockedResponseSchema = Schema.Void;
 export type SetSceneItemLockedResponse = Schema.Schema.Type<typeof SetSceneItemLockedResponseSchema>;
 
+export const SetSceneItemPrivateSettingsRequestSchema = Schema.Struct({
+  "canvasUuid": Schema.optional(Schema.String),
+  "sceneName": Schema.optional(Schema.String),
+  "sceneUuid": Schema.optional(Schema.String),
+  "sceneItemId": Schema.Number,
+  "sceneItemSettings": Schema.Record(Schema.String, Schema.Unknown),
+});
+export type SetSceneItemPrivateSettingsRequest = Schema.Schema.Type<typeof SetSceneItemPrivateSettingsRequestSchema>;
+export const SetSceneItemPrivateSettingsResponseSchema = Schema.Void;
+export type SetSceneItemPrivateSettingsResponse = Schema.Schema.Type<typeof SetSceneItemPrivateSettingsResponseSchema>;
+
 export const SetSceneItemTransformRequestSchema = Schema.Struct({
   "canvasUuid": Schema.optional(Schema.String),
   "sceneName": Schema.optional(Schema.String),
@@ -1282,6 +1316,16 @@ export const SetSourceFilterSettingsRequestSchema = Schema.Struct({
 export type SetSourceFilterSettingsRequest = Schema.Schema.Type<typeof SetSourceFilterSettingsRequestSchema>;
 export const SetSourceFilterSettingsResponseSchema = Schema.Void;
 export type SetSourceFilterSettingsResponse = Schema.Schema.Type<typeof SetSourceFilterSettingsResponseSchema>;
+
+export const SetSourcePrivateSettingsRequestSchema = Schema.Struct({
+  "canvasUuid": Schema.optional(Schema.String),
+  "sourceName": Schema.optional(Schema.String),
+  "sourceUuid": Schema.optional(Schema.String),
+  "sourceSettings": Schema.Record(Schema.String, Schema.Unknown),
+});
+export type SetSourcePrivateSettingsRequest = Schema.Schema.Type<typeof SetSourcePrivateSettingsRequestSchema>;
+export const SetSourcePrivateSettingsResponseSchema = Schema.Void;
+export type SetSourcePrivateSettingsResponse = Schema.Schema.Type<typeof SetSourcePrivateSettingsResponseSchema>;
 
 export const SetStreamServiceSettingsRequestSchema = Schema.Struct({
   "streamServiceType": Schema.String,
@@ -1646,6 +1690,7 @@ export const InputActiveStateChanged = Ballast.Topic<InputActiveStateChangedPayl
   topic: INTEGRATION + "/" + "InputActiveStateChanged",
   scopes: [],
   schema: InputActiveStateChangedPayloadSchema,
+  history: false,
 });
 
 export const InputAudioBalanceChangedPayloadSchema = Schema.Struct({
@@ -1789,6 +1834,7 @@ export const InputShowStateChanged = Ballast.Topic<InputShowStateChangedPayload,
   topic: INTEGRATION + "/" + "InputShowStateChanged",
   scopes: [],
   schema: InputShowStateChangedPayloadSchema,
+  history: false,
 });
 
 export const InputVolumeChangedPayloadSchema = Schema.Struct({
@@ -1816,6 +1862,7 @@ export const InputVolumeMeters = Ballast.Topic<InputVolumeMetersPayload, typeof 
   topic: INTEGRATION + "/" + "InputVolumeMeters",
   scopes: [],
   schema: InputVolumeMetersPayloadSchema,
+  history: false,
 });
 
 export const MediaInputActionTriggeredPayloadSchema = Schema.Struct({
@@ -2051,6 +2098,7 @@ export const SceneItemTransformChanged = Ballast.Topic<SceneItemTransformChanged
   topic: INTEGRATION + "/" + "SceneItemTransformChanged",
   scopes: [],
   schema: SceneItemTransformChangedPayloadSchema,
+  history: false,
 });
 
 export const SceneListChangedPayloadSchema = Schema.Struct({
@@ -2332,6 +2380,7 @@ export interface ObsRequests {
   readonly GetSceneItemIndex: { readonly input: GetSceneItemIndexRequest; readonly output: GetSceneItemIndexResponse };
   readonly GetSceneItemList: { readonly input: GetSceneItemListRequest; readonly output: GetSceneItemListResponse };
   readonly GetSceneItemLocked: { readonly input: GetSceneItemLockedRequest; readonly output: GetSceneItemLockedResponse };
+  readonly GetSceneItemPrivateSettings: { readonly input: GetSceneItemPrivateSettingsRequest; readonly output: GetSceneItemPrivateSettingsResponse };
   readonly GetSceneItemSource: { readonly input: GetSceneItemSourceRequest; readonly output: GetSceneItemSourceResponse };
   readonly GetSceneItemTransform: { readonly input: GetSceneItemTransformRequest; readonly output: GetSceneItemTransformResponse };
   readonly GetSceneList: { readonly input: GetSceneListRequest; readonly output: GetSceneListResponse };
@@ -2342,6 +2391,7 @@ export interface ObsRequests {
   readonly GetSourceFilterDefaultSettings: { readonly input: GetSourceFilterDefaultSettingsRequest; readonly output: GetSourceFilterDefaultSettingsResponse };
   readonly GetSourceFilterKindList: { readonly input: GetSourceFilterKindListRequest; readonly output: GetSourceFilterKindListResponse };
   readonly GetSourceFilterList: { readonly input: GetSourceFilterListRequest; readonly output: GetSourceFilterListResponse };
+  readonly GetSourcePrivateSettings: { readonly input: GetSourcePrivateSettingsRequest; readonly output: GetSourcePrivateSettingsResponse };
   readonly GetSourceScreenshot: { readonly input: GetSourceScreenshotRequest; readonly output: GetSourceScreenshotResponse };
   readonly GetSpecialInputs: { readonly input: GetSpecialInputsRequest; readonly output: GetSpecialInputsResponse };
   readonly GetStats: { readonly input: GetStatsRequest; readonly output: GetStatsResponse };
@@ -2395,6 +2445,7 @@ export interface ObsRequests {
   readonly SetSceneItemEnabled: { readonly input: SetSceneItemEnabledRequest; readonly output: SetSceneItemEnabledResponse };
   readonly SetSceneItemIndex: { readonly input: SetSceneItemIndexRequest; readonly output: SetSceneItemIndexResponse };
   readonly SetSceneItemLocked: { readonly input: SetSceneItemLockedRequest; readonly output: SetSceneItemLockedResponse };
+  readonly SetSceneItemPrivateSettings: { readonly input: SetSceneItemPrivateSettingsRequest; readonly output: SetSceneItemPrivateSettingsResponse };
   readonly SetSceneItemTransform: { readonly input: SetSceneItemTransformRequest; readonly output: SetSceneItemTransformResponse };
   readonly SetSceneName: { readonly input: SetSceneNameRequest; readonly output: SetSceneNameResponse };
   readonly SetSceneSceneTransitionOverride: { readonly input: SetSceneSceneTransitionOverrideRequest; readonly output: SetSceneSceneTransitionOverrideResponse };
@@ -2402,6 +2453,7 @@ export interface ObsRequests {
   readonly SetSourceFilterIndex: { readonly input: SetSourceFilterIndexRequest; readonly output: SetSourceFilterIndexResponse };
   readonly SetSourceFilterName: { readonly input: SetSourceFilterNameRequest; readonly output: SetSourceFilterNameResponse };
   readonly SetSourceFilterSettings: { readonly input: SetSourceFilterSettingsRequest; readonly output: SetSourceFilterSettingsResponse };
+  readonly SetSourcePrivateSettings: { readonly input: SetSourcePrivateSettingsRequest; readonly output: SetSourcePrivateSettingsResponse };
   readonly SetStreamServiceSettings: { readonly input: SetStreamServiceSettingsRequest; readonly output: SetStreamServiceSettingsResponse };
   readonly SetStudioModeEnabled: { readonly input: SetStudioModeEnabledRequest; readonly output: SetStudioModeEnabledResponse };
   readonly SetTBarPosition: { readonly input: SetTBarPositionRequest; readonly output: SetTBarPositionResponse };
@@ -2488,6 +2540,7 @@ export const RequestSchemas: {
   GetSceneItemIndex: { input: GetSceneItemIndexRequestSchema, output: GetSceneItemIndexResponseSchema },
   GetSceneItemList: { input: GetSceneItemListRequestSchema, output: GetSceneItemListResponseSchema },
   GetSceneItemLocked: { input: GetSceneItemLockedRequestSchema, output: GetSceneItemLockedResponseSchema },
+  GetSceneItemPrivateSettings: { input: GetSceneItemPrivateSettingsRequestSchema, output: GetSceneItemPrivateSettingsResponseSchema },
   GetSceneItemSource: { input: GetSceneItemSourceRequestSchema, output: GetSceneItemSourceResponseSchema },
   GetSceneItemTransform: { input: GetSceneItemTransformRequestSchema, output: GetSceneItemTransformResponseSchema },
   GetSceneList: { input: GetSceneListRequestSchema, output: GetSceneListResponseSchema },
@@ -2498,6 +2551,7 @@ export const RequestSchemas: {
   GetSourceFilterDefaultSettings: { input: GetSourceFilterDefaultSettingsRequestSchema, output: GetSourceFilterDefaultSettingsResponseSchema },
   GetSourceFilterKindList: { input: GetSourceFilterKindListRequestSchema, output: GetSourceFilterKindListResponseSchema },
   GetSourceFilterList: { input: GetSourceFilterListRequestSchema, output: GetSourceFilterListResponseSchema },
+  GetSourcePrivateSettings: { input: GetSourcePrivateSettingsRequestSchema, output: GetSourcePrivateSettingsResponseSchema },
   GetSourceScreenshot: { input: GetSourceScreenshotRequestSchema, output: GetSourceScreenshotResponseSchema },
   GetSpecialInputs: { input: GetSpecialInputsRequestSchema, output: GetSpecialInputsResponseSchema },
   GetStats: { input: GetStatsRequestSchema, output: GetStatsResponseSchema },
@@ -2551,6 +2605,7 @@ export const RequestSchemas: {
   SetSceneItemEnabled: { input: SetSceneItemEnabledRequestSchema, output: SetSceneItemEnabledResponseSchema },
   SetSceneItemIndex: { input: SetSceneItemIndexRequestSchema, output: SetSceneItemIndexResponseSchema },
   SetSceneItemLocked: { input: SetSceneItemLockedRequestSchema, output: SetSceneItemLockedResponseSchema },
+  SetSceneItemPrivateSettings: { input: SetSceneItemPrivateSettingsRequestSchema, output: SetSceneItemPrivateSettingsResponseSchema },
   SetSceneItemTransform: { input: SetSceneItemTransformRequestSchema, output: SetSceneItemTransformResponseSchema },
   SetSceneName: { input: SetSceneNameRequestSchema, output: SetSceneNameResponseSchema },
   SetSceneSceneTransitionOverride: { input: SetSceneSceneTransitionOverrideRequestSchema, output: SetSceneSceneTransitionOverrideResponseSchema },
@@ -2558,6 +2613,7 @@ export const RequestSchemas: {
   SetSourceFilterIndex: { input: SetSourceFilterIndexRequestSchema, output: SetSourceFilterIndexResponseSchema },
   SetSourceFilterName: { input: SetSourceFilterNameRequestSchema, output: SetSourceFilterNameResponseSchema },
   SetSourceFilterSettings: { input: SetSourceFilterSettingsRequestSchema, output: SetSourceFilterSettingsResponseSchema },
+  SetSourcePrivateSettings: { input: SetSourcePrivateSettingsRequestSchema, output: SetSourcePrivateSettingsResponseSchema },
   SetStreamServiceSettings: { input: SetStreamServiceSettingsRequestSchema, output: SetStreamServiceSettingsResponseSchema },
   SetStudioModeEnabled: { input: SetStudioModeEnabledRequestSchema, output: SetStudioModeEnabledResponseSchema },
   SetTBarPosition: { input: SetTBarPositionRequestSchema, output: SetTBarPositionResponseSchema },
@@ -2802,12 +2858,8 @@ export const subscriptionMaskForTopics = (topics: ReadonlyArray<string>): number
 
 export type ObsRequestMethod<K extends RequestName> =
   {} extends ObsRequests[K]["input"]
-    ? (
-        input?: ObsRequests[K]["input"],
-      ) => Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime>
-    : (
-        input: ObsRequests[K]["input"],
-      ) => Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime>;
+    ? (input?: ObsRequests[K]["input"]) => Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime>
+    : (input: ObsRequests[K]["input"]) => Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime>;
 
 export type ObsClient = Ballast.ConnectionRef<typeof INTEGRATION> & {
   readonly [K in RequestName]: ObsRequestMethod<K>;
@@ -2886,6 +2938,7 @@ export const makeClient = (
   GetSceneItemIndex: (input) => call(host, connection, "GetSceneItemIndex", input),
   GetSceneItemList: (input = {}) => call(host, connection, "GetSceneItemList", input),
   GetSceneItemLocked: (input) => call(host, connection, "GetSceneItemLocked", input),
+  GetSceneItemPrivateSettings: (input) => call(host, connection, "GetSceneItemPrivateSettings", input),
   GetSceneItemSource: (input) => call(host, connection, "GetSceneItemSource", input),
   GetSceneItemTransform: (input) => call(host, connection, "GetSceneItemTransform", input),
   GetSceneList: (input = {}) => call(host, connection, "GetSceneList", input),
@@ -2896,6 +2949,7 @@ export const makeClient = (
   GetSourceFilterDefaultSettings: (input) => call(host, connection, "GetSourceFilterDefaultSettings", input),
   GetSourceFilterKindList: (input = {}) => call(host, connection, "GetSourceFilterKindList", input),
   GetSourceFilterList: (input = {}) => call(host, connection, "GetSourceFilterList", input),
+  GetSourcePrivateSettings: (input = {}) => call(host, connection, "GetSourcePrivateSettings", input),
   GetSourceScreenshot: (input) => call(host, connection, "GetSourceScreenshot", input),
   GetSpecialInputs: (input = {}) => call(host, connection, "GetSpecialInputs", input),
   GetStats: (input = {}) => call(host, connection, "GetStats", input),
@@ -2949,6 +3003,7 @@ export const makeClient = (
   SetSceneItemEnabled: (input) => call(host, connection, "SetSceneItemEnabled", input),
   SetSceneItemIndex: (input) => call(host, connection, "SetSceneItemIndex", input),
   SetSceneItemLocked: (input) => call(host, connection, "SetSceneItemLocked", input),
+  SetSceneItemPrivateSettings: (input) => call(host, connection, "SetSceneItemPrivateSettings", input),
   SetSceneItemTransform: (input) => call(host, connection, "SetSceneItemTransform", input),
   SetSceneName: (input) => call(host, connection, "SetSceneName", input),
   SetSceneSceneTransitionOverride: (input = {}) => call(host, connection, "SetSceneSceneTransitionOverride", input),
@@ -2956,6 +3011,7 @@ export const makeClient = (
   SetSourceFilterIndex: (input) => call(host, connection, "SetSourceFilterIndex", input),
   SetSourceFilterName: (input) => call(host, connection, "SetSourceFilterName", input),
   SetSourceFilterSettings: (input) => call(host, connection, "SetSourceFilterSettings", input),
+  SetSourcePrivateSettings: (input) => call(host, connection, "SetSourcePrivateSettings", input),
   SetStreamServiceSettings: (input) => call(host, connection, "SetStreamServiceSettings", input),
   SetStudioModeEnabled: (input) => call(host, connection, "SetStudioModeEnabled", input),
   SetTBarPosition: (input) => call(host, connection, "SetTBarPosition", input),

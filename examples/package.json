@@ -11,12 +11,14 @@
     "typecheck": "tsgo -b"
   },
   "dependencies": {
+    "@ballast/artifact": "workspace:*",
     "@ballast/core": "workspace:*",
     "@ballast/fake": "workspace:*",
     "@ballast/module-http": "workspace:*",
     "@ballast/module-keyboard": "workspace:*",
     "@ballast/module-midi": "workspace:*",
     "@ballast/module-obs": "workspace:*",
+    "@ballast/module-sceneify": "workspace:*",
     "@ballast/module-twitch": "workspace:*",
     "@ballast/module-vtube-studio": "workspace:*",
     "@ballast/module-websocket": "workspace:*",

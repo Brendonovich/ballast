@@ -128,6 +128,7 @@ const workerBytes = await bundle(
 );
 
 await copyPackage("effect");
+await copyPackage("solid-js");
 await copyPackage("ws");
 await copyPackage("rolldown");
 await copyPackage("@typescript/native-preview");
@@ -164,6 +165,16 @@ await copyWorkspacePackage("core", join(repoRoot, "packages", "core"));
 await copyWorkspacePackage("planner", join(repoRoot, "packages", "planner"));
 await copyWorkspacePackage("fake", join(repoRoot, "packages", "integrations", "fake"));
 await copyWorkspacePackage("module-obs", join(repoRoot, "packages", "integrations", "obs"));
+await copyWorkspacePackage("module-sceneify", join(repoRoot, "packages", "integrations", "sceneify"));
+{
+  // module-sceneify builds on Sceneify; project bundles and typechecks resolve it from here.
+  // Sceneify only imports obs-websocket-js for types.
+  const sceneifyModuleRequire = createRequire(join(repoRoot, "packages", "integrations", "sceneify", "package.json"));
+  const sceneifyRoot = await packageRootFor(sceneifyModuleRequire, "@sceneify/core-rewrite");
+  const sceneifyRequire = createRequire(join(sceneifyRoot, "package.json"));
+  await copyFrom(sceneifyRoot, "@sceneify/core-rewrite");
+  await copyFrom(await packageRootFor(sceneifyRequire, "obs-websocket-js"), "obs-websocket-js");
+}
 await copyWorkspacePackage("module-twitch", join(repoRoot, "packages", "integrations", "twitch"));
 await copyWorkspacePackage("module-vtube-studio", join(repoRoot, "packages", "integrations", "vtube-studio"));
 await copyWorkspacePackage("module-keyboard", join(repoRoot, "packages", "integrations", "keyboard"));
@@ -185,6 +196,7 @@ await copyWorkspacePackage("module-http", join(repoRoot, "packages", "integratio
 }
 await copyWorkspacePackage("cloud-protocol", join(repoRoot, "packages", "cloud-protocol"));
 await copyWorkspacePackage("agent-protocol", join(repoRoot, "packages", "agent-protocol"));
+await copyWorkspacePackage("artifact", join(repoRoot, "packages", "artifact"));
 
 const webDist = join(repoRoot, "apps", "web", "dist");
 await mkdir(join(outDir, "web"), { recursive: true });

@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import { Schema } from "effect";
+import { HistoryPolicyManifestSchema } from "./history-types.ts";
 
 export const SourceLocationSchema = Schema.Struct({
   file: Schema.String,
@@ -92,6 +93,10 @@ export const TopicManifestSchema = Schema.Struct({
    * `{ slot }` instead of a user id, so planning never needs a live account.
    */
   condition: Schema.optional(TopicConditionSchema),
+  /** Effective subscription history policy, including `false` for disabled. */
+  history: Schema.optional(HistoryPolicyManifestSchema),
+  /** Fingerprint of the topic schema stored with each history entry. */
+  schemaFingerprint: Schema.optional(Schema.String),
 });
 export type TopicManifest = Schema.Schema.Type<typeof TopicManifestSchema>;
 
@@ -153,6 +158,60 @@ export const RunManifestSchema = Schema.Struct({
 });
 export type RunManifest = Schema.Schema.Type<typeof RunManifestSchema>;
 
+/** A browser artifact declared in init. The entry is project-relative. */
+export const ArtifactManifestSchema = Schema.Struct({
+  name: Schema.String,
+  entry: Schema.String,
+  source: Schema.optional(SourceLocationSchema),
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+});
+export type ArtifactManifest = Schema.Schema.Type<typeof ArtifactManifestSchema>;
+
+export const ApiProcedureKindSchema = Schema.Literals(["query", "action", "stream"]);
+export type ApiProcedureKind = Schema.Schema.Type<typeof ApiProcedureKindSchema>;
+
+export const ApiProcedureManifestSchema = Schema.Struct({
+  name: Schema.String,
+  kind: ApiProcedureKindSchema,
+  /** True for an Effect RPC streaming success schema. */
+  stream: Schema.Boolean,
+  payloadSchema: Schema.Unknown,
+  successSchema: Schema.Unknown,
+  errorSchema: Schema.Unknown,
+});
+export type ApiProcedureManifest = Schema.Schema.Type<typeof ApiProcedureManifestSchema>;
+
+/** One project API group. v1 allows one group per project. */
+export const ApiManifestSchema = Schema.Struct({
+  source: Schema.optional(SourceLocationSchema),
+  procedures: Schema.Array(ApiProcedureManifestSchema),
+});
+export type ApiManifest = Schema.Schema.Type<typeof ApiManifestSchema>;
+
+export const StoreKindSchema = Schema.Literals(["counter"]);
+export type StoreKind = Schema.Schema.Type<typeof StoreKindSchema>;
+
+export const StoreManifestSchema = Schema.Struct({
+  name: Schema.String,
+  kind: StoreKindSchema,
+  source: Schema.optional(SourceLocationSchema),
+  /** Counter initial value. */
+  initial: Schema.optional(Schema.Number),
+});
+export type StoreManifest = Schema.Schema.Type<typeof StoreManifestSchema>;
+
+/**
+ * A named local SQLite database declared in init. The file lives under the
+ * project's `.ballast/db/` directory; the name doubles as the (validated)
+ * file name.
+ */
+export const DatabaseManifestSchema = Schema.Struct({
+  name: Schema.String,
+  source: Schema.optional(SourceLocationSchema),
+});
+export type DatabaseManifest = Schema.Schema.Type<typeof DatabaseManifestSchema>;
+
 /**
  * Everything planning a script discovers before it runs. This is the exact
  * shape in docs/HANDOFF.md §6 Step 3, plus the additive `timers` field from
@@ -177,6 +236,16 @@ export const ManifestSchema = Schema.Struct({
   runs: Schema.Array(RunManifestSchema).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  artifacts: Schema.Array(ArtifactManifestSchema).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  api: Schema.optional(ApiManifestSchema),
+  stores: Schema.Array(StoreManifestSchema).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  databases: Schema.Array(DatabaseManifestSchema).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type Manifest = Schema.Schema.Type<typeof ManifestSchema>;
 
@@ -196,6 +265,9 @@ export const emptyManifest = (
   timers: [],
   workflows: [],
   runs: [],
+  artifacts: [],
+  stores: [],
+  databases: [],
 });
 
 export const connectionKey = (connection: ConnectionManifest): string =>
@@ -221,3 +293,9 @@ export const timerManifestKey = (timer: TimerManifest): string => timer.name;
 export const workflowManifestKey = (workflow: WorkflowManifest): string => workflow.name;
 
 export const runManifestKey = (run: RunManifest): string => run.name;
+
+export const artifactManifestKey = (artifact: ArtifactManifest): string => artifact.name;
+
+export const storeManifestKey = (store: StoreManifest): string => store.name;
+
+export const databaseManifestKey = (database: DatabaseManifest): string => database.name;

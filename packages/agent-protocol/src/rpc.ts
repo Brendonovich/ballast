@@ -19,6 +19,22 @@ import {
   StartConnectionAuthRequest,
   UpdateConnectionRequest,
 } from "./connections.ts";
+import {
+  ApproveArtifactUrlRequest,
+  ApproveArtifactUrlResponse,
+  ArtifactView,
+  CreateArtifactUrlRequest,
+  CreateArtifactUrlResult,
+  GetArtifactViewRequest,
+  ListArtifactUrlConfirmationsRequest,
+  ListArtifactUrlConfirmationsResponse,
+  ListArtifactUrlsRequest,
+  ListArtifactUrlsResponse,
+  ListArtifactsRequest,
+  ListArtifactsResponse,
+  RejectArtifactUrlRequest,
+  RevokeArtifactUrlRequest,
+} from "./artifacts.ts";
 import { AgentError, PermissionStatus } from "./common.ts";
 import { ServiceEvent, WatchServiceRequest } from "./events.ts";
 import {
@@ -346,6 +362,60 @@ export const UnpairCloud = Rpc.make("UnpairCloud", {
  * when given) and then follows live output. A client can use `asQueue: true`
  * on the RPC client to get a scoped queue instead of a Stream.
  */
+/** Artifact declarations from the project manifest. */
+export const ListArtifacts = Rpc.make("ListArtifacts", {
+  payload: ListArtifactsRequest,
+  success: ListArtifactsResponse,
+  error: AgentError,
+});
+
+/** Mint a short-lived read token for the app's own artifact iframe. */
+export const GetArtifactView = Rpc.make("GetArtifactView", {
+  payload: GetArtifactViewRequest,
+  success: ArtifactView,
+  error: AgentError,
+});
+
+/** Create a persistent OBS URL; action scope returns a confirmation request. */
+export const CreateArtifactUrl = Rpc.make("CreateArtifactUrl", {
+  payload: CreateArtifactUrlRequest,
+  success: CreateArtifactUrlResult,
+  error: AgentError,
+});
+
+export const ListArtifactUrls = Rpc.make("ListArtifactUrls", {
+  payload: ListArtifactUrlsRequest,
+  success: ListArtifactUrlsResponse,
+  error: AgentError,
+});
+
+export const RevokeArtifactUrl = Rpc.make("RevokeArtifactUrl", {
+  payload: RevokeArtifactUrlRequest,
+  success: Schema.Void,
+  error: AgentError,
+});
+
+export const ListArtifactUrlConfirmations = Rpc.make(
+  "ListArtifactUrlConfirmations",
+  {
+    payload: ListArtifactUrlConfirmationsRequest,
+    success: ListArtifactUrlConfirmationsResponse,
+    error: AgentError,
+  },
+);
+
+export const ApproveArtifactUrl = Rpc.make("ApproveArtifactUrl", {
+  payload: ApproveArtifactUrlRequest,
+  success: ApproveArtifactUrlResponse,
+  error: AgentError,
+});
+
+export const RejectArtifactUrl = Rpc.make("RejectArtifactUrl", {
+  payload: RejectArtifactUrlRequest,
+  success: Schema.Void,
+  error: AgentError,
+});
+
 export const StreamLogs = Rpc.make("StreamLogs", {
   payload: StreamLogsRequest,
   success: LogEntry,
@@ -409,6 +479,14 @@ export const AgentRpcs = RpcGroup.make(
   BeginCloudPairing,
   PairCloud,
   UnpairCloud,
+  ListArtifacts,
+  GetArtifactView,
+  CreateArtifactUrl,
+  ListArtifactUrls,
+  RevokeArtifactUrl,
+  ListArtifactUrlConfirmations,
+  ApproveArtifactUrl,
+  RejectArtifactUrl,
   StreamLogs,
   StreamEvents,
   WatchService,

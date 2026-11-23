@@ -129,6 +129,8 @@ const manifestSource = (
       return manifest.workflows.find((candidate) => candidate.name === unit.name)?.source;
     case "run":
       return manifest.runs.find((candidate) => candidate.name === unit.name)?.source;
+    case "database":
+      return manifest.databases?.find((candidate) => candidate.name === unit.name)?.source;
     case "param":
       return undefined;
   }
@@ -407,6 +409,8 @@ const unitDetail = (unit: UnitSummary, manifest: ProjectManifest | undefined): s
     }
     case "run":
       return "non-durable run loop";
+    case "database":
+      return "local SQLite · .ballast/db/" + unit.name + ".sqlite";
   }
 };
 
@@ -482,7 +486,10 @@ export const checkText = (check: CheckResult): string => {
           change.name +
           (change.source === undefined
             ? ""
-            : " @ " + change.source.file + ":" + change.source.line),
+            : " @ " + change.source.file + ":" + change.source.line) +
+          (change.kind === "database" && change.change === "removed"
+            ? " (data kept: .ballast/db/" + change.name + ".sqlite)"
+            : ""),
       );
     }
   }

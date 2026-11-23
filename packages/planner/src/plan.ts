@@ -215,6 +215,15 @@ const stripSources = (manifest: Manifest): Manifest => ({
   timers: manifest.timers.map(({ source: _source, ...timer }) => timer),
   workflows: manifest.workflows.map(({ source: _source, ...workflow }) => workflow),
   runs: manifest.runs.map(({ source: _source, ...run }) => run),
+  artifacts: manifest.artifacts.map(({ source: _source, ...artifact }) => artifact),
+  ...(manifest.api === undefined
+    ? {}
+    : (() => {
+        const { source: _source, ...api } = manifest.api;
+        return { api };
+      })()),
+  stores: manifest.stores.map(({ source: _source, ...store }) => store),
+  databases: manifest.databases.map(({ source: _source, ...database }) => database),
 });
 
 const assertUniqueNames = (manifest: Manifest): void => {
@@ -264,6 +273,24 @@ const assertUniqueNames = (manifest: Manifest): void => {
     "run",
     manifest.runs.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
   );
+  assertUnique(
+    "artifact",
+    manifest.artifacts.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
+  assertUnique(
+    "store",
+    manifest.stores.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
+  assertUnique(
+    "database",
+    manifest.databases.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
+  if (manifest.api !== undefined) {
+    assertUnique(
+      "api procedure",
+      manifest.api.procedures.map((value) => ({ name: value.name })),
+    );
+  }
 };
 
 export const decodeManifest = (input: unknown): Manifest =>

@@ -1,3 +1,6 @@
+export * from "./artifact-metadata.ts";
+export * from "./artifact-wire.ts";
+export * from "./artifacts.ts";
 export * from "./cloud.ts";
 export * from "./common.ts";
 export * from "./connections.ts";

@@ -174,6 +174,7 @@ export const ControlChange = Ballast.Topic<ControlChangePayload, Integration>({
   integration: INTEGRATION,
   topic: `${INTEGRATION}/ControlChange`,
   schema: ControlChangePayloadSchema,
+  history: false,
 });
 
 export const ProgramChange = Ballast.Topic<ProgramChangePayload, Integration>({
@@ -187,6 +188,7 @@ export const PitchBend = Ballast.Topic<PitchBendPayload, Integration>({
   integration: INTEGRATION,
   topic: `${INTEGRATION}/PitchBend`,
   schema: PitchBendPayloadSchema,
+  history: false,
 });
 
 /** Every message from the input, including ones without a typed topic. */
@@ -194,6 +196,7 @@ export const RawMessage = Ballast.Topic<RawMessagePayload, Integration>({
   integration: INTEGRATION,
   topic: `${INTEGRATION}/RawMessage`,
   schema: RawMessagePayloadSchema,
+  history: false,
 });
 
 /** Dynamic string options backed by the machine's MIDI input ports. */

@@ -197,6 +197,51 @@ describe("diff", () => {
     expect(result.requiresConsent).toBe(true);
   });
 
+  it("flags artifact-only changes for hot reload without a worker restart", () => {
+    const previous = manifest({
+      artifacts: [{ name: "dashboard", entry: "./artifacts/dashboard/main.tsx" }],
+    });
+    const next = manifest({
+      artifacts: [{ name: "dashboard", entry: "./artifacts/dashboard/main.tsx" }],
+    });
+
+    expect(diffProject(previous, next).artifactOnly).toBe(false);
+    expect(diffProject(previous, next).requiresWorkerRestart).toBe(false);
+
+    const changed = manifest({
+      artifacts: [{ name: "dashboard", entry: "./artifacts/dashboard/main.tsx", title: "New" }],
+    });
+    const result = diffProject(previous, changed);
+    expect(result.changes).toEqual([
+      expect.objectContaining({ kind: "artifact", name: "dashboard", change: "changed" }),
+    ]);
+    expect(result.artifactOnly).toBe(true);
+    expect(result.requiresWorkerRestart).toBe(false);
+  });
+
+  it("requires a worker restart for API and store changes", () => {
+    const previous = manifest();
+    const next = manifest({
+      api: {
+        procedures: [
+          {
+            name: "Snapshot",
+            kind: "query",
+            stream: false,
+            payloadSchema: {},
+            successSchema: {},
+            errorSchema: {},
+          },
+        ],
+      },
+      stores: [{ name: "count", kind: "counter", initial: 0 }],
+    });
+    const result = diffProject(previous, next);
+    expect(result.artifactOnly).toBe(false);
+    expect(result.requiresWorkerRestart).toBe(true);
+    expect(result.changes.map((change) => change.kind).sort()).toEqual(["api", "store"]);
+  });
+
   it("diffs params without requiring consent", () => {
     const previous = manifest();
     const next = manifest({

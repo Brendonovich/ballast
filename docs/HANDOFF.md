@@ -45,6 +45,15 @@ still open, and what to build next.
   applied manifest/fingerprint, applies the late policy, delivers once to the active generation,
   and keeps pending entries through stop/restart. Timer identity is project + timer name + key.
   `ballast run` keeps an in-memory timer store.
+- **Local SQLite databases.** A script declares a database in init with
+  `Ballast.Database("name")` and runs raw SQL through the effect/sql `SqlClient`
+  (`const sql = yield* db.client`) in handlers, `Ballast.run` or timer/API handlers;
+  reading it during init is a runtime-value type error. The agent owns the file
+  `.ballast/db/<name>.sqlite` (via `@effect/sql-sqlite-node`, i.e. Node's built-in
+  `node:sqlite`; no native dependencies) and the worker executes SQL over the
+  `DatabaseExecute` runtime RPC, so connections close cleanly across hot reload.
+  Declarations appear in `ballast plan` under `databases`. There are no migrations
+  and no database inspector yet.
 - **Project bundles (0008 W4).** A `ballast.ts` project is planned as one bundle through the
   `tsgo` gate, diffed by unit kind/name, and run as one worker. A new project starts stopped; a
   project starts/stops/enables as a whole. File changes cut over to a new generation immediately

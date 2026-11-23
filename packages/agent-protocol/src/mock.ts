@@ -5,6 +5,10 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import type {
+  ArtifactUrlConfirmation,
+  ArtifactUrlSummary,
+} from "./artifacts.ts";
 import type { CloudStatus } from "./cloud.ts";
 import { cloudUnlinked } from "./cloud.ts";
 import type { ConnectionSummary } from "./connections.ts";
@@ -18,6 +22,7 @@ import type { AgentError, ParamValue } from "./common.ts";
 import { agentError } from "./common.ts";
 import type { LogEntry, EventRecord } from "./logs.ts";
 import type {
+  ManifestDatabaseUnit,
   ProjectConsentRequest,
   ProjectRequirement,
   ProjectSummary,
@@ -78,6 +83,12 @@ interface MockState {
   readonly nextLogSeq: number;
   readonly nextEventSeq: number;
   readonly nextProjectSeq: number;
+  readonly artifactUrls: ReadonlyMap<string, ArtifactUrlSummary>;
+  readonly artifactUrlOrder: ReadonlyArray<string>;
+  readonly artifactConfirmations: ReadonlyMap<string, ArtifactUrlConfirmation>;
+  readonly artifactConfirmationOrder: ReadonlyArray<string>;
+  readonly nextArtifactUrlSeq: number;
+  readonly nextArtifactConfirmationSeq: number;
 }
 
 interface MockStoreService {
@@ -121,6 +132,12 @@ const altProject: ProjectSummary = {
 };
 
 const param = (input: ParamView): ParamView => input;
+
+const mockDatabases: Readonly<Record<string, ReadonlyArray<ManifestDatabaseUnit>>> = {
+  [mainProject.id]: [
+    { name: "main", source: { file: "ballast.ts", line: 6, column: 14 } },
+  ],
+};
 
 const redeemManifest: ScriptManifest = {
   params: [
@@ -739,6 +756,18 @@ const initialEvents = (): ReadonlyArray<EventRecord> => [
   },
 ];
 
+const mainArtifactUrl: ArtifactUrlSummary = {
+  id: "artifact_url_1",
+  projectId: mainProject.id,
+  artifact: "dashboard",
+  scope: "read",
+  transparent: false,
+  createdAt: base + 10 * MINUTE,
+  lastUsedAt: base + 20 * MINUTE,
+  urlPreview: "http://127.0.0.1:49490/a/••••/index.html",
+  tokenFingerprint: "4c1f8d2a",
+};
+
 const initialState = (): MockState => ({
   info: {
     name: "ballast-agent",
@@ -785,6 +814,12 @@ const initialState = (): MockState => ({
   nextLogSeq: 8,
   nextEventSeq: 5,
   nextProjectSeq: 3,
+  artifactUrls: new Map([[mainArtifactUrl.id, mainArtifactUrl]]),
+  artifactUrlOrder: [mainArtifactUrl.id],
+  artifactConfirmations: new Map(),
+  artifactConfirmationOrder: [],
+  nextArtifactUrlSeq: 2,
+  nextArtifactConfirmationSeq: 1,
 });
 
 const healthOf = (state: MockState): HealthStatus => {
@@ -1018,7 +1053,16 @@ const handlers = Effect.gen(function* () {
           }),
         ),
       ];
-    });
+    }).concat(
+      (mockDatabases[projectId] ?? []).map(
+        (database): UnitSummary => ({
+          kind: "database",
+          name: database.name,
+          status: state.projects.get(projectId)?.status === "running" ? "active" : "waiting",
+          ...(database.source === undefined ? {} : { source: database.source }),
+        }),
+      ),
+    );
 
   return {
     GetServiceInfo: () => Effect.map(Ref.get(store.state), (state) => state.info),
@@ -1404,6 +1448,210 @@ const handlers = Effect.gen(function* () {
         ]);
         return undefined;
       }),
+
+    ListArtifacts: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          if (project.id !== mainProject.id) return { artifacts: [] };
+          return {
+            artifacts: [
+              {
+                name: "dashboard",
+                title: "Stream dashboard",
+                entry: "artifacts/dashboard/main.tsx",
+                fingerprint: "mock-dashboard-v1",
+                status: "ready" as const,
+              },
+            ],
+          };
+        }),
+      ),
+
+    GetArtifactView: ({
+      projectId,
+      artifact,
+    }: {
+      readonly projectId: string;
+      readonly artifact: string;
+    }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          if (project.id !== mainProject.id || artifact !== "dashboard") {
+            return yield* fail(agentError("not-found", "No artifact " + artifact));
+          }
+          return {
+            url: "http://127.0.0.1:49490",
+            pageUrl: "http://127.0.0.1:49490/a/mock-embed-token/index.html",
+            token: "mock-embed-token",
+            scope: "read" as const,
+            expiresAt: Date.now() + 5 * MINUTE,
+          };
+        }),
+      ),
+
+    CreateArtifactUrl: (request: {
+      readonly projectId: string;
+      readonly artifact: string;
+      readonly scope: "read" | "action";
+      readonly transparent: boolean;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const project = yield* requireProject(state, request.projectId);
+        if (request.artifact !== "dashboard") {
+          return yield* fail(agentError("not-found", "No artifact " + request.artifact));
+        }
+        if (request.scope === "action") {
+          const id = "artifact_confirmation_" + state.nextArtifactConfirmationSeq;
+          const confirmation: ArtifactUrlConfirmation = {
+            id,
+            projectId: project.id,
+            projectName: project.name,
+            artifact: request.artifact,
+            artifactTitle: "Stream dashboard",
+            scope: "action",
+            transparent: request.transparent,
+            createdAt: Date.now(),
+            summary: "Allows ResetCounters and other action procedures",
+            procedures: ["ResetCounters"],
+          };
+          yield* Ref.set(store.state, {
+            ...state,
+            artifactConfirmations: new Map(state.artifactConfirmations).set(id, confirmation),
+            artifactConfirmationOrder: [...state.artifactConfirmationOrder, id],
+            nextArtifactConfirmationSeq: state.nextArtifactConfirmationSeq + 1,
+          });
+          return { _tag: "confirmation-required" as const, confirmation };
+        }
+        const id = "artifact_url_" + state.nextArtifactUrlSeq;
+        const url: ArtifactUrlSummary = {
+          id,
+          projectId: project.id,
+          artifact: request.artifact,
+          scope: "read",
+          transparent: request.transparent,
+          createdAt: Date.now(),
+          urlPreview: "http://127.0.0.1:49490/a/••••/index.html",
+          tokenFingerprint: "mock-" + id,
+        };
+        yield* Ref.set(store.state, {
+          ...state,
+          artifactUrls: new Map(state.artifactUrls).set(id, url),
+          artifactUrlOrder: [...state.artifactUrlOrder, id],
+          nextArtifactUrlSeq: state.nextArtifactUrlSeq + 1,
+        });
+        return {
+          _tag: "created" as const,
+          url,
+          copyUrl: "http://127.0.0.1:49490/a/mock-read-token/index.html",
+        };
+      }),
+
+    ListArtifactUrls: (request: {
+      readonly projectId?: string;
+      readonly artifact?: string;
+    }) =>
+      Effect.map(Ref.get(store.state), (state) => ({
+        urls: state.artifactUrlOrder.flatMap((id) => {
+          const url = state.artifactUrls.get(id);
+          if (url === undefined) return [];
+          if (request.projectId !== undefined && url.projectId !== request.projectId) return [];
+          if (request.artifact !== undefined && url.artifact !== request.artifact) return [];
+          return [url];
+        }),
+      })),
+
+    RevokeArtifactUrl: ({ id }: { readonly id: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          if (!state.artifactUrls.has(id)) {
+            return yield* fail(agentError("not-found", "No artifact URL " + id));
+          }
+          yield* Ref.set(store.state, {
+            ...state,
+            artifactUrls: new Map(
+              [...state.artifactUrls].filter(([candidate]) => candidate !== id),
+            ),
+            artifactUrlOrder: state.artifactUrlOrder.filter((candidate) => candidate !== id),
+          });
+        }),
+      ),
+
+    ListArtifactUrlConfirmations: (request: { readonly projectId?: string }) =>
+      Effect.map(Ref.get(store.state), (state) => ({
+        confirmations: state.artifactConfirmationOrder.flatMap((id) => {
+          const confirmation = state.artifactConfirmations.get(id);
+          if (confirmation === undefined) return [];
+          if (
+            request.projectId !== undefined &&
+            confirmation.projectId !== request.projectId
+          ) {
+            return [];
+          }
+          return [confirmation];
+        }),
+      })),
+
+    ApproveArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const confirmation = state.artifactConfirmations.get(confirmationId);
+          if (confirmation === undefined) {
+            return yield* fail(
+              agentError("not-found", "No artifact confirmation " + confirmationId),
+            );
+          }
+          const id = "artifact_url_" + state.nextArtifactUrlSeq;
+          const url: ArtifactUrlSummary = {
+            id,
+            projectId: confirmation.projectId,
+            artifact: confirmation.artifact,
+            scope: "action",
+            transparent: confirmation.transparent,
+            createdAt: Date.now(),
+            urlPreview: "http://127.0.0.1:49490/a/••••/index.html",
+            tokenFingerprint: "mock-" + id,
+          };
+          yield* Ref.set(store.state, {
+            ...state,
+            artifactUrls: new Map(state.artifactUrls).set(id, url),
+            artifactUrlOrder: [...state.artifactUrlOrder, id],
+            artifactConfirmations: new Map(
+              [...state.artifactConfirmations].filter(([candidate]) => candidate !== confirmationId),
+            ),
+            artifactConfirmationOrder: state.artifactConfirmationOrder.filter(
+              (candidate) => candidate !== confirmationId,
+            ),
+            nextArtifactUrlSeq: state.nextArtifactUrlSeq + 1,
+          });
+          return {
+            url,
+            copyUrl: "http://127.0.0.1:49490/a/mock-action-token/index.html",
+          };
+        }),
+      ),
+
+    RejectArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          if (!state.artifactConfirmations.has(confirmationId)) {
+            return yield* fail(
+              agentError("not-found", "No artifact confirmation " + confirmationId),
+            );
+          }
+          yield* Ref.set(store.state, {
+            ...state,
+            artifactConfirmations: new Map(
+              [...state.artifactConfirmations].filter(([candidate]) => candidate !== confirmationId),
+            ),
+            artifactConfirmationOrder: state.artifactConfirmationOrder.filter(
+              (candidate) => candidate !== confirmationId,
+            ),
+          });
+        }),
+      ),
 
     ListTimers: () => Effect.succeed({ timers: [] }),
     CancelTimer: () => Effect.succeed({ cancelled: false }),

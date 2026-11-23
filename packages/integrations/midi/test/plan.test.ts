@@ -31,6 +31,8 @@ describe("plan MIDI scripts", () => {
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: false,
+            schemaFingerprint: expect.any(String),
           },
           {
             integration: "midi",
@@ -40,6 +42,8 @@ describe("plan MIDI scripts", () => {
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: false,
+            schemaFingerprint: expect.any(String),
           },
         ],
         requests: [
@@ -49,6 +53,9 @@ describe("plan MIDI scripts", () => {
         timers: [],
         workflows: [],
         runs: [],
+        artifacts: [],
+        stores: [],
+        databases: [],
       });
     }),
   );

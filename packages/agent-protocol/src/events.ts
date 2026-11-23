@@ -3,6 +3,10 @@ import { Schema } from "effect";
 import { CloudStatus } from "./cloud.ts";
 import { ConnectionSummary } from "./connections.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
+import {
+  ArtifactUrlConfirmation,
+  ArtifactUrlSummary,
+} from "./artifacts.ts";
 import { ProjectConsentRequest, ProjectSummary, SourceLocation } from "./project.ts";
 import { TimerSummary } from "./timers.ts";
 
@@ -80,6 +84,22 @@ export const ServiceEvent = Schema.Union([
    */
   Schema.TaggedStruct("timer-fired", {
     timer: TimerSummary,
+  }),
+  /** An artifact bundle changed; connected artifact pages reload. */
+  Schema.TaggedStruct("artifact-changed", {
+    projectId: Schema.String,
+    artifact: Schema.String,
+    fingerprint: Schema.String,
+  }),
+  Schema.TaggedStruct("artifact-url", {
+    url: ArtifactUrlSummary,
+  }),
+  Schema.TaggedStruct("artifact-url-confirmation", {
+    confirmation: ArtifactUrlConfirmation,
+  }),
+  Schema.TaggedStruct("artifact-url-confirmation-resolved", {
+    confirmationId: Schema.String,
+    approved: Schema.Boolean,
   }),
 ]);
 export type ServiceEvent = typeof ServiceEvent.Type;

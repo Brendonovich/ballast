@@ -125,4 +125,37 @@ export default Effect.gen(function* () {
     );
 }) satisfies Ballast.Project;
 `],
+  ["projects/stream-dashboard/ballast.ts", `import * as Ballast from "@ballast/core";
+import { Effect } from "effect";
+import { Rpc } from "effect/rpc";
+import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as Schema from "effect/Schema";
+
+const DashboardApi = RpcGroup.make(
+  Rpc.make("Snapshot", {
+    success: Schema.Struct({ count: Schema.Number }),
+  }),
+  Rpc.make("ResetCounters", { success: Schema.Number }),
+);
+
+export const title = "Stream dashboard";
+
+export default Effect.gen(function* () {
+  const views = yield* Ballast.Store.counter("views", { initial: 0 });
+
+  yield* Ballast.Artifact("dashboard", {
+    title: "Stream dashboard",
+    entry: "./artifacts/dashboard/main.tsx",
+  });
+
+  yield* Ballast.Api.serve(DashboardApi, {
+    Snapshot: () => Effect.map(views.get(), (count) => ({ count })),
+    ResetCounters: () =>
+      Effect.gen(function* () {
+        yield* views.reset();
+        return 0;
+      }),
+  });
+}) satisfies Ballast.Project;
+`],
 ]);

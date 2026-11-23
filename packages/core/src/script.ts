@@ -10,6 +10,9 @@ import type { EventHost } from "./topic.ts";
 import { ManifestRecorder, ScriptRunner } from "./services.ts";
 import type { EventBus, RequestClients, ScriptRunnerService, Settings } from "./services.ts";
 import { TimerHost, TimerHostPlan, TimerHostRuntime } from "./timer.ts";
+import { DatabaseHost, DatabaseHostPlan, DatabaseHostRuntime } from "./database.ts";
+import { ApiHost, makeApiHostPlan, makeApiHostRuntime } from "./api.ts";
+import type { ApiHostService, ApiStart } from "./api.ts";
 import { provideRuntime, Runtime } from "./runtime.ts";
 import { captureSource } from "./source.ts";
 import { withUnit } from "./unit.ts";
@@ -37,7 +40,9 @@ export type ScriptHostServices =
   | Settings
   | EventBus
   | RequestClients
-  | TimerHost;
+  | TimerHost
+  | ApiHost
+  | DatabaseHost;
 
 /** Everything the host provides around the default export. */
 type ScriptProvidedServices =
@@ -45,7 +50,9 @@ type ScriptProvidedServices =
   | RequestHost
   | ScriptRunner
   | ScriptPhase
-  | TimerHost;
+  | TimerHost
+  | ApiHost
+  | DatabaseHost;
 
 /**
  * The optional type a script can use for checking:
@@ -97,31 +104,39 @@ const makeScriptRunner = (): ScriptRunnerState => {
 const planHostServices = (
   runner: ScriptRunnerService,
   phase: Phase,
+  api: ApiHostService,
 ): Layer.Layer<ScriptProvidedServices> =>
   Layer.mergeAll(
     Layer.succeed(ScriptRunner, runner),
     Layer.succeed(ScriptPhase, phase),
+    Layer.succeed(ApiHost, api),
     EventHostPlan,
     RequestHostPlan,
     TimerHostPlan,
+    DatabaseHostPlan,
   );
 
 const runtimeHostServices = (
   runner: ScriptRunnerService,
   phase: Phase,
+  api: ApiHostService,
 ): Layer.Layer<ScriptProvidedServices> =>
   Layer.mergeAll(
     Layer.succeed(ScriptRunner, runner),
     Layer.succeed(ScriptPhase, phase),
+    Layer.succeed(ApiHost, api),
     EventHostRuntime,
     RequestHostRuntime,
     TimerHostRuntime,
+    DatabaseHostRuntime,
   );
 
 export interface ScriptRuntime {
   readonly run: ScriptRunnerService["run"];
   /** Long-running loops registered with `Ballast.run`. */
   readonly exports: Effect.Effect<Record<string, unknown>>;
+  /** The artifact API server registered by `Api.serve`, if any. */
+  readonly api: Effect.Effect<ApiStart | undefined>;
 }
 
 /**
@@ -136,16 +151,21 @@ export const evaluateScript = <E, R extends ScriptHostServices>(
 ): Effect.Effect<ScriptRuntime, E, Exclude<R, ScriptProvidedServices>> =>
   Effect.gen(function* () {
     const runner = makeScriptRunner();
+    const apiHost =
+      phase === "plan"
+        ? makeApiHostPlan(yield* Effect.serviceOption(ManifestRecorder))
+        : makeApiHostRuntime();
     yield* script.pipe(
       Effect.provide(
         phase === "plan"
-          ? planHostServices(runner.service, phase)
-          : runtimeHostServices(runner.service, phase),
+          ? planHostServices(runner.service, phase, apiHost)
+          : runtimeHostServices(runner.service, phase, apiHost),
       ),
     );
     return {
       run: runner.service.run,
       exports: runner.exports,
+      api: apiHost.current,
     };
   });
 

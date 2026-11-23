@@ -1,9 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { NodeCrypto } from "@effect/platform-node";
+import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { RuntimeSession } from "../src/runtime-session.ts";
+import { EventHistoryLive } from "../src/service/event-history.ts";
 import {
   EventLog,
   EventLogLive,
@@ -13,7 +14,10 @@ import {
 
 const RouterLive = EventRouterLive.pipe(
   Layer.provideMerge(EventLogLive),
+  Layer.provideMerge(EventHistoryLive),
   Layer.provide(NodeCrypto.layer),
+  Layer.provide(NodeFileSystem.layer),
+  Layer.provide(NodePath.layer),
 );
 
 describe("service telemetry", () => {

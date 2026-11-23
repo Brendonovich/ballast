@@ -82,6 +82,8 @@ export const Tick = Ballast.Topic<TickPayload, Integration>({
   topic: "fake/tick",
   scopes: ["fake:read"],
   schema: TickPayloadSchema,
+  // One tick per second is noise unless a subscription opts in.
+  history: false,
 });
 
 /** The driver emits one chat message roughly every 3s. */

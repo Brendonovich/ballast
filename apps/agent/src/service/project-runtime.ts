@@ -1,3 +1,5 @@
+import type { MessagePort } from "node:worker_threads";
+import { fileURLToPath } from "node:url";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -10,6 +12,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
 import {
   agentError,
   type AgentError,
@@ -37,6 +40,10 @@ import { emptyManifest, type Manifest, type ParamManifest, type TimerManifest } 
 import { diffProject, planProject, resolveProjectEntry } from "@ballast/planner";
 import { bundleScript } from "../bundle.ts";
 import { startRuntimeSession } from "../runtime-session.ts";
+import { ProjectStores } from "./artifact-stores.ts";
+import { startRunDatabases } from "./database.ts";
+import { EventHistory, historyRegistration } from "./event-history.ts";
+import type { RunDatabases } from "./database.ts";
 import type { RuntimeSession } from "../runtime-session.ts";
 import { ConnectionManager } from "./connections.ts";
 import type { ActiveScript } from "./connections.ts";
@@ -44,8 +51,10 @@ import { contentHash, readJson, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ensureProjectTypes } from "./scaffold.ts";
-import { EventRouter, Logs, ServiceHub } from "./telemetry.ts";
+import { EventLog, EventRouter, Logs, ServiceHub } from "./telemetry.ts";
 import { makeTimerManager } from "./timers.ts";
+
+const serviceResolveDir = fileURLToPath(new URL(".", import.meta.url));
 
 const SETTINGS_FILE = "settings.json";
 const APPLIED_FILE = "applied.json";
@@ -74,9 +83,12 @@ interface ProjectRuntimeRecord {
   readonly lastErrorSource: ProjectDetail["lastErrorSource"];
   readonly pendingConsent: ProjectConsentRequest | undefined;
   readonly params: Readonly<Record<string, ParamValue>>;
+  /** Artifact entry content hashes; artifact-only edits keep the worker. */
+  readonly artifactHashes: Readonly<Record<string, string>>;
   /** "integration/slot" -> connection instance id. */
   readonly bindings: Readonly<Record<string, string>>;
   readonly session: RuntimeSession | undefined;
+  readonly databases: RunDatabases | undefined;
   readonly activity: ReadonlyMap<string, number>;
 }
 
@@ -121,8 +133,12 @@ export interface ProjectRuntimeService {
   readonly resumeEnabled: () => Effect.Effect<void>;
   readonly running: () => Effect.Effect<ReadonlyArray<ActiveScript>>;
   readonly known: () => Effect.Effect<ReadonlyArray<ActiveScript>>;
+  /** Seed the live event ring from durable subscription history after restart. */
+  readonly hydrateEvents: Effect.Effect<void>;
   readonly closeAll: () => Effect.Effect<void>;
   readonly counts: Effect.Effect<{ readonly total: number; readonly running: number; readonly needsConsent: number; readonly error: number }>;
+  readonly generation: (projectId: string) => Effect.Effect<number | undefined>;
+  readonly artifactPort: (projectId: string) => Effect.Effect<MessagePort | undefined>;
 }
 
 export class ProjectRuntime extends Context.Service<ProjectRuntime, ProjectRuntimeService>()(
@@ -275,6 +291,7 @@ const unitKindOf = (manifest: Manifest, name: string): UnitSummary["kind"] | und
   if (manifest.workflows.some((unit) => unit.name === name)) return "workflow";
   if (manifest.params.some((unit) => unit.key === name)) return "param";
   if (manifest.runs.some((unit) => unit.name === name)) return "run";
+  if (manifest.databases.some((unit) => unit.name === name)) return "database";
   return undefined;
 };
 
@@ -295,7 +312,10 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
   Effect.gen(function* () {
     const projects = yield* ProjectManager;
     const connections = yield* ConnectionManager;
+    const stores = yield* ProjectStores;
+    const history = yield* EventHistory;
     const logs = yield* Logs;
+    const events = yield* EventLog;
     const router = yield* EventRouter;
     const hub = yield* ServiceHub;
     const fs = yield* FileSystem.FileSystem;
@@ -313,11 +333,28 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         version: options.version,
       }),
     );
+    const artifactHashesOf = (
+      root: string,
+      manifest: Manifest,
+    ): Effect.Effect<Readonly<Record<string, string>>> =>
+      Effect.gen(function* () {
+        const hashes: Record<string, string> = {};
+        for (const artifact of manifest.artifacts ?? []) {
+          const text = yield* provide(
+            fs
+              .readFileString(paths.join(root, artifact.entry))
+              .pipe(Effect.catch(() => Effect.succeed(""))),
+          );
+          hashes[artifact.name] = yield* provide(contentHash(text)).pipe(Effect.orDie);
+        }
+        return hashes;
+      });
     const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
     const timers = yield* makeTimerManager({ clock, logs, hub });
     const state = yield* Ref.make<ReadonlyMap<string, ProjectRuntimeRecord>>(new Map());
     const semaphore = yield* Semaphore.make(1);
     const context = yield* Effect.context<never>();
+    const layerScope = yield* Scope.Scope;
 
     const records = (): Effect.Effect<ReadonlyArray<ProjectRuntimeRecord>> =>
       Effect.map(Ref.get(state), (map) => [...map.values()]);
@@ -487,6 +524,44 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       })),
       runs: manifest.runs.map((run) => ({ name: run.name, ...(run.source === undefined ? {} : { source: run.source }) })),
       unresolved: manifest.unresolved.map((entry) => ({ path: entry.path, reason: entry.reason })),
+      artifacts: (manifest.artifacts ?? []).map((artifact) => ({
+        name: artifact.name,
+        entry: artifact.entry,
+        ...(artifact.title === undefined ? {} : { title: artifact.title }),
+        ...(artifact.description === undefined ? {} : { description: artifact.description }),
+        ...(artifact.source === undefined ? {} : { source: artifact.source }),
+      })),
+      ...(manifest.api === undefined
+        ? {}
+        : {
+            api: {
+              ...(manifest.api.source === undefined ? {} : { source: manifest.api.source }),
+              procedures: manifest.api.procedures.map((procedure) => ({
+                name: procedure.name,
+                kind: procedure.kind,
+                stream: procedure.stream,
+                ...(procedure.payloadSchema === undefined
+                  ? {}
+                  : { payloadSchema: procedure.payloadSchema }),
+                ...(procedure.successSchema === undefined
+                  ? {}
+                  : { successSchema: procedure.successSchema }),
+                ...(procedure.errorSchema === undefined
+                  ? {}
+                  : { errorSchema: procedure.errorSchema }),
+              })),
+            },
+          }),
+      stores: (manifest.stores ?? []).map((store) => ({
+        name: store.name,
+        kind: store.kind,
+        ...(store.source === undefined ? {} : { source: store.source }),
+        ...(store.initial === undefined ? {} : { initial: store.initial }),
+      })),
+      databases: manifest.databases.map((database) => ({
+        name: database.name,
+        ...(database.source === undefined ? {} : { source: database.source }),
+      })),
     });
 
     const wireDiff = (
@@ -603,7 +678,20 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         status: active ? "active" : "waiting",
         ...(run.source === undefined ? {} : { source: run.source }),
       }));
-      return [...topicUnits, ...timerUnits, ...workflowUnits, ...paramUnits, ...runUnits];
+      const databaseUnits: ReadonlyArray<UnitSummary> = manifest.databases.map((database) => ({
+        kind: "database",
+        name: database.name,
+        status: active ? "active" : "waiting",
+        ...(database.source === undefined ? {} : { source: database.source }),
+      }));
+      return [
+        ...topicUnits,
+        ...timerUnits,
+        ...workflowUnits,
+        ...paramUnits,
+        ...runUnits,
+        ...databaseUnits,
+      ];
     };
 
     const summaryOf = (record: ProjectRuntimeRecord): ProjectSummary => ({
@@ -613,7 +701,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       ...(record.entry === undefined ? {} : { entry: record.entry }),
       enabled: record.enabled,
       status: record.status,
-      unitCount: record.manifest === undefined ? 0 : record.manifest.topics.length + record.manifest.timers.length + record.manifest.workflows.length + record.manifest.params.length + record.manifest.runs.length,
+      unitCount: record.manifest === undefined ? 0 : record.manifest.topics.length + record.manifest.timers.length + record.manifest.workflows.length + record.manifest.params.length + record.manifest.runs.length + record.manifest.databases.length,
       createdAt: record.project.createdAt,
       updatedAt: record.updatedAt,
       ...(record.lastError === undefined ? {} : { lastError: record.lastError }),
@@ -701,6 +789,20 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         Effect.tapError((error) => markRuntimeFailure(record, error.message)),
       );
 
+    const registerHistory = (
+      record: ProjectRuntimeRecord,
+    ): Effect.Effect<void> => {
+      const manifest = record.manifest ?? record.appliedManifest;
+      if (manifest === undefined) return history.unregister(record.project.id);
+      return history.register(
+        historyRegistration(
+          record.project,
+          record.entry ?? manifest.project.entry,
+          manifest.topics,
+        ),
+      );
+    };
+
     const ensureRecord = (project: ProjectRecord): Effect.Effect<ProjectRuntimeRecord, AgentError> =>
       Effect.gen(function* () {
         const existing = yield* getRecord(project.id);
@@ -725,10 +827,13 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           lastErrorSource: undefined,
           pendingConsent: undefined,
           params: settings.params,
+          artifactHashes: {},
           bindings,
           session: undefined,
+          databases: undefined,
           activity: new Map(),
         };
+        yield* registerHistory(record);
         return yield* setRecord(record);
       });
 
@@ -780,12 +885,17 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           yield* publish(recovered);
           return recovered;
         }
-        const planned = yield* planProject(record.project.root, { projectId: record.project.id }).pipe(
+        const planned = yield* planProject(record.project.root, {
+          projectId: record.project.id,
+          resolveDir: serviceResolveDir,
+        }).pipe(
           Effect.mapError((error) => agentError("invalid", error.message)),
         );
         const previous = record.appliedManifest ?? emptyManifest(record.project.id, resolved.entry);
         const changes = diffProject(previous, planned.manifest);
-        const base: ProjectRuntimeRecord = { ...record, entry: resolved.entry, entryFile: resolved.entryFile, fingerprint, manifest: planned.manifest };
+        const artifactHashes = yield* artifactHashesOf(record.project.root, planned.manifest);
+        const base: ProjectRuntimeRecord = { ...record, entry: resolved.entry, entryFile: resolved.entryFile, fingerprint, manifest: planned.manifest, artifactHashes };
+        yield* registerHistory(base);
         if (changes.requiresConsent) {
           const consent = yield* consentOf(base, planned.manifest, resolved.entry);
           const next = yield* setRecord({ ...base, status: record.session === undefined ? "stopped" : "needs-consent", pendingConsent: consent });
@@ -896,6 +1006,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         }
         const generation = record.generation + 1;
         const previous = record.session;
+        const previousDatabases = record.databases;
         const requirements = yield* requirementsFor(record);
         const missing = requirements.filter(
           (requirement) => requirement.boundInstanceId === undefined,
@@ -919,6 +1030,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
               : [[requirement.integration + "/" + requirement.slot, requirement.boundInstanceId] as const],
           ),
         );
+        yield* registerHistory(record);
         yield* router.expectSubscriptions({
           projectId: record.project.id,
           scriptId: record.entry,
@@ -937,6 +1049,9 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           Effect.mapError((error) => agentError("internal", error.message)),
         );
         const timerDeclaration = (name: string): TimerManifest | undefined => manifest.timers.find((timer) => timer.name === name);
+        const databases = yield* startRunDatabases(
+          paths.join(record.project.root, ".ballast", "db"),
+        ).pipe(Effect.provideService(Scope.Scope, layerScope));
         const session = yield* startRuntimeSession({
           bundlePath: bundle.path,
           generation,
@@ -952,6 +1067,38 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
             return timers.schedule({ projectId: record.project.id, generation, declaration, manifest, key: input.key, delayMs: input.delayMs, payload: input.payload });
           },
           cancelTimer: (input) => Effect.asVoid(timers.cancel({ projectId: record.project.id, timer: input.name, key: input.key })),
+          storeLoad: (payload) =>
+            stores.load(record.project, {
+              name: payload.name,
+              kind: payload.kind,
+              ...(payload.initial === undefined ? {} : { initial: payload.initial }),
+            }),
+          storeSetCounter: (payload) =>
+            stores.setCounter(record.project, payload.name, payload.value),
+          storeIncrement: (payload) =>
+            stores.increment(record.project, payload.name, payload.by, payload.initial),
+          eventHistoryRecord: (payload) =>
+            history
+              .record(record.project.id, payload.name, payload.event, {
+                dedupe: true,
+              })
+              .pipe(
+                Effect.map(
+                  (value) =>
+                    value ?? {
+                      cursor: "",
+                      receivedAt: Date.now(),
+                      fingerprint: payload.fingerprint,
+                      event: payload.event,
+                    },
+                ),
+              ),
+          eventHistoryQuery: (payload) =>
+            history.query(record.project.id, payload.name, {
+              limit: payload.limit,
+              ...(payload.before === undefined ? {} : { before: payload.before }),
+            }),
+          databaseExecute: databases.execute,
           onLog: (line) => {
             const kind = line.unitName === undefined ? undefined : unitKindOf(manifest, line.unitName);
             Effect.runForkWith(context)(logs.write({
@@ -972,6 +1119,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           Effect.onError(() => Effect.gen(function* () {
             yield* router.cancelExpected({ projectId: record.project.id, scriptId: record.entry ?? "" });
             yield* timers.deactivate({ projectId: record.project.id, generation });
+            yield* databases.close;
           })),
         );
         yield* router.register({
@@ -987,9 +1135,13 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           ),
         });
         yield* timers.activate({ projectId: record.project.id, generation, session, manifest });
-        const next = yield* setRecord({ ...record, appliedManifest: manifest, manifest, generation, status: "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined, pendingConsent: undefined, session });
+        const next = yield* setRecord({ ...record, appliedManifest: manifest, manifest, generation, status: "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined, pendingConsent: undefined, session, databases });
         if (previous !== undefined && previous !== session) {
-          Effect.runForkWith(context)(Effect.sleep("30 seconds").pipe(Effect.andThen(previous.close), Effect.catchCause(() => Effect.void)));
+          Effect.runForkWith(context)(Effect.sleep("30 seconds").pipe(
+            Effect.andThen(previous.close),
+            Effect.andThen(previousDatabases === undefined ? Effect.void : previousDatabases.close),
+            Effect.catchCause(() => Effect.void),
+          ));
         }
         yield* logs.write({ level: "info", source: "agent", projectId: next.project.id, message: "started project generation " + generation });
         yield* publish(next);
@@ -1003,7 +1155,8 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           yield* router.unregister(record.project.id);
         }
         if (record.session !== undefined) yield* record.session.close;
-        const next = yield* setRecord({ ...record, enabled, status: "stopped", session: undefined });
+        if (record.databases !== undefined) yield* record.databases.close;
+        const next = yield* setRecord({ ...record, enabled, status: "stopped", session: undefined, databases: undefined });
         yield* publish(next);
         yield* reconcile([]);
         return next;
@@ -1088,7 +1241,10 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
             error: message,
           };
         }
-        const planned = yield* planProject(record.project.root, { projectId: record.project.id }).pipe(Effect.exit);
+        const planned = yield* planProject(record.project.root, {
+          projectId: record.project.id,
+          resolveDir: serviceResolveDir,
+        }).pipe(Effect.exit);
         if (Exit.isFailure(planned)) {
           const failure = Cause.squash(planned.cause);
           const diagnostics: ReadonlyArray<ProjectDiagnostic> =
@@ -1406,6 +1562,35 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           return;
         }
         const next = planned.value;
+        const artifactNames = new Set([
+          ...Object.keys(record.artifactHashes),
+          ...Object.keys(next.artifactHashes),
+        ]);
+        const changedArtifacts = [...artifactNames].filter(
+          (name) => record.artifactHashes[name] !== next.artifactHashes[name],
+        );
+        const previous = record.appliedManifest ?? record.manifest;
+        const changes =
+          previous === undefined ? undefined : diffProject(previous, next.manifest);
+        const declarationOnly =
+          changes === undefined ||
+          changes.changes.every((change) => change.kind === "artifact");
+        if (
+          changedArtifacts.length > 0 &&
+          declarationOnly &&
+          next.pendingConsent === undefined &&
+          next.fingerprint !== record.fingerprint
+        ) {
+          for (const name of changedArtifacts) {
+            yield* hub.publish({
+              _tag: "artifact-changed",
+              projectId: next.project.id,
+              artifact: name,
+              fingerprint: next.artifactHashes[name] ?? "changed",
+            });
+          }
+          return;
+        }
         if (
           next.enabled &&
           record.session !== undefined &&
@@ -1468,6 +1653,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const record = yield* getRecord(projectId);
         if (record !== undefined) {
           yield* stopGeneration(record, false);
+          yield* history.unregister(projectId);
           yield* timers.removeProject(projectId);
           yield* provide(
             fs.remove(paths.join(record.project.root, ".ballast"), {
@@ -1489,6 +1675,57 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
 
     const known = (): Effect.Effect<ReadonlyArray<ActiveScript>> =>
       Effect.map(records(), (all) => all.flatMap((record) => record.manifest === undefined ? [] : [{ projectId: record.project.id, scriptId: record.entry ?? "", manifest: record.manifest, enabled: record.enabled }]));
+
+    const hydrateEvents: Effect.Effect<void> = Effect.gen(function* () {
+      const all = yield* records();
+      const entries: Array<{
+        readonly id: string;
+        readonly at: number;
+        readonly integration: string;
+        readonly topic: string;
+        readonly projectId: string;
+        readonly scriptId: string;
+        readonly unitName: string;
+        readonly payload: unknown;
+      }> = [];
+      for (const record of all) {
+        const items = yield* history.replay(record.project.id, { limit: 500 });
+        for (const item of items) {
+          entries.push({
+            id:
+              "history:" +
+              record.project.id +
+              ":" +
+              item.subscription.name +
+              ":" +
+              item.record.cursor,
+            at: item.record.receivedAt,
+            integration: item.subscription.integration,
+            topic: item.subscription.topic,
+            projectId: record.project.id,
+            scriptId: record.entry ?? "ballast.ts",
+            unitName: item.subscription.name,
+            payload: item.record.event,
+          });
+        }
+      }
+      entries.sort((left, right) => left.at - right.at);
+      for (const entry of entries) {
+        yield* events.record({
+          id: entry.id,
+          at: entry.at,
+          direction: "inbound",
+          integration: entry.integration,
+          topic: entry.topic,
+          projectId: entry.projectId,
+          scriptId: entry.scriptId,
+          unitKind: "topic",
+          unitName: entry.unitName,
+          payload: entry.payload,
+          dropped: false,
+        });
+      }
+    });
 
     const closeAll = (): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1557,8 +1794,13 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       resumeEnabled,
       running,
       known,
+      hydrateEvents,
       closeAll,
       counts,
+      generation: (projectId) =>
+        Effect.map(getRecord(projectId), (record) => record?.generation),
+      artifactPort: (projectId) =>
+        Effect.map(getRecord(projectId), (record) => record?.session?.artifactPort),
     };
   }),
 );

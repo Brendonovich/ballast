@@ -51,6 +51,7 @@ const ProtocolSchema = Schema.Struct({
 
 type Protocol = Schema.Schema.Type<typeof ProtocolSchema>;
 type ProtocolField = Schema.Schema.Type<typeof ProtocolFieldSchema>;
+type ProtocolRequest = Schema.Schema.Type<typeof ProtocolRequestSchema>;
 
 class GenerateError extends Data.TaggedError("GenerateError")<{
   readonly message: string;
@@ -83,6 +84,47 @@ const NULLABLE_RESPONSE_FIELDS = new Set([
   "GetCurrentSceneTransition.transitionSettings",
 ]);
 
+const sourceTarget: ReadonlyArray<ProtocolField> = [
+  { valueName: "canvasUuid", valueType: "String", valueOptional: true },
+  { valueName: "sourceName", valueType: "String", valueOptional: true },
+  { valueName: "sourceUuid", valueType: "String", valueOptional: true },
+];
+
+const sceneItemTarget: ReadonlyArray<ProtocolField> = [
+  { valueName: "canvasUuid", valueType: "String", valueOptional: true },
+  { valueName: "sceneName", valueType: "String", valueOptional: true },
+  { valueName: "sceneUuid", valueType: "String", valueOptional: true },
+  { valueName: "sceneItemId", valueType: "Number" },
+];
+
+/**
+ * Requests obs-websocket implements but leaves out of protocol.json on purpose
+ * ("Intentionally undocumented" in RequestHandler_Sources.cpp and
+ * RequestHandler_SceneItems.cpp). Sceneify stores ownership metadata in
+ * private settings through these. Set requests overlay the given object onto
+ * the existing private settings.
+ */
+const UNDOCUMENTED_REQUESTS: ReadonlyArray<ProtocolRequest> = [
+  {
+    requestType: "GetSourcePrivateSettings",
+    requestFields: sourceTarget,
+    responseFields: [{ valueName: "sourceSettings", valueType: "Object" }],
+  },
+  {
+    requestType: "SetSourcePrivateSettings",
+    requestFields: [...sourceTarget, { valueName: "sourceSettings", valueType: "Object" }],
+  },
+  {
+    requestType: "GetSceneItemPrivateSettings",
+    requestFields: sceneItemTarget,
+    responseFields: [{ valueName: "sceneItemSettings", valueType: "Object" }],
+  },
+  {
+    requestType: "SetSceneItemPrivateSettings",
+    requestFields: [...sceneItemTarget, { valueName: "sceneItemSettings", valueType: "Object" }],
+  },
+];
+
 /**
  * obs-websocket documents nested response objects as plain `Object` /
  * `Array<Object>`. These are the shapes the docs give for the responses
@@ -97,6 +139,17 @@ const RESPONSE_FIELD_SCHEMAS: Readonly<Record<string, string>> = {
   "GetSceneTransitionList.transitions": "Schema.Array(TransitionSchema)",
   "GetMonitorList.monitors": "Schema.Array(MonitorSchema)",
 };
+
+/**
+ * High-volume events where a 1000-entry history default would be noise. A
+ * subscription can still opt in with an explicit history policy.
+ */
+const HISTORY_OFF = new Set([
+  "InputVolumeMeters",
+  "InputActiveStateChanged",
+  "InputShowStateChanged",
+  "SceneItemTransformChanged",
+]);
 
 const fieldSchema = (
   field: ProtocolField,
@@ -176,7 +229,7 @@ const subscriptionBits = (
 
 const generate = (protocol: Protocol, sourceHash: string): Effect.Effect<string, GenerateError> =>
   Effect.gen(function* () {
-    const requests = [...protocol.requests].sort((left, right) =>
+    const requests = [...protocol.requests, ...UNDOCUMENTED_REQUESTS].sort((left, right) =>
       left.requestType.localeCompare(right.requestType),
     );
     const events = [...protocol.events].sort((left, right) =>
@@ -318,6 +371,7 @@ const generate = (protocol: Protocol, sourceHash: string): Effect.Effect<string,
         '  topic: INTEGRATION + "/" + ' + JSON.stringify(name) + ",",
         "  scopes: [],",
         "  schema: " + name + "PayloadSchema,",
+        ...(HISTORY_OFF.has(name) ? ["  history: false,"] : []),
         "});",
         "",
       );
@@ -508,7 +562,7 @@ const program: Effect.Effect<
       " (" +
       generated.length +
       " bytes, " +
-      protocol.requests.length +
+      (protocol.requests.length + UNDOCUMENTED_REQUESTS.length) +
       " requests, " +
       protocol.events.length +
       " events)",

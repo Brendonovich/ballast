@@ -1,4 +1,4 @@
-import { MessageChannel, Worker } from "node:worker_threads";
+import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -50,6 +50,12 @@ export interface RuntimeSessionOptions {
   readonly cancelTimer?: (input: { readonly name: string; readonly key: string }) => Effect.Effect<void>;
   /** Structured worker output; defaults to the process console. */
   readonly onLog?: (line: RuntimeLogLine) => void;
+  readonly storeLoad?: RuntimeHostHandlers["storeLoad"];
+  readonly storeSetCounter?: RuntimeHostHandlers["storeSetCounter"];
+  readonly storeIncrement?: RuntimeHostHandlers["storeIncrement"];
+  readonly eventHistoryRecord?: RuntimeHostHandlers["eventHistoryRecord"];
+  readonly eventHistoryQuery?: RuntimeHostHandlers["eventHistoryQuery"];
+  readonly databaseExecute?: RuntimeHostHandlers["databaseExecute"];
 }
 
 export interface RuntimeTimerSchedule {
@@ -65,6 +71,8 @@ export interface RuntimeTimerSchedule {
 export interface RuntimeSession {
   readonly generation: number;
   readonly subscriptions: ReadonlySet<string>;
+  /** Host end of the worker's artifact RPC channel, once the worker starts. */
+  readonly artifactPort?: MessagePort;
   readonly ready: Effect.Effect<void, Error>;
   readonly deliver: (topicKey: string, payload: unknown) => void;
   /** Post one durable timer fire to the worker. */
@@ -95,6 +103,7 @@ export const startRuntimeSession = (
 ): Effect.Effect<RuntimeSession, Error> =>
   Effect.gen(function* () {
     const channel = new MessageChannel();
+    const artifactChannel = new MessageChannel();
     const ready = Deferred.makeUnsafe<void, Error>();
     const subscriptions = new Set<string>();
     const scope = yield* Scope.make();
@@ -138,6 +147,22 @@ export const startRuntimeSession = (
         options.cancelTimer === undefined
           ? Effect.die(new Error("Timer support is not implemented by this host"))
           : options.cancelTimer(input),
+      ...(options.storeLoad === undefined ? {} : { storeLoad: options.storeLoad }),
+      ...(options.storeSetCounter === undefined
+        ? {}
+        : { storeSetCounter: options.storeSetCounter }),
+      ...(options.storeIncrement === undefined
+        ? {}
+        : { storeIncrement: options.storeIncrement }),
+      ...(options.eventHistoryRecord === undefined
+        ? {}
+        : { eventHistoryRecord: options.eventHistoryRecord }),
+      ...(options.eventHistoryQuery === undefined
+        ? {}
+        : { eventHistoryQuery: options.eventHistoryQuery }),
+      ...(options.databaseExecute === undefined
+        ? {}
+        : { databaseExecute: options.databaseExecute }),
     };
 
     const onLog =
@@ -157,6 +182,7 @@ export const startRuntimeSession = (
     const session: RuntimeSession = {
       generation: options.generation,
       subscriptions,
+      artifactPort: artifactChannel.port1,
       ready: Deferred.await(ready),
       deliver: (topicKey, payload) => {
         if (closed || worker === undefined) {
@@ -232,6 +258,7 @@ export const startRuntimeSession = (
         if (closed) return Effect.void;
         closed = true;
         subscriptions.clear();
+        artifactChannel.port1.close();
         return Scope.close(scope, Exit.void).pipe(
           Effect.andThen(
             Effect.sync(() => {
@@ -254,10 +281,11 @@ export const startRuntimeSession = (
             new Worker(options.bundlePath, {
               workerData: {
                 rpcPort: channel.port2,
+                artifactPort: artifactChannel.port2,
                 generation: options.generation,
                 settings: options.settings.snapshot?.() ?? {},
               },
-              transferList: [channel.port2],
+              transferList: [channel.port2, artifactChannel.port2],
               stdout: true,
               stderr: true,
               env: { ...process.env, ALCHEMY_PHASE: "runtime" },

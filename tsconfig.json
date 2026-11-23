@@ -5,6 +5,9 @@
       "path": "packages/core"
     },
     {
+      "path": "packages/artifact"
+    },
+    {
       "path": "packages/workflow"
     },
     {
@@ -24,6 +27,9 @@
     },
     {
       "path": "packages/integrations/obs"
+    },
+    {
+      "path": "packages/integrations/sceneify"
     },
     {
       "path": "packages/integrations/twitch"

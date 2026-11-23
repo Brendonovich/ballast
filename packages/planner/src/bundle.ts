@@ -1,7 +1,8 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { rolldown } from "rolldown";
@@ -9,7 +10,32 @@ import type { Plugin } from "rolldown";
 
 const requireFromHere = createRequire(fileURLToPath(import.meta.url));
 
-const resolver = (resolveDir: string | undefined): Plugin => {
+const solidBrowserEntry = (
+  requireSolid: ReturnType<typeof createRequire>,
+  source: string,
+): string | undefined => {
+  if (source !== "solid-js" && !source.startsWith("solid-js/")) return undefined;
+  let root: string;
+  try {
+    root = dirname(dirname(requireSolid.resolve("solid-js")));
+  } catch {
+    return undefined;
+  }
+  const entries: Readonly<Record<string, string>> = {
+    "solid-js": join(root, "dist", "solid.js"),
+    "solid-js/jsx-runtime": join(root, "dist", "solid.js"),
+    "solid-js/jsx-dev-runtime": join(root, "dist", "solid.js"),
+    "solid-js/web": join(root, "web", "dist", "web.js"),
+    "solid-js/store": join(root, "store", "dist", "store.js"),
+  };
+  const entry = entries[source];
+  return entry !== undefined && existsSync(entry) ? entry : undefined;
+};
+
+export const resolverPlugin = (
+  resolveDir: string | undefined,
+  browser = false,
+): Plugin => {
   const fallback =
     resolveDir === undefined
       ? requireFromHere
@@ -21,6 +47,12 @@ const resolver = (resolveDir: string | undefined): Plugin => {
         return { id: source, external: true };
       }
       if (source.startsWith(".") || source.startsWith("/")) return null;
+      // Node's require conditions pick solid-js's server build. Artifact
+      // pages are browser code, so resolve the browser entry explicitly.
+      if (browser) {
+        const solid = solidBrowserEntry(fallback, source);
+        if (solid !== undefined) return solid;
+      }
       if (importer !== undefined) {
         try {
           return createRequire(importer).resolve(source);
@@ -73,7 +105,7 @@ export const bundlePlanScript = async (
   const bundle = await rolldown({
     input,
     platform: "node",
-    plugins: [resolver(resolveDir)],
+    plugins: [resolverPlugin(resolveDir)],
     transform: {
       define: {
         "globalThis.__BALLAST_PHASE__": JSON.stringify("plan"),

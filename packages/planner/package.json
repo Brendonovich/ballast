@@ -11,6 +11,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@babel/core": "7.29.13",
+    "babel-preset-solid": "1.9.19",
+    "solid-js": "catalog:",
     "@ballast/core": "workspace:*",
     "effect": "catalog:",
     "rolldown": "catalog:",
@@ -19,6 +22,7 @@
   "devDependencies": {
     "@ballast/workflow": "workspace:*",
     "@effect/vitest": "catalog:",
+    "@types/babel__core": "7.20.5",
     "@types/node": "catalog:",
     "vitest": "catalog:"
   }

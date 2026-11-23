@@ -12,6 +12,8 @@ export interface TypecheckDiagnostic {
   readonly line: number;
   readonly column: number;
   readonly message: string;
+  /** Which pass reported it; older callers can ignore it. */
+  readonly kind?: "worker" | "artifact";
 }
 
 export interface TypecheckResult {
@@ -84,6 +86,15 @@ const toolchain = locateToolchain();
 const nodeTypesRoot = ((): string | undefined => {
   try {
     return dirname(dirname(requireFromPlanner.resolve("@types/node/package.json")));
+  } catch {
+    return undefined;
+  }
+})();
+
+const solidTypes = ((): { readonly root: string; readonly entry: string } | undefined => {
+  try {
+    const root = dirname(requireFromPlanner.resolve("solid-js/package.json"));
+    return { root, entry: join(root, "types", "index.d.ts") };
   } catch {
     return undefined;
   }
@@ -244,6 +255,7 @@ const hashProject = async (
 const parseDiagnostics = (
   output: string,
   projectRoot: string,
+  kind?: "worker" | "artifact",
 ): ReadonlyArray<TypecheckDiagnostic> => {
   const diagnostics: Array<TypecheckDiagnostic> = [];
   const pattern =
@@ -262,6 +274,7 @@ const parseDiagnostics = (
       line: Number(line),
       column: Number(column),
       message: `${match[4] ?? "TS"}: ${message}`,
+      ...(kind === undefined ? {} : { kind }),
     });
   }
   return diagnostics;
@@ -297,7 +310,7 @@ const generatedConfig = (projectRoot: string): string => {
   return configPath;
 };
 
-const ensureConfig = async (projectRoot: string): Promise<string> => {
+const ensureBaseConfig = async (projectRoot: string): Promise<string> => {
   const projectConfig = join(projectRoot, "tsconfig.json");
   if (existsSync(projectConfig)) return projectConfig;
   const configPath = generatedConfig(projectRoot);
@@ -310,6 +323,7 @@ const ensureConfig = async (projectRoot: string): Promise<string> => {
     "@ballast/fake": "fake",
     "@ballast/module-http": "http",
     "@ballast/module-obs": "obs",
+    "@ballast/module-sceneify": "sceneify",
     "@ballast/module-twitch": "twitch",
     "@ballast/module-vtube-studio": "vtube-studio",
     "@ballast/module-keyboard": "keyboard",
@@ -323,6 +337,13 @@ const ensureConfig = async (projectRoot: string): Promise<string> => {
       join(toolchain.ballastRoot, "integrations", directory, "src", "index.ts"),
     ];
   }
+  // Browser artifacts import the package's subpath exports directly.
+  exactPaths["@ballast/artifact/protocol"] = [
+    join(toolchain.ballastRoot, "artifact", "src", "protocol.ts"),
+  ];
+  exactPaths["@ballast/artifact/solid"] = [
+    join(toolchain.ballastRoot, "artifact", "src", "solid.ts"),
+  ];
   await writeFile(
     configPath,
     JSON.stringify(
@@ -348,6 +369,13 @@ const ensureConfig = async (projectRoot: string): Promise<string> => {
           paths: {
             ...exactPaths,
             "@ballast/*": packagePaths,
+            ...(solidTypes === undefined
+              ? {}
+              : {
+                  "solid-js": [solidTypes.entry],
+                  "solid-js/web": [join(solidTypes.root, "web", "types", "index.d.ts")],
+                  "solid-js/jsx-runtime": [join(solidTypes.root, "jsx-runtime.d.ts")],
+                }),
             effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
             "effect/*": [
               join(toolchain.effectRoot, "dist", "*.d.ts"),
@@ -369,6 +397,68 @@ const ensureConfig = async (projectRoot: string): Promise<string> => {
   return configPath;
 };
 
+interface ProjectConfigs {
+  readonly worker: string;
+  readonly artifact: string | undefined;
+}
+
+/**
+ * Artifacts are browser code. Keep them out of the worker config (which has no
+ * DOM lib) and typecheck them in a second generated config with DOM + Solid
+ * JSX. Projects without an `artifacts/` directory keep exactly one config.
+ */
+const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
+  const base = await ensureBaseConfig(projectRoot);
+  if (!existsSync(join(projectRoot, "artifacts"))) {
+    return { worker: base, artifact: undefined };
+  }
+  const directory = join(projectRoot, ".ballast");
+  await mkdir(directory, { recursive: true });
+  const extendsPath = relative(directory, base).split("\\").join("/");
+  const extendsValue = extendsPath.startsWith(".") ? extendsPath : "./" + extendsPath;
+  const worker = join(directory, "tsconfig.worker.json");
+  await writeFile(
+    worker,
+    JSON.stringify(
+      {
+        extends: extendsValue,
+        exclude: ["../node_modules", "../dist", "../.ballast", "../artifacts"],
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+  const artifact = join(directory, "tsconfig.artifacts.json");
+  await writeFile(
+    artifact,
+    JSON.stringify(
+      {
+        extends: extendsValue,
+        compilerOptions: {
+          lib: ["ES2024", "DOM", "DOM.Iterable"],
+          jsx: "preserve",
+          jsxImportSource: "solid-js",
+          types: [],
+          noEmit: true,
+          composite: false,
+          declaration: false,
+          declarationMap: false,
+          emitDeclarationOnly: false,
+          sourceMap: false,
+          incremental: false,
+        },
+        include: ["../artifacts/**/*.ts", "../artifacts/**/*.tsx"],
+        exclude: ["../node_modules", "../dist", "../.ballast"],
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+  return { worker, artifact };
+};
+
 /**
  * A missing type root or config file is an environment failure: it can be
  * fixed without touching a project source byte (for example when the service
@@ -384,7 +474,7 @@ const cacheable = (result: TypecheckResult): boolean => {
 };
 
 export const RUNTIME_IN_INIT_MESSAGE =
-  "This reads a runtime value (param/request/timer) during init. Move it inside a subscribe handler, Ballast.run, or a timer/workflow body";
+  "This reads a runtime value (param/request/timer/database) during init. Move it inside a subscribe handler, Ballast.run, or a timer/workflow body";
 
 interface EntryCheck {
   readonly config: string;
@@ -461,19 +551,18 @@ export const typecheckProject = (
   Effect.gen(function* () {
     const root = resolve(projectRoot);
     const entry = options.entry === undefined ? undefined : resolve(options.entry);
-    const config = yield* Effect.promise(() => ensureConfig(root));
+    const configs = yield* Effect.promise(() => ensureConfigs(root));
     const check =
       entry === undefined
         ? undefined
-        : yield* Effect.promise(() => ensureEntryCheck(root, config, entry));
-    const runConfig = check?.config ?? config;
-    const key = yield* Effect.promise(() =>
-      hashProject(
-        root,
-        check === undefined ? [config] : [config, check.config, check.file],
-        entry,
-      ),
-    );
+        : yield* Effect.promise(() => ensureEntryCheck(root, configs.worker, entry));
+    const runConfig = check?.config ?? configs.worker;
+    const configPaths = [
+      configs.worker,
+      ...(configs.artifact === undefined ? [] : [configs.artifact]),
+      ...(check === undefined ? [] : [check.config, check.file]),
+    ];
+    const key = yield* Effect.promise(() => hashProject(root, configPaths, entry));
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
@@ -482,7 +571,16 @@ export const typecheckProject = (
       catch: (cause) =>
         new TypecheckError(`tsgo failed to start: ${String(cause)}`),
     });
-    const parsed = parseDiagnostics(result.output, root);
+    const artifactConfig = configs.artifact;
+    const artifactResult =
+      artifactConfig === undefined
+        ? undefined
+        : yield* Effect.tryPromise({
+            try: () => runTsgo(root, artifactConfig),
+            catch: (cause) =>
+              new TypecheckError(`tsgo failed to start: ${String(cause)}`),
+          });
+    const parsed = parseDiagnostics(result.output, root, "worker");
     const entryFile =
       entry === undefined ? undefined : relative(root, entry).split("\\").join("/");
     const checkFile =
@@ -499,7 +597,7 @@ export const typecheckProject = (
                 /Runtime|Project/.test(diagnostic.message),
             )
             .map((diagnostic) => ({ ...diagnostic, message: runtimeMessage }));
-    const diagnostics = (() => {
+    const workerDiagnostics = (() => {
       if (entryFile === undefined || checkFile === undefined) return parsed;
       if (entryRuntime.length > 0) {
         const positions = new Set(
@@ -528,10 +626,16 @@ export const typecheckProject = (
       if (runtimeCheck.length === 0) return withoutCheck;
       return [{ file: entryFile, line: 1, column: 1, message: runtimeMessage }];
     })();
+    const artifactDiagnostics =
+      artifactResult === undefined
+        ? []
+        : parseDiagnostics(artifactResult.output, root, "artifact");
     const checked: TypecheckResult = {
-      ok: result.code === 0,
-      diagnostics,
-      raw: result.output,
+      ok:
+        result.code === 0 &&
+        (artifactResult === undefined || artifactResult.code === 0),
+      diagnostics: [...workerDiagnostics, ...artifactDiagnostics],
+      raw: [result.output, artifactResult?.output].filter((value) => value !== undefined).join("\n"),
     };
     if (cacheable(checked)) cache.set(key, checked);
     return checked;

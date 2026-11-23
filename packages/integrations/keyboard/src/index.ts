@@ -127,6 +127,8 @@ export const KeyDown = Ballast.Topic<KeyEventPayload, Integration>({
   integration: INTEGRATION,
   topic: `${INTEGRATION}/KeyDown`,
   schema: KeyEventPayloadSchema,
+  // Key history would amount to a keylogger.
+  history: false,
 });
 
 /**
@@ -137,9 +139,11 @@ export const KeyUp = Ballast.Topic<KeyEventPayload, Integration>({
   integration: INTEGRATION,
   topic: `${INTEGRATION}/KeyUp`,
   schema: KeyEventPayloadSchema,
+  // Key history would amount to a keylogger.
+  history: false,
 });
 
-export interface HotkeyOptions {
+export interface HotkeyOptions extends Ballast.HistoryOptions {
   /** Key names such as `["Ctrl", "Shift", "F1"]`. Exactly one non-modifier key. */
   readonly keys: ReadonlyArray<KeyName | string>;
   /** Which edge fires the handler. Defaults to `"down"`. */
@@ -150,6 +154,8 @@ const hotkeyBase = Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions>({
   integration: INTEGRATION,
   topic: `${INTEGRATION}/Hotkey`,
   schema: HotkeyPayloadSchema,
+  // Hotkey history would amount to a keylogger.
+  history: false,
 });
 
 /**
@@ -179,17 +185,19 @@ export const Hotkey: Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions> = 
       key: (target) => hotkeyTopicKey(target.slot, filter),
     };
 
-    return Effect.flatMap(Ballast.EventHost, (host) =>
-      host.subscribe(
-        metadata,
-        connection,
-        Ballast.withUnitHandler(name, (event) =>
-          Ballast.provideRuntime(handler(event)),
-        ),
-        name,
-        Ballast.captureSource(1),
-      ),
-    );
+    return Ballast.subscribeTopic({
+      topic: metadata,
+      connection,
+      handler,
+      name,
+      source: Ballast.captureSource(1),
+      history:
+        options.history === undefined
+          ? hotkeyBase.history
+          : Ballast.resolveHistoryPolicy(options.history),
+      fingerprint: Ballast.topicSchemaFingerprint(hotkeyBase.schema),
+      schema: hotkeyBase.schema,
+    });
   },
 };
 

@@ -45,6 +45,8 @@ export interface MockTwitchServer {
   readonly deletedSubscriptions: () => ReadonlyArray<string>;
   readonly tokenRequests: () => ReadonlyArray<string>;
   readonly emitRedemption: (redemption: MockRedemption) => boolean;
+  /** Send an EventSub notification with `event` to every subscription of `type`. */
+  readonly emit: (type: string, event: Readonly<Record<string, unknown>>) => boolean;
   readonly close: () => Promise<void>;
 }
 
@@ -70,6 +72,29 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const timestamp = (): string => new Date().toISOString();
+
+const envelope = (subscription: MockSubscription, event: unknown) => ({
+  metadata: {
+    message_id: "message-" + randomUUID(),
+    message_timestamp: timestamp(),
+    message_type: "notification",
+    subscription_type: subscription.type,
+    subscription_version: subscription.version,
+  },
+  payload: {
+    subscription: {
+      id: subscription.id,
+      status: "enabled",
+      type: subscription.type,
+      version: subscription.version,
+      condition: subscription.condition,
+      transport: { method: "websocket", session_id: subscription.sessionId },
+      created_at: subscription.createdAt,
+      cost: 0,
+    },
+    event,
+  },
+});
 
 const notification = (subscription: MockSubscription, redemption: MockRedemption) => {
   const rewardId = redemption.rewardId ?? subscription.condition["reward_id"] ?? "reward-1";
@@ -346,6 +371,18 @@ export const startMockTwitchServer = async (
 
   demoEmit = emitRedemption;
 
+  const emit = (type: string, event: Readonly<Record<string, unknown>>): boolean => {
+    let sent = false;
+    for (const subscription of subscriptions.values()) {
+      if (subscription.type !== type) continue;
+      const socket = sessions.get(subscription.sessionId);
+      if (socket === undefined) continue;
+      socket.send(JSON.stringify(envelope(subscription, event)));
+      sent = true;
+    }
+    return sent;
+  };
+
   return {
     idBaseUrl: base,
     helixBaseUrl: base + "/helix",
@@ -359,6 +396,7 @@ export const startMockTwitchServer = async (
     deletedSubscriptions: () => [...deleted],
     tokenRequests: () => [...tokenRequests],
     emitRedemption,
+    emit,
     close: async () => {
       if (closed) return;
       closed = true;

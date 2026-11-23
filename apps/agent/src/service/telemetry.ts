@@ -12,8 +12,10 @@ import type {
   LogLevel,
   LogSource,
   ServiceEvent,
+  UnitKind,
 } from "@ballast/agent-protocol";
 import type { RuntimeSession } from "../runtime-session.ts";
+import { EventHistory } from "./event-history.ts";
 
 const MAX_LOGS = 2_000;
 const MAX_EVENTS = 2_000;
@@ -24,7 +26,7 @@ export interface LogInput {
   readonly message: string;
   readonly projectId?: string;
   readonly scriptId?: string;
-  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitKind?: UnitKind;
   readonly unitName?: string;
   readonly fields?: unknown;
 }
@@ -32,7 +34,7 @@ export interface LogInput {
 export interface LogFilter {
   readonly projectId?: string;
   readonly scriptId?: string;
-  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitKind?: UnitKind;
   readonly unitName?: string;
   readonly levels?: ReadonlyArray<LogLevel>;
   readonly afterSeq?: number;
@@ -161,13 +163,15 @@ export const LogsLive = Layer.effect(
 
 export interface EventInput {
   readonly id?: string;
+  /** Original receive time; defaults to now. Hydration uses this. */
+  readonly at?: number;
   readonly direction: "inbound" | "outbound";
   readonly integration: string;
   readonly topic: string;
   readonly connectionId?: string;
   readonly projectId?: string;
   readonly scriptId?: string;
-  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitKind?: UnitKind;
   readonly unitName?: string;
   readonly payload: unknown;
   readonly stale?: boolean;
@@ -178,7 +182,7 @@ export interface EventInput {
 export interface EventFilter {
   readonly projectId?: string;
   readonly scriptId?: string;
-  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitKind?: UnitKind;
   readonly unitName?: string;
   readonly integration?: string;
   readonly topic?: string;
@@ -224,7 +228,7 @@ export const EventLogLive = Layer.effect(
         const entry: EventRecord = {
           seq: current.nextSeq,
           id,
-          at: Date.now(),
+          at: input.at ?? Date.now(),
           direction: input.direction,
           integration: input.integration,
           topic: input.topic,
@@ -360,6 +364,7 @@ export const EventRouterLive = Layer.effect(
     >([]);
     const semaphore = yield* Semaphore.make(1);
     const events = yield* EventLog;
+    const history = yield* EventHistory;
 
     const keyOf = (projectId: string, scriptId: string): string =>
       `${projectId}\u0000${scriptId}`;
@@ -423,6 +428,18 @@ export const EventRouterLive = Layer.effect(
       return subscriptions.has(fallback) ? [fallback] : [];
     };
 
+    /** Persist before delivery so a reload never loses a subscribed event. */
+    const recordHistory = (
+      projectId: string,
+      keys: ReadonlyArray<string>,
+      input: InboundEvent,
+    ): Effect.Effect<void> =>
+      Effect.forEach(
+        keys,
+        (key) => history.record(projectId, key, jsonValue(input.payload)),
+        { discard: true },
+      );
+
     const deliver = (
       entry: SessionEntry,
       key: string,
@@ -450,6 +467,13 @@ export const EventRouterLive = Layer.effect(
                       : [{ key: keys[0] ?? event.key, input: event.input }];
                   })
                 : [];
+          if (existing === undefined) {
+            yield* Effect.forEach(
+              events,
+              (event) => recordHistory(entry.projectId, [event.key], event.input),
+              { discard: true },
+            );
+          }
           const next: PendingEntry = {
             projectId: entry.projectId,
             scriptId: entry.scriptId,
@@ -553,7 +577,10 @@ export const EventRouterLive = Layer.effect(
           if (matched.length > 0) {
             yield* Effect.forEach(
               matched,
-              (match) => deliver(match.entry, match.key, input),
+              (match) =>
+                recordHistory(match.entry.projectId, [match.key], input).pipe(
+                  Effect.andThen(deliver(match.entry, match.key, input)),
+                ),
               { discard: true },
             );
             return;
@@ -564,6 +591,18 @@ export const EventRouterLive = Layer.effect(
             (entry) => matchKeys(entry.subscriptions, entry.bindings, input).length > 0,
           );
           if (waiting.length > 0) {
+            yield* Effect.forEach(
+              waiting,
+              (entry) => {
+                const keys = matchKeys(entry.subscriptions, entry.bindings, input);
+                return recordHistory(
+                  entry.projectId,
+                  keys.length === 0 ? [key] : keys,
+                  input,
+                );
+              },
+              { discard: true },
+            );
             yield* Ref.update(pending, (currentMap) => {
               const next = new Map(currentMap);
               for (const entry of waiting) {

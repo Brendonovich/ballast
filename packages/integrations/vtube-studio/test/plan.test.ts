@@ -31,6 +31,8 @@ describe("plan VTube Studio script", () => {
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
+            schemaFingerprint: expect.any(String),
             condition: { config: '{"ignoreHotkeysTriggeredByAPI":true}' },
           },
         ],
@@ -39,6 +41,9 @@ describe("plan VTube Studio script", () => {
         timers: [],
         workflows: [],
         runs: [{ name: "hotkey-loop" }],
+        artifacts: [],
+        stores: [],
+        databases: [],
       });
     }),
   );

@@ -1,8 +1,8 @@
 # 0011 — Project artifacts: custom project UI over typed RPC
 
-*Status: proposed; isolated spike validated (2026-11-23) · depends on the typed
-`Ballast.Runtime` work and the one-project-per-window UI work landing first ·
-effect `4.0.6`*
+*Status: accepted; core + planner implementation and the isolated spike landed
+(2026-11-24); service gateway, tokens and persistence remain with the service
+agent · effect `4.0.6`*
 
 ## Context
 
@@ -27,6 +27,32 @@ This round is design and an isolated spike only. The service agent is changing
 core/agent for `Ballast.Runtime`, live params and connection bindings; the UI
 agent is moving to one project per window. No core, planner, app or MCP code was
 changed for this decision.
+
+## Decisions (accepted 2026-11-23)
+
+The user accepted the recommendations on the open questions:
+
+1. **SolidJS template.** Artifacts get a blessed SolidJS template and scaffold.
+   Plain TS/TSX + DOM entries remain supported; the template is a convenience,
+   not a required framework.
+2. **Writable artifacts in v1.** Action-scoped artifacts may call `SetParam`
+   and `CancelTimer`. Reads and the custom project API remain available to
+   read-only artifacts.
+3. **URL token for OBS.** OBS Browser Source uses a stable URL carrying a
+   scoped, revocable token. Rotation replaces the URL.
+4. **Action URL confirmation.** Creating an action-capable public URL, or
+   widening an existing URL from read to action, requires explicit user
+   confirmation. Read-only URLs do not.
+5. **Store v1.** Ship `Ballast.Store.counter` only. KV/collections wait.
+6. **One API group.** One project API group for v1.
+7. **Whole API access.** Every artifact may call every procedure in the
+   project API; the token scope decides read vs action.
+8. **Event history replaces Store.log.** Every subscription records inbound
+   events automatically (default 1000 entries / 7 days). Topics can set their
+   own default or disable it; a subscription option overrides it. `query` and
+   `watch` are typed by the topic schema, keyed by subscription name, and
+   preserve old-schema rows as explicit legacy entries. Keyboard topics are off
+   by default; high-rate OBS/MIDI topics are off too.
 
 ## 1. Declaration and bundling
 
@@ -142,6 +168,7 @@ that does not gets the same generated dual config the planner already writes.
 ```ts
 // src/api.ts — imported by ballast.ts and the artifact
 import { Rpc, RpcGroup, Schema } from "effect";
+import { action } from "@ballast/artifact/protocol";
 
 export const DashboardApi = RpcGroup.make(
   Rpc.make("Snapshot", {
@@ -150,10 +177,10 @@ export const DashboardApi = RpcGroup.make(
       startedAt: Schema.Number,
     }),
   }),
-  Rpc.make("Increment", {
+  action(Rpc.make("Increment", {
     payload: { by: Schema.Number },
     success: Schema.Number,
-  }),
+  })),
   Rpc.make("Events", {
     stream: true,
     success: Schema.Struct({
@@ -286,8 +313,9 @@ Handlers execute in the project worker, never in init:
 The planner derives `kind` from the Rpc success schema: stream schema =
 `stream`, otherwise `query`/`action` by annotation. Action vs query is
 declared explicitly with an RPC annotation (for example
-`Rpc.make("Increment", ...).annotate(Ballast.Api.Mutation, true)`) so a UI
-cannot infer write rights from a name. The default is read-only query.
+`action(Rpc.make("Increment", ...))` from `@ballast/artifact/protocol`, or
+`Ballast.Api.action(...)` when the module already imports core) so a UI cannot
+infer write rights from a name. The default is read-only query.
 
 Streaming uses Effect RPC `stream: true`. The service proxies chunks to the
 artifact WebSocket. Backpressure is the RPC client's ack/queue path; the spike
@@ -400,7 +428,8 @@ possible hardening step, but OBS reload behavior makes a URL token simpler.
 artifact page / asset
   -> artifact host checks token, serves immutable bundle
 
-artifact WebSocket /rpc?token=...
+artifact WebSocket /rpc?token=...        (project API)
+artifact WebSocket /metadata?token=...  (built-in metadata API)
   -> artifact gateway validates token + project + scopes
 
   metadata procedure?
@@ -422,6 +451,81 @@ artifact WebSocket /rpc?token=...
   `Forbidden` without invoking the worker;
 - the artifact cannot call `AgentRpcs`, `RuntimeRpcs` (host RPC), connection
   configuration, bindings, files, or the cloud.
+
+
+### Worker contract (implemented in core)
+
+The service gateway talks to the worker over a dedicated `MessagePort` passed
+as `workerData.artifactPort`. The port carries Effect RPC frames directly:
+
+```ts
+interface ArtifactHostMessage {
+  readonly kind: "artifact";
+  readonly frame: FromClientEncoded; // Request | Interrupt | Eof | ...
+}
+
+interface ArtifactWorkerMessage {
+  readonly kind: "artifact";
+  readonly frame: FromServerEncoded; // Chunk | Exit | Defect
+}
+```
+
+- core's `serveArtifactRpc(port, group, handlers)` runs an Effect
+  `RpcServer` over the port; the service uses the matching
+  `makeArtifactRpcClient(port, group)`;
+- streaming is the normal Effect RPC `Chunk` frames;
+- cancellation is the normal `Interrupt` frame;
+- the worker registers the server only after init, from the `Api.serve`
+  registration returned by `evaluateScript`.
+
+### Store host contract (implemented in core)
+
+`StoreHost` is counter-only:
+
+```ts
+StoreLoad({ name, kind: "counter", initial? }) -> unknown
+StoreSetCounter({ name, value }) -> number
+StoreIncrement({ name, by, initial }) -> number
+```
+
+Event history has its own runtime RPCs and worker-side host:
+
+```ts
+EventHistoryRecord({ name, fingerprint, event }) -> HistoryRecord
+EventHistoryQuery({ name, limit, before? }) -> ReadonlyArray<HistoryRecord>
+
+interface EventHistoryHostService {
+  record(input): Effect<void>;
+  query(input): Effect<ReadonlyArray<HistoryRecord>>;
+  watch(name): Effect<PubSub<HistoryRecord>>;
+}
+```
+
+The service persists counters under `.ballast/stores/` and history under
+`.ballast/history/`. `serveRuntimeRpc` provides in-memory fallbacks so
+`ballast run` works before the service implements storage. The core exports
+the exact `RuntimeHostHandlers` methods, so the service agent can implement
+them without a second protocol.
+
+The action annotation is shared by string key: core's `Api.action` and
+`@ballast/artifact/protocol.action` both annotate `Ballast/Api/Action`. The
+gateway reads the manifest's `kind: "action"` and requires an action-scoped
+token. A shared project `src/api.ts` imports the browser-safe helper from
+`@ballast/artifact/protocol` so the shared module does not pull Node core into
+the browser bundle.
+
+### Solid template and client
+
+`@ballast/artifact` is browser-safe and exports:
+
+- `connect(group)` -> `{ api, metadata }` Effect RPC clients over the gateway;
+- `createArtifact(group, mount)` lifecycle/scope helper;
+- `@ballast/artifact/protocol` -> metadata RpcGroup + action annotation;
+- `@ballast/artifact/solid` -> `createQuery` and `createStream` resources.
+
+The reusable template is at `packages/artifact/template/`: `ballast.ts`,
+`src/api.ts` and `artifacts/dashboard/main.tsx`. The service scaffold can copy
+those files; the MCP scaffold can do the same.
 
 ## 5. Where artifacts open
 
@@ -448,60 +552,76 @@ project-scoped.
 Multiple artifacts per project are allowed by the manifest; the first version
 can ship one artifact per project in the UI and keep the API general.
 
-## 6. Dashboard data: `Ballast.Store`
+## 6. Dashboard data: counters + automatic event history
 
-Worker memory is lost on reload/restart, so an event log or counter that should
-survive is not just a closure. **Recommendation: add durable, schema-typed
-project stores as declared units.** Artifacts should not read arbitrary worker
-memory.
-
-Proposed v1 surface:
+Worker memory is lost on reload/restart, so dashboard state should not be a
+closure. `Ballast.Store.counter` covers counters. Event logs use
+**subscription history**, not a separate `Store.log` API.
 
 ```ts
-// declared in init
-const scenes = yield* Ballast.Store.counter("sceneSwitches", { initial: 0 });
-const alerts = yield* Ballast.Store.log("alerts", AlertEvent, {
-  maxEntries: 500,
-  retention: "7 days",
+const sceneSwitches = yield* Ballast.Store.counter("sceneSwitches", { initial: 0 });
+
+const chat = yield* Twitch.ChatMessage.subscribe(
+  "chat-scenes",
+  broadcaster,
+  handler,
+  { history: { maxEntries: 1000, retention: "7 days" } },
+);
+
+// handlers, runs, Api.serve handlers (Ballast.Runtime only)
+const recent = yield* chat.query({ limit: 50 });              // newest first
+const older = yield* chat.query({
+  limit: 50,
+  before: recent.at(-1)?.cursor,
 });
+const live = chat.watch();                                   // Stream<HistoryEntry>
 
-// handlers / Ballast.run / API actions
-yield* scenes.increment(1);
-yield* alerts.append({ kind: "follow", user: "ada", at: Date.now() });
-
-// artifact API handlers
-yield* scenes.get();       // number
-yield* alerts.watch();     // Stream<AlertEvent>
-yield* alerts.recent({ limit: 50 });
+yield* sceneSwitches.increment(1);                           // number
 ```
 
-Units are named per project and manifest-recorded with schema/fingerprint and
-source links. Storage lives under the project’s `.ballast/` directory, next to:
+History entries are explicit:
 
-- `timers.json` — timer declarations/instances (0006);
-- workflow store — workflow runs (0007, when integrated);
-- `stores/<name>.json` — counters/values;
-- `stores/<name>.jsonl` — append-only logs with retention/rotation.
+```ts
+type HistoryEntry<A> =
+  | { _tag: "Event"; cursor: string; receivedAt: number; event: A }
+  | { _tag: "Legacy"; cursor: string; receivedAt: number; raw: unknown; fingerprint: string };
+```
 
-Semantics:
+- **On by default.** Default policy: 1000 entries, 7 days.
+- **Topic defaults:** a `Ballast.Topic({ history })` declaration can set a
+  different policy or `false`. A subscription option overrides it.
+- **Off by default for sensitive/high-rate topics:** all keyboard topics
+  (`history: false`, keylogger risk), OBS high-volume events
+  (`InputVolumeMeters`, `InputActiveStateChanged`, `InputShowStateChanged`,
+  `SceneItemTransformChanged`) and MIDI `ControlChange`, `PitchBend`,
+  `RawMessage`.
+- **Manifest:** every subscription records `history` (resolved policy or
+  `false`) and the topic `schemaFingerprint`.
+- **Storage:** the service persists every inbound event before delivery, keyed
+  by `project/subscription` and the schema fingerprint. Records survive worker
+  reloads and service restarts under `.ballast/history/`.
+- **Schema changes:** `query` decodes only records whose fingerprint matches
+  the current topic schema. Mismatches are returned as `Legacy` raw rows when
+  `includeLegacy: true`; the default filters them out.
+- **Query paging:** newest first, bounded `limit`, `before: cursor` returns
+  older rows.
+- **Worker contract:** `EventHistoryRecord` and `EventHistoryQuery` on
+  `RuntimeRpcs`; the worker-side `EventHistoryHost` also exposes a local
+  `watch`. `ballast run` uses the in-memory host.
 
-- `counter` is an atomic integer with `increment`/`get`/`reset`;
-- `log` is append-only with a max entry count and/or retention; `watch` is a
-  live stream; `recent` is a bounded read;
-- later `value` (JSON KV) and `collection` (keyed records) can share the same
-  store RPC and file format;
-- writes are serialized per project in the service; the worker calls store RPCs
-  (`StoreGet`, `StoreIncrement`, `StoreAppend`, `StoreWatch`) over the
-  runtime session;
-- a store is a project-level unit: adding/removing it is diffed by name; data
-  stays on disk but is ignored when the declaration is removed until the user
-  deletes it;
-- if the user wants a purely in-memory dashboard, they can keep state in the
-  worker closure; that is explicitly non-durable and disappears on reload.
+There is no handler-outcome or note API: durable notes/outcomes belong in
+workflows. Counters are the only declared store unit:
 
-Artifacts query stores through the project API (or built-in metadata for
-timers); stores are not a second HTTP surface. This keeps one auth model and one
-project scope.
+```ts
+interface StoreHostService {
+  load(spec): Effect<unknown>;
+  setCounter(name, value): Effect<number>;
+  increment(name, by, initial): Effect<number>;
+}
+```
+
+Storage lives under `.ballast/stores/<name>.json`. In-memory fallback is for
+`ballast run` and tests.
 
 ## 7. Agent authoring
 
@@ -564,11 +684,17 @@ api?: {
 
 stores: Array<{
   name: string;
-  kind: "counter" | "log";
-  schema?: unknown;
-  fingerprint: string;
+  kind: "counter";
+  initial?: number;
   source: SourceLocation;
 }>;
+```
+
+Topics gain:
+
+```ts
+history?: { maxEntries: number; retentionMs: number } | false;
+schemaFingerprint?: string;
 ```
 
 Diff kinds gain `artifact`, `api`, `store` (or `apiProcedure`). A changed
@@ -623,9 +749,9 @@ because both touch the same core/worker/window surfaces.
 
 ### Phase 4 — durable data
 
-1. `Ballast.Store.counter` / `Store.log` declarations and manifest.
-2. Service store RPC, atomic writes, retention/rotation, live watch.
-3. Dashboard example using counter + log + stream.
+1. `Ballast.Store.counter` declarations, subscription history policy and manifest.
+2. Service counter store RPC and subscription history persistence.
+3. Dashboard example using counters + `query`/`watch` history + a stream.
 4. MCP authoring additions and guide/scaffold snippets.
 
 ### Phase 5 — polish
@@ -635,27 +761,33 @@ because both touch the same core/worker/window surfaces.
 3. Artifact screenshots/headless preview for agents.
 4. Store value/collection variants.
 
-## Open questions for the user
+## Implementation notes for the service agent
 
-1. **UI framework:** confirm DOM-first TS/TSX for v1, with a Solid template
-   later, or make Solid the blessed template now?
-2. **Write access:** should v1 allow `SetParam`/timer cancellation from an
-   artifact, or keep every artifact read-only and add writes after the live
-   param work stabilizes?
-3. **Token transport:** accept a URL token for OBS (with rotate/revoke), or
-   require a first-message handshake and accept less convenient Browser Source
-   setup?
-4. **Action URLs:** should creating an action-capable OBS URL require a
-   one-time explicit confirmation/consent? (Recommendation: yes.)
-5. **Store scope:** ship counters + append-only logs first, or wait for a full
-   KV/collection API? (Recommendation: counters + logs.)
-6. **API cardinality:** one API group per project for v1, or named multiple
-   groups from day one? (Recommendation: one; the manifest already records the
-   group name.)
-7. **Artifact API exposure:** should every declared procedure be callable from
-   every artifact, or should artifacts opt into procedure subsets in the
-   declaration? (Recommendation: all project procedures by default, with token
-   scopes for action.)
+The questions are resolved by the Decisions section above. The remaining
+integration details are:
+
+1. **Metadata schema location:** use `@ballast/artifact/protocol` as the
+   canonical `ArtifactMetadata` RpcGroup. It is browser-safe and already
+   contains `SetParam` and `CancelTimer` action annotations. The client opens
+   `/rpc` for the project API and `/metadata` for this group.
+2. **Worker channel:** create a `MessageChannel` for each worker generation,
+   pass `port2` as `workerData.artifactPort`, and keep `port1` in the runtime
+   session. Use core's `makeArtifactRpcClient(port1, group)`; the group comes
+   from the worker's `Api.serve` registration. Do not invent a second frame
+   format.
+3. **Store host:** implement the five `RuntimeHostHandlers` store methods and
+   persist files under `.ballast/stores/`. Until then the in-memory fallback is
+   used, which is correct only for `ballast run`.
+4. **Tokens:** hash tokens in service state, bind them to one
+   project/artifact/scope set, and enforce action/query per procedure. Creating
+   or widening an action-capable OBS URL is a user confirmation flow; never do
+   it from `ballast_apply`.
+5. **Workspace UI:** the project units panel should list artifacts from the
+   manifest; the artifact shell should use `sandbox="allow-scripts"`, a
+   dedicated origin, and the iframe/CSP rules above.
+6. **Scaffold dependency:** a scaffolded artifact project needs
+   `@ballast/artifact` in its generated `package.json`; the template files are
+   under `packages/artifact/template/`.
 
 ## Spike
 

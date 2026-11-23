@@ -10,12 +10,14 @@ import {
   type ServiceEvent,
   type ServiceInfo,
   type ServiceSnapshot,
+  type UnitKind,
   type ProjectSummary,
   type HealthStatus,
   type CloudStatus,
 } from "@ballast/agent-protocol";
 import { AgentRpcs } from "@ballast/agent-protocol";
 import { AGENT_NAME } from "./config.ts";
+import { ArtifactGateway } from "./artifact-gateway.ts";
 import { CloudLink } from "./cloud-link.ts";
 import { ConnectionManager } from "./connections.ts";
 import { Lifecycle } from "./lifecycle.ts";
@@ -37,6 +39,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
   const handlers = Effect.gen(function* () {
     const projects = yield* ProjectManager;
     const runtime = yield* ProjectRuntime;
+    const artifacts = yield* ArtifactGateway;
     const connections = yield* ConnectionManager;
     const cloud = yield* CloudLink;
     const lifecycle = yield* Lifecycle;
@@ -198,6 +201,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       CreateProject: (request: {
         readonly name: string;
         readonly directory?: string;
+        readonly artifact?: boolean;
       }) =>
         Effect.gen(function* () {
           const typesDir = yield* ensureProjectTypes({
@@ -208,6 +212,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
             name: request.name,
             ...(request.directory === undefined ? {} : { directory: request.directory }),
             typesDir,
+            ...(request.artifact === undefined ? {} : { artifact: request.artifact }),
           });
           const project = yield* projects.add({
             path: scaffolded.root,
@@ -366,10 +371,47 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
 
       UnpairCloud: () => cloud.unpair(),
 
+      ListArtifacts: ({ projectId }: { readonly projectId: string }) =>
+        Effect.map(artifacts.listArtifacts(projectId), (artifacts) => ({ artifacts })),
+
+      GetArtifactView: (request: {
+        readonly projectId: string;
+        readonly artifact: string;
+      }) => artifacts.getView(request.projectId, request.artifact),
+
+      CreateArtifactUrl: (request: {
+        readonly projectId: string;
+        readonly artifact: string;
+        readonly scope: "read" | "action";
+        readonly transparent: boolean;
+      }) => artifacts.createUrl(request),
+
+      ListArtifactUrls: (request: {
+        readonly projectId?: string;
+        readonly artifact?: string;
+      }) =>
+        Effect.map(artifacts.listUrls(request), (urls) => ({ urls })),
+
+      RevokeArtifactUrl: ({ id }: { readonly id: string }) =>
+        artifacts.revokeUrl(id),
+
+      ListArtifactUrlConfirmations: (request: {
+        readonly projectId?: string;
+      }) =>
+        Effect.map(artifacts.listConfirmations(request.projectId), (confirmations) => ({
+          confirmations,
+        })),
+
+      ApproveArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
+        artifacts.approveConfirmation(confirmationId),
+
+      RejectArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
+        artifacts.rejectConfirmation(confirmationId),
+
       StreamLogs: (request: {
         readonly projectId?: string;
         readonly scriptId?: string;
-        readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+        readonly unitKind?: UnitKind;
         readonly unitName?: string;
         readonly afterSeq?: number;
         readonly levels?: ReadonlyArray<"debug" | "info" | "warn" | "error">;
@@ -388,7 +430,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       StreamEvents: (request: {
         readonly projectId?: string;
         readonly scriptId?: string;
-        readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+        readonly unitKind?: UnitKind;
         readonly unitName?: string;
         readonly integration?: string;
         readonly topic?: string;

@@ -33,10 +33,14 @@ describe("mapManifestSources", () => {
         timers: [],
         workflows: [],
         runs: [{ name: "loop", source: { file: bundle, line: 1, column: 1 } }],
+        artifacts: [],
+        stores: [],
+        databases: [{ name: "main", source: { file: bundle, line: 1, column: 1 } }],
       };
 
       const mapped = mapManifestSources(manifest, mapPath, bundle, root);
       expect(mapped.runs[0]?.source).toEqual({ file: "src/a.ts", line: 3, column: 5 });
+      expect(mapped.databases[0]?.source).toEqual({ file: "src/a.ts", line: 3, column: 5 });
     } finally {
       await rm(base, { recursive: true, force: true });
     }

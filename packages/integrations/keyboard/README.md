@@ -32,6 +32,9 @@ yield* keyboard.toggle({ key: "A", state: "down" });
   driver filters before delivery, so subscribing two hotkeys on one connection
   does not send each handler the other's combos. The bus key for a hotkey is
   `keyboard/<slot>/keyboard/Hotkey#<combo>/<state>`.
+- **No key history by default.** All keyboard topics set `history: false`
+  because storing keystrokes amounts to a keylogger. A subscription can opt in
+  explicitly, but that is a deliberate user/author choice.
 - **Exact modifiers**: Ctrl+F1 does not fire while Shift is also held. A key
   release reports the modifiers held at its press.
 - `Keyboard.Connection` grants the whole `keyboard/*` namespace. The handle

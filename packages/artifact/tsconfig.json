@@ -1,0 +1,32 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist/types",
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "types": [],
+    "paths": {
+      "@ballast/artifact": [
+        "./src/index.ts"
+      ],
+      "@ballast/artifact/*": [
+        "./src/*"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "template"
+  ],
+  "references": [
+    {
+      "path": "../core"
+    }
+  ]
+}

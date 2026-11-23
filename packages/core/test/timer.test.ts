@@ -43,6 +43,26 @@ const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderS
       ...manifest,
       runs: [...manifest.runs, run],
     })),
+  artifact: (artifact) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      artifacts: [...manifest.artifacts, artifact],
+    })),
+  api: (api) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      api,
+    })),
+  store: (store) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      stores: [...manifest.stores, store],
+    })),
+  database: (database) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      databases: [...manifest.databases, database],
+    })),
 });
 
 const cooldownPayload = Schema.Struct({ user: Schema.String });

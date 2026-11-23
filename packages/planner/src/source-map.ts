@@ -130,5 +130,26 @@ export const mapManifestSources = (
       ...workflow,
       ...(workflow.source === undefined ? {} : { source: map(workflow.source) }),
     })),
+    artifacts: manifest.artifacts.map((artifact) => ({
+      ...artifact,
+      ...(artifact.source === undefined ? {} : { source: map(artifact.source) }),
+    })),
+    api:
+      manifest.api === undefined
+        ? undefined
+        : {
+            ...manifest.api,
+            ...(manifest.api.source === undefined
+              ? {}
+              : { source: map(manifest.api.source) }),
+          },
+    stores: manifest.stores.map((store) => ({
+      ...store,
+      ...(store.source === undefined ? {} : { source: map(store.source) }),
+    })),
+    databases: manifest.databases.map((database) => ({
+      ...database,
+      ...(database.source === undefined ? {} : { source: map(database.source) }),
+    })),
   };
 };

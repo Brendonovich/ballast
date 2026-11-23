@@ -17,6 +17,7 @@ catalog:
   "@effect/platform-node": 4.0.6
   "@effect/platform-node-shared": 4.0.6
   "@effect/vitest": 4.0.6
+  "@effect/sql-sqlite-node": 4.0.6
   alchemy: 2.0.0-beta.84
   "@alchemy.run/cloudflare": 2.0.0-beta.84
   "@cloudflare/workers-types": 5.20261012.1

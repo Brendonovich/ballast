@@ -31,7 +31,11 @@ import {
   writeServiceRegistration,
 } from "./config.ts";
 import type { ServeOptions, ServiceRegistration } from "./config.ts";
+import { ArtifactGatewayLive } from "./artifact-gateway.ts";
+import { ProjectStoresLive } from "./artifact-stores.ts";
+import { ArtifactTokensLive } from "./artifact-tokens.ts";
 import { CloudLink, CloudLinkLive } from "./cloud-link.ts";
+import { EventHistoryLive } from "./event-history.ts";
 import { ConnectionManager, ConnectionManagerLive } from "./connections.ts";
 import { devKeyboardLayer, devMidiLayer } from "./dev-input.ts";
 import { registerHttpRoutes } from "./http.ts";
@@ -131,6 +135,7 @@ const makeLayers = (
   const base = Layer.mergeAll(
     LogsLive,
     EventLogLive,
+    EventHistoryLive,
     ServiceHubLive,
     LifecycleLive,
     ProjectManagerLive(options.dataDir),
@@ -148,17 +153,27 @@ const makeLayers = (
       ? { keyboardLayer: devKeyboardLayer, midiLayer: devMidiLayer }
       : {}),
   }).pipe(Layer.provideMerge(events), Layer.provideMerge(cloud));
+  const stores = ProjectStoresLive;
   const projects = ProjectRuntimeLive({
     dataDir: options.dataDir,
     version,
-  }).pipe(Layer.provideMerge(connections));
+  }).pipe(
+    Layer.provideMerge(connections),
+    Layer.provideMerge(stores),
+    Layer.provideMerge(events),
+  );
+  const tokens = ArtifactTokensLive.pipe(Layer.provideMerge(projects));
+  const gateway = ArtifactGatewayLive.pipe(
+    Layer.provideMerge(tokens),
+    Layer.provideMerge(projects),
+  );
   const handlers = AgentRpcsLive({
     stateDir: options.stateDir,
     dataDir: options.dataDir,
     startedAt,
     version,
     cloudUrl: options.cloudUrl,
-  }).pipe(Layer.provideMerge(projects));
+  }).pipe(Layer.provideMerge(gateway), Layer.provideMerge(projects));
   const server = NodeHttpServer.layer(() => createServer(), {
     host: "127.0.0.1",
     port: options.port,
@@ -230,6 +245,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
         Effect.ignore,
       );
       yield* runtime.syncAll;
+      yield* runtime.hydrateEvents;
       yield* runtime.resumeEnabled();
       yield* eventRouter.finishWarmup;
 

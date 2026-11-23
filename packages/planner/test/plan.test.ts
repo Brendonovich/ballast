@@ -1,4 +1,4 @@
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,8 @@ describe("plan", () => {
             scopes: ["fake:read"],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: false,
+            schemaFingerprint: expect.any(String),
           },
         ],
         requests: [
@@ -56,6 +58,9 @@ describe("plan", () => {
         timers: [],
         workflows: [],
         runs: [],
+        artifacts: [],
+        stores: [],
+        databases: [],
       });
     }),
   );
@@ -270,6 +275,35 @@ describe("plan", () => {
     }),
   );
 
+  it.effect("rejects a database read in init as a runtime value", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-init-db-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      yield* Effect.promise(() =>
+        writeFile(
+          join(root, "ballast.ts"),
+          [
+            'import * as Ballast from "@ballast/core";',
+            'import { Effect } from "effect";',
+            "",
+            "export default Effect.gen(function* () {",
+            '  const db = yield* Ballast.Database("main");',
+            "  yield* Effect.log(yield* db.client);",
+            "});",
+            "",
+          ].join("\n"),
+          "utf8",
+        ),
+      );
+
+      const error = yield* planProject(root).pipe(Effect.flip);
+      expect(error.message).toContain("ballast.ts:1:1");
+      expect(error.message).toContain("This reads a runtime value");
+    }),
+  );
+
   it.effect("uses the user's Project satisfies location for an init read", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-init-project-")));
@@ -326,6 +360,74 @@ describe("plan", () => {
       const error = yield* plan(file).pipe(Effect.flip);
       expect(error.message).toContain('Param "greeting" was read during init at ballast.ts:');
       expect(error.message).toContain("Read params inside handlers/runs, not in init");
+    }),
+  );
+
+  it.effect("plans and bundles a Solid artifact with stores and an API", () =>
+    Effect.gen(function* () {
+      const project = yield* planProject(
+        fileURLToPath(new URL("../../../examples/stream-dashboard", import.meta.url)),
+      );
+
+      expect(project.manifest.artifacts.map((artifact) => artifact.name)).toEqual([
+        "dashboard",
+      ]);
+      expect(project.manifest.artifacts[0]?.source?.file).toBe("ballast.ts");
+      expect(project.manifest.api?.source?.file).toBe("ballast.ts");
+      expect(project.manifest.stores[0]?.source?.file).toBe("ballast.ts");
+      expect(
+        project.manifest.api?.procedures.map(
+          (procedure) => procedure.name + ":" + procedure.kind,
+        ),
+      ).toEqual(["Chat:stream", "ResetCounters:action", "Snapshot:query"]);
+      expect(
+        project.manifest.stores.map((store) => store.name + ":" + store.kind),
+      ).toEqual(["messages:counter", "sceneSwitches:counter"]);
+      expect(
+        project.manifest.topics.find((topic) => topic.name === "chat-log")?.history,
+      ).toEqual({ maxEntries: 500, retentionMs: 7 * 24 * 60 * 60_000 });
+      expect(
+        project.manifest.topics.find((topic) => topic.name === "scene-tick")?.history,
+      ).toBe(false);
+      expect(
+        project.manifest.topics.find((topic) => topic.name === "chat-log")
+          ?.schemaFingerprint,
+      ).toMatch(/^[0-9a-f]{64}$/);
+
+      const built = project.artifacts[0];
+      expect(built?.name).toBe("dashboard");
+      if (built === undefined) return;
+      const javascript = yield* Effect.promise(() =>
+        readFile(built.javascriptPath, "utf8"),
+      );
+      expect(javascript).toContain("reset");
+      expect(built.htmlPath.endsWith("index.html")).toBe(true);
+    }),
+  );
+
+  it.effect("fails artifact typecheck with a file/line diagnostic", () =>
+    Effect.gen(function* () {
+      const error = yield* planProject(
+        fileURLToPath(new URL("./fixtures/artifact-type-error", import.meta.url)),
+      ).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ProjectPlanError);
+      if (!(error instanceof ProjectPlanError)) return;
+      expect(error.diagnostics[0]?.file).toBe("artifacts/bad/main.tsx");
+      expect(error.diagnostics[0]?.kind).toBe("artifact");
+      expect(error.diagnostics[0]?.line).toBe(1);
+    }),
+  );
+
+  it.effect("rejects a second Api.serve", () =>
+    Effect.gen(function* () {
+      const error = yield* planProject(
+        fileURLToPath(new URL("./fixtures/duplicate-api", import.meta.url)),
+      ).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ProjectPlanError);
+      if (!(error instanceof ProjectPlanError)) return;
+      expect(error.message).toContain("Api.serve may be called once");
     }),
   );
 

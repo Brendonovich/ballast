@@ -38,6 +38,26 @@ const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderS
       ...manifest,
       runs: [...manifest.runs, run],
     })),
+  artifact: (artifact) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      artifacts: [...manifest.artifacts, artifact],
+    })),
+  api: (api) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      api,
+    })),
+  store: (store) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      stores: [...manifest.stores, store],
+    })),
+  database: (database) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      databases: [...manifest.databases, database],
+    })),
 });
 
 describe("@ballast/core plan phase", () => {
@@ -241,6 +261,49 @@ describe("@ballast/core plan phase", () => {
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
         expect(Cause.pretty(exit.cause)).toContain("read during init");
+      }
+    }),
+  );
+
+  it.effect("records a database declaration and dies on client access during plan", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("databases"));
+      const recorder = makeRecorder(ref);
+
+      const script = Effect.gen(function* () {
+          const db = yield* Ballast.Database("main");
+          expect(db.name).toBe("main");
+          yield* db.client;
+        });
+
+      // @ts-expect-error reading the database client in init requires Runtime
+      const exit = yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder).pipe(Effect.exit);
+
+      const manifest = yield* Ref.get(ref);
+      expect(manifest.databases.map((database) => database.name)).toEqual(["main"]);
+      expect(manifest.databases[0]?.source).toBeDefined();
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("DatabaseCalledDuringPlanError");
+      }
+    }),
+  );
+
+  it.effect("rejects an invalid database name", () =>
+    Effect.gen(function* () {
+      const ref = yield* Ref.make(Ballast.emptyManifest("bad-database"));
+      const script = Effect.gen(function* () {
+          yield* Ballast.Database("bad name");
+        });
+
+      const exit = yield* Ballast.providePlan(
+        Ballast.evaluateScript(script, "plan"),
+        makeRecorder(ref),
+      ).pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("DatabaseDeclarationError");
       }
     }),
   );

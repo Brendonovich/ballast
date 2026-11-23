@@ -19,7 +19,9 @@ yield* midi.noteOn({ device: yield* output, channel: 1, note: 60, velocity: 100 
 ```
 
 Topics: `NoteOn`, `NoteOff`, `ControlChange`, `ProgramChange`, `PitchBend`,
-`RawMessage`. Channels are 1-16. Note On with velocity 0 becomes NoteOff (the
+`RawMessage`. Channels are 1-16. `ControlChange`, `PitchBend` and
+`RawMessage` have subscription history off by default (high-rate floods);
+pass a `history` option to opt in. Note On with velocity 0 becomes NoteOff (the
 standard running-status form). Pitch bend is signed (-8192..8191, 0 center).
 Raw messages always include their status byte; running-status input is
 normalized by `MidiDecoder`.

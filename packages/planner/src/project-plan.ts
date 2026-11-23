@@ -1,7 +1,9 @@
 import { basename } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import type { Manifest } from "@ballast/core";
+import { emptyManifest, type Manifest } from "@ballast/core";
+import { bundleArtifacts } from "./artifacts.ts";
+import type { BuiltArtifact } from "./artifacts.ts";
 import { diff } from "./diff.ts";
 import type { ManifestDiff } from "./diff.ts";
 import { planDetails } from "./plan-worker-client.ts";
@@ -21,6 +23,7 @@ export interface PlannedProject {
   readonly manifest: Manifest;
   readonly title: string;
   readonly typecheck: ReadonlyArray<TypecheckDiagnostic>;
+  readonly artifacts: ReadonlyArray<BuiltArtifact>;
 }
 
 export const planProject = (
@@ -68,15 +71,34 @@ export const planProject = (
           }),
       ),
     );
+    const artifacts = yield* Effect.tryPromise({
+      try: () =>
+        bundleArtifacts(entry.root, planned.manifest.artifacts, options.resolveDir),
+      catch: (error) =>
+        new ProjectPlanError({
+          message: error instanceof Error ? error.message : String(error),
+          diagnostics: [],
+        }),
+    });
     return {
       entry,
       manifest: planned.manifest,
       title: planned.title,
       typecheck: checked.diagnostics,
+      artifacts,
     };
   });
 
-export type UnitKind = "topic" | "timer" | "workflow" | "param" | "run";
+export type UnitKind =
+  | "topic"
+  | "timer"
+  | "workflow"
+  | "param"
+  | "run"
+  | "artifact"
+  | "api"
+  | "store"
+  | "database";
 
 export interface UnitChange {
   readonly kind: UnitKind;
@@ -91,6 +113,10 @@ export interface ProjectManifestDiff {
   readonly requiresConsent: boolean;
   readonly changes: ReadonlyArray<UnitChange>;
   readonly units: ManifestDiff;
+  /** True when every change is an artifact bundle and the worker can stay up. */
+  readonly artifactOnly: boolean;
+  /** True when the service must start a new worker generation. */
+  readonly requiresWorkerRestart: boolean;
 }
 
 const normalize = (value: unknown): string => JSON.stringify(value);
@@ -124,25 +150,77 @@ const changesFor = <A>(
  * driven by the existing permission diff (new scopes or connections).
  */
 export const diffProject = (
-  previous: Manifest,
-  next: Manifest,
+  previous: Manifest | undefined,
+  next: Manifest | undefined,
 ): ProjectManifestDiff => {
-  const permissions = diff(previous, next);
+  if (next === undefined) {
+    const before = previous ?? emptyManifest("unknown", "ballast.ts");
+    return {
+      requiresConsent: false,
+      changes: [],
+      units: diff(before, before),
+      artifactOnly: false,
+      requiresWorkerRestart: false,
+    };
+  }
+  const before = previous ?? emptyManifest(next.project.id, next.project.entry);
+  const permissions = diff(before, next);
   const changes: Array<UnitChange> = [
-    ...changesFor("topic", (value) => value.name, previous.topics, next.topics),
-    ...changesFor("timer", (value) => value.name, previous.timers, next.timers),
+    ...changesFor("topic", (value) => value.name, before.topics, next.topics),
+    ...changesFor("timer", (value) => value.name, before.timers, next.timers),
     ...changesFor(
       "workflow",
       (value) => value.name,
-      previous.workflows,
+      before.workflows,
       next.workflows,
     ),
-    ...changesFor("param", (value) => value.key, previous.params, next.params),
-    ...changesFor("run", (value) => value.name, previous.runs, next.runs),
+    ...changesFor("param", (value) => value.key, before.params, next.params),
+    ...changesFor("run", (value) => value.name, before.runs, next.runs),
+    ...changesFor(
+      "artifact",
+      (value) => value.name,
+      before.artifacts ?? [],
+      next.artifacts ?? [],
+    ),
+    ...changesFor(
+      "store",
+      (value) => value.name,
+      before.stores ?? [],
+      next.stores ?? [],
+    ),
+    ...changesFor(
+      "database",
+      (value) => value.name,
+      before.databases ?? [],
+      next.databases ?? [],
+    ),
   ];
+  if (permissions.api?.changed === true) {
+    changes.push({
+      kind: "api",
+      name: "project-api",
+      change:
+        permissions.api.previous === undefined
+          ? "added"
+          : permissions.api.next === undefined
+            ? "removed"
+            : "changed",
+      ...(permissions.api.previous === undefined
+        ? {}
+        : { before: permissions.api.previous }),
+      ...(permissions.api.next === undefined ? {} : { after: permissions.api.next }),
+      ...(permissions.api.next?.source === undefined
+        ? {}
+        : { source: permissions.api.next.source }),
+    });
+  }
+  const artifactOnly =
+    changes.length > 0 && changes.every((change) => change.kind === "artifact");
   return {
     requiresConsent: permissions.requiresConsent,
     changes,
     units: permissions,
+    artifactOnly,
+    requiresWorkerRestart: changes.some((change) => change.kind !== "artifact"),
   };
 };

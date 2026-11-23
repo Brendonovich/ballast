@@ -8,6 +8,8 @@ export type {
   UnitChange,
   UnitKind,
 } from "./project-plan.ts";
+export { bundleArtifacts, ArtifactBundleError } from "./artifacts.ts";
+export type { BuiltArtifact } from "./artifacts.ts";
 export {
   typecheckProject,
   TypecheckError,

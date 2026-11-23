@@ -34,6 +34,8 @@ describe("plan OBS script", () => {
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
+            schemaFingerprint: expect.any(String),
           },
         ],
         requests: [{ integration: "obs", slot: "main", request: "obs/*", scopes: [] }],
@@ -41,6 +43,9 @@ describe("plan OBS script", () => {
         timers: [],
         workflows: [],
         runs: [{ name: "scene-loop" }],
+        artifacts: [],
+        stores: [],
+        databases: [],
       });
     }),
   );

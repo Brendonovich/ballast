@@ -37,6 +37,8 @@ describe("plan Twitch scripts", () => {
             scopes: ["channel:read:redemptions"],
             onStale: "drop",
             maxAgeMs: 60_000,
+            history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
+            schemaFingerprint: expect.any(String),
             condition: { broadcaster_user_id: { slot: "broadcaster" } },
           },
         ],
@@ -45,6 +47,9 @@ describe("plan Twitch scripts", () => {
         timers: [],
         workflows: [],
         runs: [],
+        artifacts: [],
+        stores: [],
+        databases: [],
       });
     }),
   );
@@ -86,7 +91,7 @@ describe("plan Twitch scripts", () => {
         user_id: { slot: "bot" },
       });
       expect(byTopic.get("broadcaster:twitch/channel.raid")?.condition).toEqual({
-        to_broadcaster_user_id: { slot: "broadcaster" },
+        from_broadcaster_user_id: { slot: "broadcaster" },
       });
       expect(manifest.connections).toEqual([
         { integration: "twitch", slot: "bot", location: "either" },

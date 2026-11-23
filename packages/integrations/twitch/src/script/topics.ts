@@ -147,8 +147,8 @@ export const Raid = Ballast.Topic<PayloadOf<typeof raid.type>, Integration, Raid
   schema: raid.payload,
   condition: (connection, options) =>
     options?.direction === "outgoing"
-      ? { to_broadcaster_user_id: { slot: connection.slot } }
-      : { from_broadcaster_user_id: { slot: connection.slot } },
+      ? { from_broadcaster_user_id: { slot: connection.slot } }
+      : { to_broadcaster_user_id: { slot: connection.slot } },
 });
 
 const streamOnline = subscriptions["stream.online"];

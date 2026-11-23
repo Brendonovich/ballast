@@ -7,7 +7,7 @@ import * as Predicate from "effect/Predicate";
 import * as References from "effect/References";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import type { Scope } from "effect/Scope";
+import * as Scope from "effect/Scope";
 import { ScriptPhase } from "./phase.ts";
 import { makeRuntimeRpcClient } from "./runtime-rpc.ts";
 import type { SettingValue } from "./runtime-rpc.ts";
@@ -19,6 +19,10 @@ import type {
   SettingsService,
 } from "./services.ts";
 import { TimerRuntime } from "./timer.ts";
+import { DatabaseRuntime, makeDatabaseRuntime, sqlErrorFromWire } from "./database.ts";
+import type { DatabaseRuntimeService } from "./database.ts";
+import { makeStoreHostRuntime, StoreHost } from "./store.ts";
+import { EventHistoryHost, makeEventHistoryHostRuntime } from "./history.ts";
 import { withUnit } from "./unit.ts";
 import type { TimerFire, TimerRuntimeService } from "./timer.ts";
 
@@ -26,6 +30,8 @@ interface RuntimeWorkerData {
   readonly rpcPort: MessagePort;
   readonly generation: number;
   readonly settings: Readonly<Record<string, SettingValue>>;
+  /** Dedicated channel for the artifact gateway; optional until the host adds it. */
+  readonly artifactPort?: MessagePort;
 }
 
 interface RuntimeEventMessage {
@@ -142,18 +148,23 @@ const parseWorkerData = (value: unknown): RuntimeWorkerData => {
   ) {
     throw new Error("Runtime worker started without a generation");
   }
+  const artifactPort =
+    Predicate.hasProperty("artifactPort")(value) && value.artifactPort instanceof MessagePort
+      ? value.artifactPort
+      : undefined;
   return {
     rpcPort: value.rpcPort,
     generation: value.generation,
     settings: parseSettings(
       Predicate.hasProperty("settings")(value) ? value.settings : undefined,
     ),
+    ...(artifactPort === undefined ? {} : { artifactPort }),
   };
 };
 
 const runtimeProgram = (
   script: Effect.Effect<void, unknown, never>,
-): Effect.Effect<void, unknown, Scope> =>
+): Effect.Effect<void, unknown, Scope.Scope> =>
   Effect.gen(function* () {
     const data = parseWorkerData(workerData);
     const port = parentPort;
@@ -162,6 +173,14 @@ const runtimeProgram = (
     }
 
     const client = yield* makeRuntimeRpcClient(data.rpcPort);
+    const eventHistory = yield* makeEventHistoryHostRuntime(client);
+    // SQL runs in the agent through the DatabaseExecute RPC; the worker builds
+    // one SqlClient per declared database, cached for the worker's lifetime.
+    const databaseScope = yield* Scope.fork(yield* Scope.Scope, "parallel");
+    const databaseRuntime: DatabaseRuntimeService = makeDatabaseRuntime(
+      (input) => client.DatabaseExecute(input).pipe(Effect.mapError(sqlErrorFromWire)),
+      databaseScope,
+    );
     const settingsRef = yield* Ref.make<ReadonlyMap<string, SettingValue>>(
       new Map(Object.entries(data.settings)),
     );
@@ -334,6 +353,10 @@ const runtimeProgram = (
       );
 
       const runtime = yield* evaluateScript(script, "runtime");
+      const artifactApi = yield* runtime.api;
+      if (data.artifactPort !== undefined && artifactApi !== undefined) {
+        yield* Effect.forkScoped(artifactApi(data.artifactPort));
+      }
 
       yield* client.Ready({ generation: data.generation }).pipe(Effect.orDie);
       console.log(`[runtime] generation ${data.generation} ready`);
@@ -353,6 +376,9 @@ const runtimeProgram = (
       Effect.provideService(Settings, settings),
       Effect.provideService(RequestClients, requestClients),
       Effect.provideService(TimerRuntime, timerRuntime),
+      Effect.provideService(StoreHost, makeStoreHostRuntime(client)),
+      Effect.provideService(EventHistoryHost, eventHistory),
+      Effect.provideService(DatabaseRuntime, databaseRuntime),
     );
   });
 

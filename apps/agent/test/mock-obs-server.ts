@@ -7,6 +7,12 @@ export interface MockObsServerOptions {
   readonly scenes?: ReadonlyArray<string>;
   /** Fixed port for reconnect tests; defaults to an ephemeral port. */
   readonly port?: number;
+  /**
+   * Answers every request in place of the built-in scene requests, for
+   * example with Sceneify's in-memory OBS. Reject with `{ code, message }` to
+   * send a failed request status.
+   */
+  readonly backend?: (requestType: string, requestData: Record<string, unknown>) => Promise<unknown>;
 }
 
 export interface MockObsServer {
@@ -142,6 +148,19 @@ export const startMockObsServer = async (
           },
         });
       };
+
+      if (options.backend !== undefined) {
+        options.backend(requestType, requestData).then(
+          (responseData) => respond(responseData ?? {}),
+          (error: unknown) => {
+            const code = isRecord(error) && typeof error["code"] === "number" ? error["code"] : 500;
+            const message =
+              isRecord(error) && typeof error["message"] === "string" ? error["message"] : String(error);
+            fail(code, message);
+          },
+        );
+        return;
+      }
 
       switch (requestType) {
         case "GetSceneList":

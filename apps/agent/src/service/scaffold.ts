@@ -1,3 +1,4 @@
+import { cp } from "node:fs/promises";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import * as Config from "effect/Config";
@@ -55,6 +56,14 @@ export interface ScaffoldedProject {
 }
 
 const requireFromService = createRequire(import.meta.url);
+
+const artifactTemplateRoot = (path: Path.Path): string | undefined => {
+  try {
+    return path.join(path.dirname(requireFromService.resolve("@ballast/artifact")), "..", "template");
+  } catch {
+    return undefined;
+  }
+};
 
 const serviceModulesRoot = (
   path: Path.Path,
@@ -191,6 +200,15 @@ const tsconfig = (path: Path.Path, typesDir: string): string =>
         allowImportingTsExtensions: true,
         paths: {
           "@ballast/*": [path.join(typesDir, "@ballast", "*", "src", "index.ts")],
+          "@ballast/artifact/protocol": [
+            path.join(typesDir, "@ballast", "artifact", "src", "protocol.ts"),
+          ],
+          "@ballast/artifact/solid": [
+            path.join(typesDir, "@ballast", "artifact", "src", "solid.ts"),
+          ],
+          "solid-js": [path.join(typesDir, "solid-js", "types", "index.d.ts")],
+          "solid-js/web": [path.join(typesDir, "solid-js", "web", "types", "index.d.ts")],
+          "solid-js/jsx-runtime": [path.join(typesDir, "solid-js", "jsx-runtime.d.ts")],
           effect: [path.join(typesDir, "effect", "dist", "index.d.ts")],
           "effect/*": [
             path.join(typesDir, "effect", "dist", "*.d.ts"),
@@ -224,6 +242,8 @@ export const scaffoldProject = (input: {
   readonly directory?: string;
   /** Stable type root prepared by `ensureProjectTypes`. */
   readonly typesDir: string;
+  /** Copy the Solid artifact template instead of the minimal scaffold. */
+  readonly artifact?: boolean;
 }): Effect.Effect<
   ScaffoldedProject,
   AgentError,
@@ -253,9 +273,28 @@ export const scaffoldProject = (input: {
         agentError("conflict", `Project folder "${root}" already exists and is not empty`),
       );
     }
+    const templateRoot =
+      input.artifact === true ? artifactTemplateRoot(path) : undefined;
+    if (input.artifact === true && templateRoot === undefined) {
+      return yield* Effect.fail(
+        agentError("internal", "The @ballast/artifact template package is not installed"),
+      );
+    }
     yield* Effect.gen(function* () {
       yield* fs.makeDirectory(root, { recursive: true });
-      yield* fs.writeFileString(path.join(root, "ballast.ts"), entry(name));
+      if (templateRoot !== undefined) {
+        yield* Effect.tryPromise({
+          try: () => cp(templateRoot, root, { recursive: true, force: true }),
+          catch: (cause) =>
+            agentError(
+              "internal",
+              "Could not copy the artifact template: " +
+                (cause instanceof Error ? cause.message : String(cause)),
+            ),
+        });
+      } else {
+        yield* fs.writeFileString(path.join(root, "ballast.ts"), entry(name));
+      }
       yield* fs.writeFileString(path.join(root, "package.json"), packageJson(name, slug));
       yield* fs.writeFileString(
         path.join(root, "tsconfig.json"),

@@ -1,12 +1,16 @@
 import * as Ref from "effect/Ref";
 import {
   topicManifestKey,
+  type ApiManifest,
+  type ArtifactManifest,
   type ConnectionManifest,
+  type DatabaseManifest,
   type Manifest,
   type ParamManifest,
   type ParamRead,
   type RequestManifest,
   type RunManifest,
+  type StoreManifest,
   type TimerManifest,
   type TopicManifest,
   type UnresolvedManifest,
@@ -135,6 +139,26 @@ export const makeManifestRecorder = (
       ...manifest,
       runs: [...manifest.runs, run],
     })),
+  artifact: (artifact: ArtifactManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      artifacts: upsert(manifest.artifacts, artifact, (value) => value.name),
+    })),
+  api: (api: ApiManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      api,
+    })),
+  store: (store: StoreManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      stores: upsert(manifest.stores, store, (value) => value.name),
+    })),
+  database: (database: DatabaseManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      databases: upsert(manifest.databases, database, (value) => value.name),
+    })),
 });
 
 const byStrings = (left: string, right: string): number => left.localeCompare(right);
@@ -165,6 +189,25 @@ export const normalizeManifest = (manifest: Manifest): Manifest => ({
     byStrings(left.name, right.name),
   ),
   runs: [...(manifest.runs ?? [])].sort((left, right) =>
+    byStrings(left.name, right.name),
+  ),
+  artifacts: [...(manifest.artifacts ?? [])].sort((left, right) =>
+    byStrings(left.name, right.name),
+  ),
+  ...(manifest.api === undefined
+    ? {}
+    : {
+        api: {
+          ...manifest.api,
+          procedures: [...manifest.api.procedures].sort((left, right) =>
+            byStrings(left.name, right.name),
+          ),
+        },
+      }),
+  stores: [...(manifest.stores ?? [])].sort((left, right) =>
+    byStrings(left.name, right.name),
+  ),
+  databases: [...(manifest.databases ?? [])].sort((left, right) =>
     byStrings(left.name, right.name),
   ),
 });

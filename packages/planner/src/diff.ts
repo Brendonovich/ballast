@@ -2,11 +2,15 @@ import {
   connectionKey,
   requestManifestKey,
   topicManifestKey,
+  type ApiManifest,
+  type ArtifactManifest,
   type ConnectionManifest,
+  type DatabaseManifest,
   type Manifest,
   type ParamManifest,
   type RequestManifest,
   type RunManifest,
+  type StoreManifest,
   type TimerManifest,
   type TopicManifest,
   type WorkflowManifest,
@@ -30,6 +34,14 @@ export interface ManifestDiff {
   readonly timers: DiffSet<TimerManifest>;
   readonly workflows: DiffSet<WorkflowManifest>;
   readonly runs: DiffSet<RunManifest>;
+  readonly artifacts?: DiffSet<ArtifactManifest>;
+  readonly stores?: DiffSet<StoreManifest>;
+  readonly databases?: DiffSet<DatabaseManifest>;
+  readonly api?: {
+    readonly changed: boolean;
+    readonly previous: ApiManifest | undefined;
+    readonly next: ApiManifest | undefined;
+  };
   readonly scopes: DiffSet<string>;
 }
 
@@ -82,6 +94,14 @@ export const diff = (previous: Manifest, next: Manifest): ManifestDiff => {
     timers: diffBy(previous.timers ?? [], next.timers ?? [], (timer) => timer.name),
     workflows: diffBy(previous.workflows ?? [], next.workflows ?? [], (workflow) => workflow.name),
     runs: diffBy(previous.runs ?? [], next.runs ?? [], (run) => run.name),
+    artifacts: diffBy(previous.artifacts ?? [], next.artifacts ?? [], (artifact) => artifact.name),
+    stores: diffBy(previous.stores ?? [], next.stores ?? [], (store) => store.name),
+    databases: diffBy(previous.databases ?? [], next.databases ?? [], (database) => database.name),
+    api: {
+      changed: JSON.stringify(previous.api) !== JSON.stringify(next.api),
+      previous: previous.api,
+      next: next.api,
+    },
     scopes,
   };
 };

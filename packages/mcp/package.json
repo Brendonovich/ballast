@@ -24,6 +24,7 @@
     "@ballast/module-keyboard": "workspace:*",
     "@ballast/module-midi": "workspace:*",
     "@ballast/module-obs": "workspace:*",
+    "@ballast/module-sceneify": "workspace:*",
     "@ballast/module-twitch": "workspace:*",
     "@ballast/module-vtube-studio": "workspace:*",
     "@ballast/module-websocket": "workspace:*",
