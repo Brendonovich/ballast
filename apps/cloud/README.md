@@ -24,6 +24,11 @@ See `docs/decisions/0002-twitch-auth-and-cloud-gateway.md` for the design.
 
 All `/api/*` routes except pairing use `Authorization: Bearer blst_m_…`.
 
+When `scopes` is omitted, `/oauth/twitch/start` requests the cloud's default scopes. The cloud
+has no project-consent-driven incremental authorization yet, so that default is currently a
+dev stopgap covering chat-scenes: `user:read:chat`, `user:write:chat`, the bot grants and
+redemptions. See `defaultScopes` in `src/config.ts`.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (or `.dev.vars`) and fill in a Twitch app, a 32-byte
@@ -38,28 +43,49 @@ fails to start without it, so a deployment cannot silently use a public developm
 ```sh
 pnpm typecheck
 pnpm test
-pnpm dev    # alchemy dev: local state, local D1 migrations, Worker + Relay DO on :1338
-pnpm demo   # fake Twitch + signed EventSub + relay WebSocket, in another terminal
-pnpm deploy # alchemy deploy (the only command that contacts Cloudflare)
+pnpm dev        # alchemy dev, remote: stage dev-brendonovich, real D1 + DO + Worker
+pnpm dev:local  # alchemy dev, fully local: local state + workerd, no Cloudflare account
+pnpm demo       # fake Twitch + signed EventSub + relay WebSocket, against dev:local
+pnpm deploy     # alchemy deploy (the only command that contacts Cloudflare)
 ```
 
 Alchemy requires Node 22.22.3+ or 24.11.1+. Use `fnm`/nvm if the system Node is older.
 
-## Local development uses no Cloudflare account
+## Remote dev (default)
 
-`alchemy dev` is genuinely local for this stack. In `alchemy.run.ts`, dev selects
-`Alchemy.localState()` (files under `.alchemy/state`) instead of `Cloudflare.state()`, so no
-state-store Worker is bootstrapped. The Cloudflare providers' local variants then run the
-Worker, D1 (with `migrations/` applied to a local SQLite simulator) and the Relay Durable
-Object under `workerd`, storing data under `.alchemy/local/`. No credentials, account or
-network access to Cloudflare is involved.
+`pnpm dev` runs `scripts/dev-remote.mjs`, which starts `alchemy dev` with stage
+`dev-brendonovich` and sets `BALLAST_CLOUD_REMOTE_DEV=1`, `BALLAST_WORKER_NAME`,
+`BALLAST_PUBLIC_ORIGIN`, `BALLAST_D1_NAME` and `CLOUDFLARE_WORKERS_SUBDOMAIN`. Override the
+stage/subdomain with `BALLAST_CLOUD_STAGE` / `CLOUDFLARE_WORKERS_SUBDOMAIN`. The stack uses
+`Cloudflare.state()` and every resource is registered inside `Alchemy.remote()`, so
+`alchemy dev` creates/adopts real Cloudflare resources while still watching files and
+reapplying on change:
+
+- Worker `ballast-cloud-dev-brendonovich` at
+  `https://ballast-cloud-dev-brendonovich.brendonovich.workers.dev`
+- D1 `ballast-cloud-dev-brendonovich-db`, with `migrations/` applied
+- the Relay Durable Object namespace (class `Relay`) hosted by that Worker
+
+No custom route or domain is attached. `BALLAST_PUBLIC_ORIGIN` is computed from the stage and
+`CLOUDFLARE_WORKERS_SUBDOMAIN`, so OAuth `redirect_uri`, EventSub callbacks and `/hooks/...`
+all use the public HTTPS origin. Secrets still come from the gitignored `.dev.vars`/`.env`.
+The `dev-brendonovich` name and `dev-*` stage guard keep remote dev away from production.
+
+## Local development without Cloudflare
+
+`pnpm dev:local` (and the e2e harness, which invokes `alchemy dev --stage e2e_…` directly)
+keeps the original local mode: `Alchemy.localState()` (files under `.alchemy/state`), the
+Cloudflare providers' local variants, the Worker and Relay Durable Object under `workerd`,
+and D1 migrations applied to a local SQLite simulator. No credentials, account or network
+access to Cloudflare is involved. The e2e suite uses this mode and must keep working without
+`CLOUDFLARE_*` credentials.
 
 `wrangler dev` is no longer used; `wrangler.toml` was removed so bindings cannot drift from
 `alchemy.run.ts`. The local demo exercises the real Worker + D1 + DO code path:
 
 ```sh
 # terminal 1
-pnpm dev
+pnpm dev:local
 # terminal 2
 pnpm demo
 ```

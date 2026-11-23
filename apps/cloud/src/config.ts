@@ -57,7 +57,19 @@ export const makeCloudConfig = (values: {
   twitchClientSecret: Redacted.make(values.twitchClientSecret),
   tokenKey: parseKey(values.tokenKey),
   tokenPepper: values.tokenPepper,
-  defaultScopes: values.defaultScopes ?? ["user:read:email", "channel:read:redemptions"],
+  // Dev stopgap: the cloud has no incremental authorization/reauth flow yet,
+  // so a linked account cannot be escalated when a project's consent adds
+  // scopes. Request everything chat-scenes can need up front. Once project
+  // consent can re-authorize a linked account, reduce this to identity scopes.
+  // The bot grants are required by app-token (webhook) chat subscriptions.
+  defaultScopes: values.defaultScopes ?? [
+    "user:read:email",
+    "user:read:chat",
+    "user:write:chat",
+    "user:bot",
+    "channel:bot",
+    "channel:read:redemptions",
+  ],
   maxSubscriptionCost: values.maxSubscriptionCost ?? DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST,
   webhookTimestampToleranceMs: values.webhookTimestampToleranceMs ?? 10 * 60_000,
   retentionMs: values.retentionMs ?? DEFAULT_RETENTION_MS,
@@ -71,38 +83,42 @@ export const makeCloudConfig = (values: {
  * Effect init can yield this directly so the bindings are registered without
  * a separate `env` prop.
  */
-export const loadCloudConfig = Effect.gen(function* () {
-  const values = yield* Config.all({
-    publicOrigin: Config.String("BALLAST_PUBLIC_ORIGIN").pipe(
-      Config.withDefault(DEV_PUBLIC_ORIGIN),
-    ),
-    twitchClientId: Config.String("TWITCH_CLIENT_ID"),
-    twitchClientSecret: Config.Redacted("TWITCH_CLIENT_SECRET"),
-    tokenKey: Config.Redacted("BALLAST_TOKEN_KEY"),
-    tokenPepper: Config.String("BALLAST_TOKEN_PEPPER"),
-    maxSubscriptionCost: Config.Number("BALLAST_TWITCH_MAX_SUBSCRIPTION_COST").pipe(
-      Config.withDefault(DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST),
-    ),
-    twitchIdBaseUrl: Config.String("TWITCH_ID_BASE_URL").pipe(
-      Config.withDefault("https://id.twitch.tv"),
-    ),
-    twitchApiBaseUrl: Config.String("TWITCH_API_BASE_URL").pipe(
-      Config.withDefault("https://api.twitch.tv"),
-    ),
+export const loadCloudConfig = (options: {
+  /** A remote Worker knows its public URL before its env bindings exist. */
+  readonly publicOrigin?: string;
+} = {}) =>
+  Effect.gen(function* () {
+    const values = yield* Config.all({
+      publicOrigin: options.publicOrigin === undefined
+        ? Config.String("BALLAST_PUBLIC_ORIGIN").pipe(Config.withDefault(DEV_PUBLIC_ORIGIN))
+        : Config.succeed(options.publicOrigin),
+      twitchClientId: Config.String("TWITCH_CLIENT_ID"),
+      twitchClientSecret: Config.Redacted("TWITCH_CLIENT_SECRET"),
+      tokenKey: Config.Redacted("BALLAST_TOKEN_KEY"),
+      tokenPepper: Config.String("BALLAST_TOKEN_PEPPER"),
+      maxSubscriptionCost: Config.Number("BALLAST_TWITCH_MAX_SUBSCRIPTION_COST").pipe(
+        Config.withDefault(DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST),
+      ),
+      twitchIdBaseUrl: Config.String("TWITCH_ID_BASE_URL").pipe(
+        Config.withDefault("https://id.twitch.tv"),
+      ),
+      twitchApiBaseUrl: Config.String("TWITCH_API_BASE_URL").pipe(
+        Config.withDefault("https://api.twitch.tv"),
+      ),
+    });
+    return makeCloudConfig({
+      publicOrigin: values.publicOrigin,
+      twitchClientId: values.twitchClientId,
+      twitchClientSecret: Redacted.value(values.twitchClientSecret),
+      tokenKey: Redacted.value(values.tokenKey),
+      tokenPepper: values.tokenPepper,
+      maxSubscriptionCost: values.maxSubscriptionCost,
+      twitchIdBaseUrl: values.twitchIdBaseUrl,
+      twitchApiBaseUrl: values.twitchApiBaseUrl,
+    });
   });
-  return makeCloudConfig({
-    publicOrigin: values.publicOrigin,
-    twitchClientId: values.twitchClientId,
-    twitchClientSecret: Redacted.value(values.twitchClientSecret),
-    tokenKey: Redacted.value(values.tokenKey),
-    tokenPepper: values.tokenPepper,
-    maxSubscriptionCost: values.maxSubscriptionCost,
-    twitchIdBaseUrl: values.twitchIdBaseUrl,
-    twitchApiBaseUrl: values.twitchApiBaseUrl,
-  });
-});
 
 export const CloudConfigLive = Layer.effect(
   CloudConfig,
-  Effect.map(loadCloudConfig, (config) => CloudConfig.of(config)),
+  Effect.map(loadCloudConfig(), (config) => CloudConfig.of(config)),
 );

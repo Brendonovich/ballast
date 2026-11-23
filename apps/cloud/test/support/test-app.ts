@@ -64,6 +64,8 @@ export interface TestApp {
   readonly request: (input: {
     readonly method: string;
     readonly path: string;
+    /** Defaults to the cloud's public origin; set it to exercise host changes. */
+    readonly origin?: string;
     readonly headers?: Readonly<Record<string, string>>;
     readonly body?: unknown;
     readonly rawBody?: string;
@@ -73,9 +75,10 @@ export interface TestApp {
 export const makeTestApp = async (options: {
   readonly relay?: RelayGatewayService;
   readonly twitch?: FakeTwitchOptions;
+  readonly publicOrigin?: string;
 } = {}): Promise<TestApp> => {
   const config = makeCloudConfig({
-    publicOrigin: "http://localhost:1338",
+    publicOrigin: options.publicOrigin ?? "http://localhost:1338",
     twitchClientId: "test-client-id",
     twitchClientSecret: "test-client-secret",
     tokenKey,
@@ -210,7 +213,7 @@ export const makeTestApp = async (options: {
     const response = await Effect.runPromise(
       app.fetch({
         method: input.method,
-        url: `http://localhost:1338${input.path}`,
+        url: `${input.origin ?? config.publicOrigin}${input.path}`,
         headers: Object.fromEntries(
           Object.entries(input.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
         ),

@@ -50,6 +50,17 @@ redirects to `/`), or shows the bundled fallback page while it comes up. Every l
 `service.start()` (the same call the tray uses), so the freshly built stage is started, or
 replaces a running service of another version. Set `BALLAST_AUTOSTART=0` to skip that.
 
+`script/dev.mjs` also reads the gitignored `apps/desktop/.env` and passes it to Electron and the
+service it spawns. Existing environment variables win. Put the cloud you want in that file and
+restart the dev app (the service must be respawned to pick it up):
+
+```
+# local cloud
+BALLAST_CLOUD_URL=http://localhost:1338
+# or Alchemy remote dev
+BALLAST_CLOUD_URL=https://ballast-cloud-dev-brendonovich.brendonovich.workers.dev
+```
+
 Environment overrides, mostly for tests and development:
 
 | Variable | Meaning |

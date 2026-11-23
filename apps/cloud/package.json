@@ -14,7 +14,9 @@
     "typecheck": "tsgo -b",
     "test": "vitest run",
     "alchemy": "node --experimental-transform-types --no-warnings=ExperimentalWarning --env-file-if-exists=.dev.vars --env-file-if-exists=.env node_modules/alchemy/bin/alchemy.js",
-    "dev": "pnpm alchemy dev",
+    "dev": "pnpm dev:remote",
+    "dev:remote": "node scripts/dev-remote.mjs",
+    "dev:local": "pnpm alchemy dev",
     "demo": "node scripts/local-demo.mjs",
     "deploy": "pnpm alchemy deploy"
   },

@@ -23,6 +23,7 @@ export interface FakeTwitch {
   readonly deletedSubscriptions: string[];
   readonly helixCalls: HelixCall[];
   readonly refreshCalls: string[];
+  readonly exchangeCalls: Array<{ readonly code: string; readonly redirectUri: string }>;
   readonly providerSubscriptions: () => ReadonlyArray<TwitchProviderSubscription>;
 }
 
@@ -43,6 +44,7 @@ export const makeFakeTwitch = (options: FakeTwitchOptions = {}): FakeTwitch => {
   const deleted: string[] = [];
   const helixCalls: HelixCall[] = [];
   const refreshCalls: string[] = [];
+  const exchangeCalls: Array<{ readonly code: string; readonly redirectUri: string }> = [];
   let providerSubscriptions: Array<TwitchProviderSubscription> = [];
   let nextSubscription = 1;
 
@@ -57,7 +59,11 @@ export const makeFakeTwitch = (options: FakeTwitchOptions = {}): FakeTwitch => {
       if (input.forceVerify === true) url.searchParams.set("force_verify", "true");
       return url.toString();
     },
-    exchangeAuthorizationCode: () => Effect.succeed(tokens),
+    exchangeAuthorizationCode: (code, redirectUri) =>
+      Effect.sync(() => {
+        exchangeCalls.push({ code, redirectUri });
+        return tokens;
+      }),
     refresh: (refreshToken) =>
       Effect.gen(function* () {
         if (options.refreshDelayMs !== undefined)
@@ -115,6 +121,7 @@ export const makeFakeTwitch = (options: FakeTwitchOptions = {}): FakeTwitch => {
     deletedSubscriptions: deleted,
     helixCalls,
     refreshCalls,
+    exchangeCalls,
     providerSubscriptions: () => providerSubscriptions,
   };
 };

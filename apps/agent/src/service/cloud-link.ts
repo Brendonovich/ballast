@@ -218,7 +218,9 @@ export const CloudLinkLive = (options: {
             relay: { connected: false },
           });
           return {
-            url: `${base}/oauth/twitch/start?scopes=user%3Aread%3Aemail`,
+            // The cloud owns the default scopes; asking for one here would
+            // under-grant every account paired through the UI.
+            url: `${base}/oauth/twitch/start`,
             expiresAt,
             instructions:
               "Sign in to Twitch in the browser. The cloud shows a pairing code; paste it here to finish linking this machine.",
@@ -246,6 +248,11 @@ export const CloudLinkLive = (options: {
                 error.tag === "unauthorized" ? "unauthorized" : "upstream",
                 error.message,
               ),
+            ),
+            // A mistyped or expired code must not leave the UI stuck on
+            // "linking" while no pairing was stored.
+            Effect.tapError((error) =>
+              setStatus({ state: "error", cloudUrl: url, error: error.message }),
             ),
           );
           const value: CloudPairing = {

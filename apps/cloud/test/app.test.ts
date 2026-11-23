@@ -228,6 +228,67 @@ describe("OAuth and machine API", () => {
     expect(json(helix.body)).toMatchObject({ status: 200, refreshed: false });
   });
 
+  it("keeps OAuth state in the cloud store, not a cookie, so start and callback hosts can differ", async () => {
+    const test = await makeTestApp();
+
+    const sameHostStart = await test.request({
+      method: "GET",
+      path: "/oauth/twitch/start",
+      origin: "http://localhost:1338",
+    });
+    expect(sameHostStart.status).toBe(302);
+    const sameHostAuthorize = new URL(sameHostStart.headers?.location ?? "");
+    expect(sameHostAuthorize.searchParams.get("redirect_uri")).toBe(
+      "http://localhost:1338/oauth/twitch/callback",
+    );
+    const sameHostState = sameHostAuthorize.searchParams.get("state");
+    expect(sameHostState).not.toBeNull();
+
+    const sameHostCallback = await test.request({
+      method: "GET",
+      path: `/oauth/twitch/callback?code=code-same&state=${sameHostState ?? ""}&format=json`,
+      origin: "http://localhost:1338",
+    });
+    expect(sameHostCallback.status).toBe(200);
+    expect(test.twitch.exchangeCalls).toEqual([
+      { code: "code-same", redirectUri: "http://localhost:1338/oauth/twitch/callback" },
+    ]);
+
+    // Starting on 127.0.0.1 still stores state in D1 and still redirects to the
+    // configured localhost callback; the callback can complete on localhost.
+    const crossHostStart = await test.request({
+      method: "GET",
+      path: "/oauth/twitch/start",
+      origin: "http://127.0.0.1:1338",
+    });
+    expect(crossHostStart.status).toBe(302);
+    const crossHostAuthorize = new URL(crossHostStart.headers?.location ?? "");
+    expect(crossHostAuthorize.searchParams.get("redirect_uri")).toBe(
+      "http://localhost:1338/oauth/twitch/callback",
+    );
+    const crossHostState = crossHostAuthorize.searchParams.get("state");
+    expect(crossHostState).not.toBeNull();
+
+    const crossHostCallback = await test.request({
+      method: "GET",
+      path: `/oauth/twitch/callback?code=code-cross&state=${crossHostState ?? ""}&format=json`,
+      origin: "http://localhost:1338",
+    });
+    expect(crossHostCallback.status).toBe(200);
+    expect(test.twitch.exchangeCalls.at(-1)).toEqual({
+      code: "code-cross",
+      redirectUri: "http://localhost:1338/oauth/twitch/callback",
+    });
+
+    const invalid = await test.request({
+      method: "GET",
+      path: "/oauth/twitch/callback?code=code-bogus&state=bogus&format=json",
+      origin: "http://localhost:1338",
+    });
+    expect(invalid.status).toBe(400);
+    expect(json(invalid.body)).toMatchObject({ error: { tag: "invalid_request" } });
+  });
+
   it("refreshes an expired access token before using it", async () => {
     const test = await makeTestApp();
     const { account } = await test.seedAccount({});
@@ -870,6 +931,32 @@ describe("multi-owner EventSub reconciliation", () => {
 });
 
 describe("EventSub subscription reconciliation", () => {
+  it("uses the configured public origin for EventSub callbacks", async () => {
+    const publicOrigin = "https://ballast-cloud-dev-brendonovich.brendonovich.workers.dev";
+    const test = await makeTestApp({ publicOrigin });
+    const { account } = await test.seedAccount({});
+    const machine = await test.seedMachine(account.userId);
+    const spec = {
+      type: "channel.channel_points_custom_reward_redemption.add",
+      version: 1,
+      condition: { broadcaster_user_id: account.twitchUserId },
+      onStale: "drop",
+      maxAgeMs: 60_000,
+    };
+
+    const result = await test.request({
+      method: "POST",
+      path: "/api/twitch/subscriptions/reconcile",
+      headers: { authorization: `Bearer ${machine.token}` },
+      body: { connectionId: account.id, subscriptions: [spec] },
+    });
+    expect(result.status).toBe(200);
+    expect(test.twitch.createdSubscriptions).toHaveLength(1);
+    expect(test.twitch.createdSubscriptions[0]?.callback).toBe(
+      `${publicOrigin}/webhooks/twitch/eventsub/${account.id}`,
+    );
+  });
+
   it("creates, keeps and deletes provider subscriptions and enforces cost limits", async () => {
     const test = await makeTestApp();
     const { account } = await test.seedAccount({});

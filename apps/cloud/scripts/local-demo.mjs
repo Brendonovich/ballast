@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 
-const cloud = process.env.BALLAST_CLOUD_URL ?? "http://127.0.0.1:1338";
+const cloud = process.env.BALLAST_CLOUD_URL ?? "http://localhost:1338";
 const twitch = "http://127.0.0.1:4010";
 const encoder = new TextEncoder();
 
