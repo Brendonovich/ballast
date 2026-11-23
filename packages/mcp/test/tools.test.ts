@@ -96,6 +96,16 @@ const adapter = (state: AdapterState): ProjectAdapter => ({
   resolveProject: () => Effect.succeed(summary),
   getProject: () => Effect.succeed(state.project),
   createProject: () => Effect.succeed(state.project),
+  listProjectFiles: () =>
+    Effect.succeed({
+      entry: "ballast.ts",
+      files: [
+        { path: "ballast.ts", kind: "file" as const },
+        { path: "package.json", kind: "file" as const },
+        { path: "tsconfig.json", kind: "file" as const },
+        { path: "AGENTS.md", kind: "file" as const },
+      ],
+    }),
   checkProject: () => Effect.succeed(state.check),
   restartProject: () => {
     state.restarts += 1;
@@ -306,6 +316,76 @@ describe("requirement views", () => {
       "obs/main → unbound: 2 compatible connections available",
     );
   });
+
+  it("derives required scopes from the manifest even when unbound", () => {
+    const manifest = {
+      ...emptyProjectManifest("proj_test", "ballast.ts"),
+      topics: [
+        {
+          name: "chat",
+          integration: "twitch",
+          slot: "broadcaster",
+          topic: "twitch/channel.chat.message",
+          scopes: ["user:read:chat"],
+          onStale: "drop" as const,
+          maxAgeMs: 60_000,
+        },
+      ],
+      requests: [
+        {
+          integration: "twitch",
+          slot: "broadcaster",
+          request: "helix/sendChatMessage",
+          scopes: ["user:write:chat"],
+        },
+      ],
+    };
+    const [view] = requirementViews(
+      [{ integration: "twitch", slot: "broadcaster", location: "either" }],
+      [],
+      manifest,
+    );
+    expect(view === undefined ? "" : requirementLine(view)).toBe(
+      "twitch/broadcaster → none: user must add a twitch connection in the Ballast app · needs user:read:chat, user:write:chat",
+    );
+  });
+
+  it("does not report scopes already granted by a bound instance", () => {
+    const bound = {
+      ...connection("conn_twitch", "twitch", "My Twitch"),
+      scopes: { granted: ["user:read:chat", "user:write:chat"], required: [], missing: [] },
+    };
+    const manifest = {
+      ...emptyProjectManifest("proj_test", "ballast.ts"),
+      topics: [
+        {
+          name: "chat",
+          integration: "twitch",
+          slot: "broadcaster",
+          topic: "twitch/channel.chat.message",
+          scopes: ["user:read:chat"],
+          onStale: "drop" as const,
+          maxAgeMs: 60_000,
+        },
+      ],
+    };
+    const [view] = requirementViews(
+      [
+        {
+          integration: "twitch",
+          slot: "broadcaster",
+          location: "either",
+          boundInstanceId: "conn_twitch",
+        },
+      ],
+      [bound],
+      manifest,
+    );
+    expect(view?.missingScopes).toEqual([]);
+    expect(view === undefined ? "" : requirementLine(view)).toBe(
+      'twitch/broadcaster → bound to "My Twitch" (connected)',
+    );
+  });
 });
 
 describe("status vocabulary", () => {
@@ -313,6 +393,17 @@ describe("status vocabulary", () => {
     expect(
       statusState({ ...summary, status: "needs-consent" }, detail({ pendingConsent: consent })),
     ).toEqual({ state: "waiting_for_user", reason: "consent" });
+  });
+
+  it("uses waiting_for_user with reason connections for an unbound requirement", () => {
+    expect(
+      statusState(
+        { ...summary, status: "stopped" },
+        detail({
+          requirements: [{ integration: "obs", slot: "main", location: "local" }],
+        }),
+      ),
+    ).toEqual({ state: "waiting_for_user", reason: "connections" });
   });
 
   it("uses running for a healthy project", () => {

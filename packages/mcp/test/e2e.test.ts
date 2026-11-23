@@ -160,6 +160,11 @@ describe("real MCP stdio client against a real Ballast service", () => {
         expect(projectId).toBeDefined();
         expect(stringOf(project, "name")).toBe("E2E Project");
         expect(stringOf(project, "entry")).toBe("ballast.ts");
+        expect(textOf(init)).toContain("tsconfig.json");
+        const initFiles = initData?.["files"];
+        expect(Array.isArray(initFiles)).toBe(true);
+        if (!Array.isArray(initFiles)) throw new Error("init files are not an array");
+        expect(initFiles).toContain("tsconfig.json");
 
         const check = yield* call(client, tools, "ballast_check", { project: "E2E Project" });
         const checkData = recordOf(check.structuredContent);
@@ -213,6 +218,7 @@ describe("real MCP stdio client against a real Ballast service", () => {
         expect(textOf(requirementCheck)).toContain(
           "none: user must add a fake connection in the Ballast app",
         );
+        expect(textOf(requirementCheck)).toContain("needs fake:read");
         const requirementApply = yield* call(client, tools, "ballast_apply", {
           project: "E2E Requirements",
         });

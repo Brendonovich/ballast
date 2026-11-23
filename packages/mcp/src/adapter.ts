@@ -4,6 +4,7 @@ import * as Result from "effect/Result";
 import type {
   ConnectionSummary,
   HealthStatus,
+  ListProjectFilesResponse,
   ProjectCheckResult,
   ProjectDetail,
   ProjectManifest,
@@ -59,6 +60,9 @@ export interface ProjectAdapter {
     directory?: string,
   ) => Effect.Effect<ProjectDetail, ToolError>;
   readonly checkProject: (projectId: string) => Effect.Effect<CheckResult, ToolError>;
+  readonly listProjectFiles: (
+    projectId: string,
+  ) => Effect.Effect<ListProjectFilesResponse, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly health: () => Effect.Effect<HealthStatus, ToolError>;
@@ -220,6 +224,7 @@ export const makeProjectAdapter = (gateway: AgentGateway): ProjectAdapter => {
       gateway.createProject(name, directory).pipe(Effect.map(normalizeDetail)),
     checkProject: (projectId) =>
       gateway.checkProject(projectId).pipe(Effect.map(normalizeCheck)),
+    listProjectFiles: gateway.listProjectFiles,
     restartProject: (projectId) =>
       gateway.restartProject(projectId).pipe(Effect.map(normalizeDetail)),
     listConnections: gateway.listConnections,
@@ -240,6 +245,8 @@ export interface RequirementView {
   readonly label?: string | undefined;
   readonly status?: string | undefined;
   readonly compatibleCount: number;
+  readonly requiredScopes: ReadonlyArray<string>;
+  readonly missingScopes: ReadonlyArray<string>;
 }
 
 /**
@@ -249,11 +256,39 @@ export interface RequirementView {
 export const requirementViews = (
   requirements: ReadonlyArray<ProjectRequirement>,
   connections: ReadonlyArray<ConnectionSummary>,
+  manifest?: ProjectManifest | undefined,
 ): ReadonlyArray<RequirementView> =>
   requirements.map((requirement) => {
     const compatible = connections.filter(
       (connection) => connection.integration === requirement.integration,
     );
+    const requiredScopes = [
+      ...new Set([
+        ...(manifest?.topics ?? [])
+          .filter(
+            (topic) =>
+              topic.integration === requirement.integration &&
+              topic.slot === requirement.slot,
+          )
+          .flatMap((topic) => topic.scopes),
+        ...(manifest?.requests ?? [])
+          .filter(
+            (request) =>
+              request.integration === requirement.integration &&
+              request.slot === requirement.slot,
+          )
+          .flatMap((request) => request.scopes),
+      ]),
+    ];
+    const scopesFor = (
+      instance: ConnectionSummary | undefined,
+    ): { requiredScopes: ReadonlyArray<string>; missingScopes: ReadonlyArray<string> } => {
+      const granted = new Set(instance?.scopes.granted ?? []);
+      return {
+        requiredScopes,
+        missingScopes: requiredScopes.filter((scope) => !granted.has(scope)),
+      };
+    };
     if (requirement.boundInstanceId !== undefined) {
       const instance = connections.find(
         (connection) => connection.id === requirement.boundInstanceId,
@@ -268,6 +303,7 @@ export const requirementViews = (
           ? {}
           : { label: instance.label, status: instance.status }),
         compatibleCount: compatible.length,
+        ...scopesFor(instance),
       };
     }
     if (requirement.proposedInstanceId !== undefined) {
@@ -284,6 +320,7 @@ export const requirementViews = (
           ? {}
           : { label: instance.label, status: instance.status }),
         compatibleCount: compatible.length,
+        ...scopesFor(instance),
       };
     }
     return {
@@ -292,27 +329,49 @@ export const requirementViews = (
       location: requirement.location,
       state: "unbound",
       compatibleCount: compatible.length,
+      ...scopesFor(undefined),
     };
   });
 
 export const requirementLine = (view: RequirementView): string => {
   const slot = view.integration + "/" + view.slot;
+  const needs =
+    view.missingScopes.length === 0 ? "" : " · needs " + view.missingScopes.join(", ");
   switch (view.state) {
     case "bound":
-      return slot + ' → bound to "' + (view.label ?? view.instanceId) + '" (' + view.status + ")";
+      return (
+        slot +
+        ' → bound to "' +
+        (view.label ?? view.instanceId) +
+        '" (' +
+        view.status +
+        ")" +
+        needs
+      );
     case "missing":
-      return slot + ' → bound to "' + view.instanceId + '" (missing)';
+      return slot + ' → bound to "' + view.instanceId + '" (missing)' + needs;
     case "proposed":
-      return slot + ' → proposed: "' + (view.label ?? view.instanceId) + '" (confirm at Start)';
+      return (
+        slot +
+        ' → proposed: "' +
+        (view.label ?? view.instanceId) +
+        '" (confirm at Start)' +
+        needs
+      );
     case "unbound":
       return view.compatibleCount === 0
-        ? slot + " → none: user must add a " + view.integration + " connection in the Ballast app"
+        ? slot +
+            " → none: user must add a " +
+            view.integration +
+            " connection in the Ballast app" +
+            needs
         : slot +
             " → unbound: " +
             view.compatibleCount +
             " compatible connection" +
             (view.compatibleCount === 1 ? "" : "s") +
-            " available";
+            " available" +
+            needs;
   }
 };
 
@@ -442,14 +501,21 @@ export const checkText = (check: CheckResult): string => {
         ")",
     );
   }
-  if (check.requirements.length > 0) {
+  const views = requirementViews(
+    check.requirements,
+    check.availableConnections,
+    check.manifest ?? check.appliedManifest,
+  );
+  if (views.length > 0) {
     lines.push("requirements:");
-    for (const view of requirementViews(check.requirements, check.availableConnections)) {
+    for (const view of views) {
       lines.push("  " + requirementLine(view));
     }
   }
-  if (check.missingScopes.length > 0) {
-    lines.push("missing scopes: " + check.missingScopes.join(", "));
+  const attributedScopes = new Set(views.flatMap((view) => view.missingScopes));
+  const extraScopes = check.missingScopes.filter((scope) => !attributedScopes.has(scope));
+  if (extraScopes.length > 0) {
+    lines.push("missing scopes: " + extraScopes.join(", "));
   }
   if (!check.ok) {
     lines.push("next: fix the diagnostics, then run ballast_check again.");

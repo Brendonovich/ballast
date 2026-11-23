@@ -13,6 +13,7 @@ import type {
   ConnectionSummary,
   EventRecord,
   HealthStatus,
+  ListProjectFilesResponse,
   LogEntry,
   ProjectCheckResult,
   ProjectDetail,
@@ -88,6 +89,9 @@ export interface AgentGateway {
   ) => Effect.Effect<ProjectDetail, ToolError>;
   /** Non-applying typecheck + bundle + plan + diff. */
   readonly checkProject: (projectId: string) => Effect.Effect<ProjectCheckResult, ToolError>;
+  readonly listProjectFiles: (
+    projectId: string,
+  ) => Effect.Effect<ListProjectFilesResponse, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly logs: (
@@ -140,6 +144,10 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
     ).pipe(Effect.mapError((error) => toolError(formatUnknown(error)))),
   checkProject: (projectId) =>
     withAgentClient(options, (client) => client.CheckProject({ projectId })).pipe(
+      Effect.mapError((error) => toolError(formatUnknown(error))),
+    ),
+  listProjectFiles: (projectId) =>
+    withAgentClient(options, (client) => client.ListProjectFiles({ projectId })).pipe(
       Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
   restartProject: (projectId) =>

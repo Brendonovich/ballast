@@ -197,7 +197,13 @@ const unitFilter = (
 export const statusState = (
   project: ProjectSummary,
   detail: ProjectDetail,
-): { readonly state: ProjectState; readonly reason?: "consent" | undefined } => {
+): {
+  readonly state: ProjectState;
+  readonly reason?: "consent" | "connections" | undefined;
+} => {
+  if ((detail.requirements ?? []).some((requirement) => requirement.boundInstanceId === undefined)) {
+    return { state: "waiting_for_user", reason: "connections" };
+  }
   if (detail.pendingConsent !== undefined || project.status === "needs-consent") {
     return { state: "waiting_for_user", reason: "consent" };
   }
@@ -223,13 +229,18 @@ const formatStatus = (
   connections: ReadonlyArray<ConnectionSummary>,
 ): ToolOutput => {
   const project = detail.summary;
-  const requirements = requirementViews(detail.requirements ?? [], connections);
-  const missingScopes = [
+  const requirements = requirementViews(
+    detail.requirements ?? [],
+    connections,
+    detail.manifest,
+  );
+  const attributedScopes = new Set(requirements.flatMap((view) => view.missingScopes));
+  const extraScopes = [
     ...new Set([
       ...(detail.pendingConsent?.diff.added.scopes ?? []),
       ...connections.flatMap((connection) => connection.scopes.missing),
     ]),
-  ];
+  ].filter((scope) => !attributedScopes.has(scope));
   const state = statusState(project, detail);
   const lines: Array<string> = [
     "project " +
@@ -279,8 +290,8 @@ const formatStatus = (
       lines.push("  " + requirementLine(requirement));
     }
   }
-  if (missingScopes.length > 0) {
-    lines.push("missing scopes: " + missingScopes.join(", "));
+  if (extraScopes.length > 0) {
+    lines.push("missing scopes: " + extraScopes.join(", "));
   }
   if (detail.units.length > 0) {
     lines.push("units:");
@@ -305,7 +316,9 @@ const formatStatus = (
     missingConnections: (detail.requirements ?? []).filter(
       (requirement) => requirement.boundInstanceId === undefined,
     ),
-    missingScopes,
+    missingScopes: [
+      ...new Set([...attributedScopes, ...extraScopes]),
+    ],
     ...(detail.pendingConsent === undefined ? {} : { pendingConsent: detail.pendingConsent }),
     ...(detail.lastErrorSource === undefined ? {} : { lastErrorSource: detail.lastErrorSource }),
   });
@@ -364,13 +377,17 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
       Effect.gen(function* () {
         const detail = yield* context.adapter.createProject(input.name, input.dir);
         const project = detail.summary;
+        const listing = yield* context.adapter.listProjectFiles(project.id);
+        const files = listing.files
+          .filter((file) => file.kind === "file")
+          .map((file) => file.path);
         const text = [
           "created project " + project.id + " (" + project.name + ")",
           "root " + project.root,
-          "files: ballast.ts, package.json, AGENTS.md",
+          "files: " + (files.length === 0 ? "none" : files.join(", ")),
           "next: edit ballast.ts, then call ballast_check with project '" + project.id + "'.",
         ].join("\n");
-        return result(text, { project, root: project.root });
+        return result(text, { project, root: project.root, files });
       }),
   }),
   defineTool({
@@ -384,7 +401,14 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
         const check = yield* context.adapter.checkProject(project.id);
-        return result(checkText(check), check);
+        return result(checkText(check), {
+          ...check,
+          requirementDetails: requirementViews(
+            check.requirements,
+            check.availableConnections,
+            check.manifest ?? check.appliedManifest,
+          ),
+        });
       }),
   }),
   defineTool({
