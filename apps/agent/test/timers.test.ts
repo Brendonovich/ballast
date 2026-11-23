@@ -179,20 +179,30 @@ const call = <A, E>(
     }),
   );
 
-const waitForLog = (
+/**
+ * Wait on the persisted timer state, not a log line. A run loop can schedule
+ * and log before this test's new StreamLogs subscription attaches, which made
+ * the log wait flaky when the full suite was busy.
+ */
+const waitForTimer = (
   root: string,
   projectId: string,
-  predicate: (message: string) => boolean,
-): Effect.Effect<string, Error> =>
-  call(root, (client) =>
-    client.StreamLogs({ projectId }).pipe(
-      Stream.filter((entry) => predicate(entry.message)),
-      Stream.take(1),
-      Stream.runCollect,
+  state: "pending" | "fired" | "dropped",
+  payloadN?: number,
+): Effect.Effect<unknown, Error> =>
+  waitFor("timer " + state + (payloadN === undefined ? "" : " n=" + payloadN), () =>
+    call(root, (client) =>
+      client.ListTimers({ projectId, includeFinished: true }),
+    ).pipe(
+      Effect.map((result) =>
+        result.timers.find(
+          (timer) =>
+            timer.state === state &&
+            (payloadN === undefined || timerPayloadNumber(timer.payload) === payloadN),
+        ),
+      ),
     ),
   ).pipe(
-    Effect.timeout(Duration.seconds(60)),
-    Effect.map((entries) => entries[0]?.message ?? ""),
     Effect.mapError((error) =>
       error instanceof Error ? error : new Error(String(error)),
     ),
@@ -218,9 +228,7 @@ describe("durable timers through the service", () => {
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
-      yield* waitForLog(root, started.projectId, (message) =>
-        message.includes("TIMER_SCHEDULED"),
-      );
+      yield* waitForTimer(root, started.projectId, "pending");
       yield* call(root, (client) =>
         client.SetProjectParam({ ...started, key: "schedule", value: false }),
       );
@@ -236,9 +244,7 @@ describe("durable timers through the service", () => {
       yield* Effect.sleep("1 second");
       const restarted = yield* startService(root);
       yield* Effect.addFinalizer(() => restarted.stop());
-      yield* waitForLog(root, started.projectId, (message) =>
-        message.includes("TIMER_FIRED one"),
-      );
+      yield* waitForTimer(root, started.projectId, "fired");
       yield* Effect.sleep("1 second");
       const finished = yield* call(root, (client) =>
         client.ListTimers({ projectId: started.projectId, includeFinished: true }),
@@ -282,9 +288,7 @@ describe("durable timers through the service", () => {
       const restarted = yield* startService(root);
       yield* Effect.addFinalizer(() => restarted.stop());
       yield* call(root, (client) => client.StartProject(started));
-      yield* waitForLog(root, started.projectId, (message) =>
-        message.includes("TIMER_FIRED one"),
-      );
+      yield* waitForTimer(root, started.projectId, "fired");
     }),
     120_000,
   );
@@ -299,9 +303,7 @@ describe("durable timers through the service", () => {
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
-      yield* waitForLog(root, started.projectId, (message) =>
-        message.includes("TIMER_SCHEDULED"),
-      );
+      yield* waitForTimer(root, started.projectId, "pending");
       yield* call(root, (client) =>
         client.SetProjectParam({ ...started, key: "schedule", value: false }),
       );
@@ -331,9 +333,7 @@ describe("durable timers through the service", () => {
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
-      yield* waitForLog(root, started.projectId, (message) =>
-        message.includes("TIMER_SCHEDULED"),
-      );
+      yield* waitForTimer(root, started.projectId, "pending");
 
       yield* call(root, (client) =>
         client.SetProjectParam({ ...started, key: "schedule", value: false }),
@@ -420,9 +420,7 @@ describe("durable timers through the service", () => {
           ),
         ),
       );
-      yield* waitForLog(root, started.projectId, (message) =>
-        message.includes("TIMER_FIRED one 2"),
-      );
+      yield* waitForTimer(root, started.projectId, "fired", 2);
       yield* Effect.sleep("1 second");
       const duplicate = yield* call(root, (client) =>
         client.StreamLogs({ projectId: started.projectId }).pipe(

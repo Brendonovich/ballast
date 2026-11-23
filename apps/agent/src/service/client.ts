@@ -12,8 +12,7 @@ import type { AgentClient } from "@ballast/agent-protocol";
 import {
   readEnvironment,
   readServiceRegistration,
-  resolveDataDir,
-  resolveStateDir,
+  resolveServiceDirectories,
 } from "./config.ts";
 import type { Environment, ServiceRegistration } from "./config.ts";
 
@@ -72,7 +71,7 @@ export const discoverService = (
       return { url: envUrl.replace(/\/$/, ""), token: envToken, registration: undefined };
     }
 
-    const candidates = [resolveStateDir(path, values), resolveDataDir(path, values)];
+    const candidates = resolveServiceDirectories(path, values);
     for (const stateDir of candidates) {
       const registration = yield* readServiceRegistration(stateDir);
       if (registration === undefined) continue;

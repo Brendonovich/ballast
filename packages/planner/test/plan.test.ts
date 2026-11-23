@@ -202,6 +202,44 @@ describe("plan", () => {
     }),
   );
 
+  it.effect("records the runtime default for params that always have a value", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-param-defaults-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      yield* Effect.promise(() =>
+        writeFile(
+          join(root, "ballast.ts"),
+          [
+            'import * as Ballast from "@ballast/core";',
+            'import { Effect } from "effect";',
+            "",
+            "export default Effect.gen(function* () {",
+            '  yield* Ballast.Param.strings("scenes");',
+            '  yield* Ballast.Param.boolean("enabled");',
+            '  yield* Ballast.Param.enum("mode", ["a", "b"]);',
+            '  yield* Ballast.Param.string("name");',
+            '  yield* Ballast.Param.number("count");',
+            "});",
+            "",
+          ].join("\n"),
+          "utf8",
+        ),
+      );
+
+      const planned = yield* planProject(root);
+      const params = new Map(planned.manifest.params.map((param) => [param.key, param]));
+      expect(params.get("scenes")?.default).toEqual([]);
+      expect(params.get("enabled")?.default).toBe(false);
+      expect(params.get("mode")?.default).toBe("a");
+      // Text and number inputs can be left blank, so no default still means
+      // required and no implicit manifest value.
+      expect(params.get("name")?.default).toBeUndefined();
+      expect(params.get("count")?.default).toBeUndefined();
+    }),
+  );
+
   it.effect("records requests without calling them", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);

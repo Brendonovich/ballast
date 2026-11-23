@@ -1,12 +1,12 @@
 // Build the staged service directory consumed by apps/desktop:
 //   main.mjs, plan-worker.mjs, web/, version.json, node_modules/ (runtime deps)
 // Run with `pnpm --filter @ballast/agent build:service`.
-import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { access, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rolldown } from "rolldown";
+import { serviceContentHash } from "./service-version.mjs";
 
 const agentRoot = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = resolve(agentRoot, "../..");
@@ -199,24 +199,10 @@ if (await exists(join(webDist, "index.html"))) {
 }
 
 // The desktop never overwrites a staged version, and replaces a running
-// service only when versions differ. Suffix a content hash so every changed
-// build is a new version that the app hands off to.
-const contentHash = async () => {
-  const hash = createHash("sha256");
-  const add = async (path) => {
-    const entries = await readdir(path, { withFileTypes: true }).catch(() => undefined);
-    if (entries === undefined) {
-      hash.update(path.slice(outDir.length));
-      hash.update(await readFile(path));
-      return;
-    }
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      await add(join(path, entry.name));
-    }
-  };
-  for (const name of ["main.mjs", "plan-worker.mjs", "web"]) await add(join(outDir, name));
-  return hash.digest("hex").slice(0, 10);
-};
+// service only when versions differ. Hash the whole staged tree (including
+// copied @ballast type sources and node_modules) so a type-only change also
+// produces a new version instead of reusing a stale stage.
+const contentHash = () => serviceContentHash(outDir);
 
 const configSource = await readFile(join(agentRoot, "src", "service", "config.ts"), "utf8");
 const detectedVersion = /AGENT_VERSION = "([^"]+)"/.exec(configSource)?.[1];

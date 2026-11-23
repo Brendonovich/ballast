@@ -135,9 +135,12 @@ const paramsSource = [
   '    description: "What to say on air",',
   '    default: "Hello",',
   "  });",
+  '  const labels = yield* Ballast.Param.strings("labels");',
+  '  const enabled = yield* Ballast.Param.boolean("enabled");',
+  '  const mode = yield* Ballast.Param.enum("mode", ["a", "b"]);',
   '  yield* OBS.CurrentProgramSceneChanged.subscribe("scene", obs, () =>',
   '    Effect.gen(function* () {',
-  '      yield* Effect.log("SCENES " + (yield* scenes).join(",") + " " + (yield* greeting));',
+  '      yield* Effect.log("SCENES " + (yield* scenes).join(",") + " " + (yield* greeting) + " " + (yield* labels).join("|") + " " + String(yield* enabled) + " " + (yield* mode));',
   "    }),",
   "  );",
   "});",
@@ -349,6 +352,20 @@ describe("connection instances", () => {
       expect(scenes?.options).toEqual(["Scene 1", "Scene 2"]);
       const greeting = detail.manifest.params.find((param) => param.key === "greeting");
       expect(greeting?.description).toBe("What to say on air");
+
+      // These kinds always have a runtime value. The view must agree with it
+      // instead of demanding a setting the runtime never needs.
+      const labels = detail.manifest.params.find((param) => param.key === "labels");
+      expect(labels?.default).toEqual([]);
+      expect(labels?.value).toEqual([]);
+      expect(labels?.required).toBe(false);
+      expect(labels?.error).toBeUndefined();
+      const enabled = detail.manifest.params.find((param) => param.key === "enabled");
+      expect(enabled?.default).toBe(false);
+      expect(enabled?.required).toBe(false);
+      const mode = detail.manifest.params.find((param) => param.key === "mode");
+      expect(mode?.default).toBe("a");
+      expect(mode?.required).toBe(false);
 
       const rejected = yield* call(root, (client) =>
         client.SetProjectParam({

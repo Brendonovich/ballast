@@ -11,7 +11,9 @@ import {
   readEnvironment,
   readServiceRegistration,
   resolveDataDir,
+  resolveServiceDirectories,
   resolveStateDir,
+  serviceJsonPath,
 } from "./config.ts";
 import type { Environment, ServiceRegistration } from "./config.ts";
 import { ensureDir } from "./fs.ts";
@@ -61,19 +63,33 @@ const probeHealth = (registration: ServiceRegistration): Effect.Effect<boolean> 
     }
   });
 
-/** The registered service, if it answers /health as the pid service.json names. */
-export const findRunningService = (
+export interface RunningService {
+  readonly registration: ServiceRegistration;
+  /** The exact service.json that named this process. */
+  readonly file: string;
+}
+
+/** Every registered service that answers /health as the pid its file names. */
+export const findRunningServices = (
   env?: Environment,
-): Effect.Effect<ServiceRegistration | undefined, never, FileSystem.FileSystem | Path.Path> =>
+): Effect.Effect<ReadonlyArray<RunningService>, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const values = env ?? (yield* readEnvironment(environmentKeys));
-    for (const stateDir of [resolveStateDir(path, values), resolveDataDir(path, values)]) {
+    const found: Array<RunningService> = [];
+    for (const stateDir of resolveServiceDirectories(path, values)) {
       const registration = yield* readServiceRegistration(stateDir);
-      if (registration !== undefined && (yield* probeHealth(registration))) return registration;
+      if (registration === undefined || !(yield* probeHealth(registration))) continue;
+      found.push({ registration, file: serviceJsonPath(path, stateDir) });
     }
-    return undefined;
+    return found;
   });
+
+/** The first running registration, if any. */
+export const findRunningService = (
+  env?: Environment,
+): Effect.Effect<RunningService | undefined, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.map(findRunningServices(env), (services) => services[0]);
 
 const waitFor = <A>(
   label: string,
@@ -118,7 +134,12 @@ const spawnService = (
     const path = yield* Path.Path;
     const entry = process.argv[1];
     if (entry === undefined) return yield* Effect.fail(new BackgroundServiceError("Cannot find the ballast entry point"));
-    const logDir = values["BALLAST_LOG_DIR"] ?? path.join(resolveStateDir(path, values), "logs");
+    // Pin the resolved directories the CLI selected. Inheriting process.env
+    // alone would let a command aimed at a probe service spawn the default
+    // one when --state-dir/--data-dir were passed as flags.
+    const stateDir = resolveStateDir(path, values);
+    const dataDir = resolveDataDir(path, values);
+    const logDir = values["BALLAST_LOG_DIR"] ?? path.join(stateDir, "logs");
     yield* ensureDir(logDir, 0o700).pipe(
       Effect.mapError((cause) => new BackgroundServiceError("Cannot create " + logDir + ": " + String(cause))),
     );
@@ -128,7 +149,12 @@ const spawnService = (
         const stderr = openSync(path.join(logDir, "service.err.log"), "a", 0o600);
         try {
           const child = spawn(process.execPath, [...process.execArgv, entry, "serve"], {
-            env: { ...process.env, BALLAST_LOG_DIR: logDir },
+            env: {
+              ...process.env,
+              BALLAST_STATE_DIR: stateDir,
+              BALLAST_DATA_DIR: dataDir,
+              BALLAST_LOG_DIR: logDir,
+            },
             detached: true,
             stdio: ["ignore", stdout, stderr],
             windowsHide: true,
@@ -145,37 +171,46 @@ const spawnService = (
   });
 
 /** Adopt the running service or start one in the background. */
-export const ensureService = (): Effect.Effect<
-  { readonly registration: ServiceRegistration; readonly started: boolean },
+export const ensureService = (
+  env?: Environment,
+): Effect.Effect<
+  RunningService & { readonly started: boolean },
   BackgroundServiceError,
   FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
-    const values = yield* readEnvironment(environmentKeys);
+    const values = env ?? (yield* readEnvironment(environmentKeys));
     const running = yield* findRunningService(values);
-    if (running !== undefined) return { registration: running, started: false };
+    if (running !== undefined) return { ...running, started: false };
     const pid = yield* spawnService(values);
-    const registration = yield* waitFor(
+    const found = yield* waitFor(
       "The Ballast service did not start within 30s (see service.err.log in the log dir)",
       START_TIMEOUT,
       findRunningService(values),
     ).pipe(
       Effect.tapError(() => (pid === undefined ? Effect.void : signal(pid, "SIGKILL"))),
     );
-    return { registration, started: true };
+    return { ...found, started: true };
   });
 
 /** Stop the running service: ShutdownService, then SIGTERM, then SIGKILL. */
-export const stopService = (): Effect.Effect<
+export const stopService = (
+  env?: Environment,
+): Effect.Effect<
   ServiceRegistration | undefined,
   BackgroundServiceError,
   FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
-    const registration = yield* findRunningService();
-    if (registration === undefined) return undefined;
+    const values = env ?? (yield* readEnvironment(environmentKeys));
+    const running = yield* findRunningService(values);
+    if (running === undefined) return undefined;
+    const registration = running.registration;
     const pid = registration.pid;
-    const asked = yield* withAgentClient((client) => client.ShutdownService({ force: false })).pipe(
+    const asked = yield* withAgentClient(
+      (client) => client.ShutdownService({ force: false }),
+      values,
+    ).pipe(
       Effect.timeout(Duration.seconds(3)),
       Effect.as(true),
       Effect.catchCause(() => Effect.succeed(false)),

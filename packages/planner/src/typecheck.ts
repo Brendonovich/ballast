@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 
@@ -104,7 +104,102 @@ const walk = async (directory: string, files: Array<string>): Promise<void> => {
   }
 };
 
-const hashProject = async (projectRoot: string): Promise<string> => {
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * tsconfig is JSONC in practice. Strip comments and trailing commas before
+ * reading the few fields that affect type resolution; a malformed config still
+ * keys the cache by its bytes, it just yields no resolved targets.
+ */
+const parseTsconfig = (text: string): Readonly<Record<string, unknown>> | undefined => {
+  let stripped = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] ?? "";
+    const next = text[index + 1];
+    if (inString) {
+      stripped += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      stripped += character;
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      stripped += "\n";
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      index += 2;
+      while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1;
+      index += 1;
+      stripped += " ";
+      continue;
+    }
+    if (character === ",") {
+      let lookahead = index + 1;
+      while (lookahead < text.length && /\s/.test(text[lookahead] ?? "")) lookahead += 1;
+      const following = text[lookahead];
+      if (following === "}" || following === "]") continue;
+    }
+    stripped += character;
+  }
+  try {
+    const parsed: unknown = JSON.parse(stripped);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const probeResolution = async (candidate: string): Promise<string> => {
+  const wildcard = candidate.indexOf("*");
+  const prefix = wildcard === -1 ? candidate : candidate.slice(0, wildcard);
+  const missing: Array<string> = [];
+  let current = prefix;
+  for (;;) {
+    try {
+      const resolved = await realpath(current);
+      return [...missing].reverse().reduce((value, part) => join(value, part), resolved);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return candidate + ":missing";
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+};
+
+const resolutionKey = async (
+  projectRoot: string,
+  config: Readonly<Record<string, unknown>>,
+): Promise<string> => {
+  const compiler = isRecord(config["compilerOptions"]) ? config["compilerOptions"] : {};
+  const candidates: Array<string> = [];
+  const add = (value: unknown): void => {
+    if (typeof value === "string") candidates.push(value);
+    else if (Array.isArray(value)) for (const item of value) add(item);
+    else if (isRecord(value)) for (const item of Object.values(value)) add(item);
+  };
+  add(compiler["typeRoots"]);
+  add(compiler["paths"]);
+  const resolved = await Promise.all(
+    candidates.map((candidate) =>
+      probeResolution(isAbsolute(candidate) ? candidate : resolve(projectRoot, candidate)),
+    ),
+  );
+  resolved.sort();
+  return resolved.join("\u0000");
+};
+
+const hashProject = async (projectRoot: string, configPath: string): Promise<string> => {
   const files: Array<string> = [];
   await walk(projectRoot, files);
   files.sort();
@@ -120,7 +215,19 @@ const hashProject = async (projectRoot: string): Promise<string> => {
     if (existsSync(file)) {
       hash.update(special + "\u0000");
       hash.update(await readFile(file));
+      hash.update("\u0000");
     }
+  }
+  // The generated config lives under .ballast/ and is skipped by walk; the
+  // project tsconfig is included both there and here so its exact bytes key
+  // the cache even when it is the resolved config.
+  const configText = await readFile(configPath, "utf8");
+  hash.update("config\u0000" + configPath + "\u0000");
+  hash.update(configText);
+  hash.update("\u0000");
+  const parsedConfig = parseTsconfig(configText);
+  if (parsedConfig !== undefined) {
+    hash.update("resolution\u0000" + (await resolutionKey(projectRoot, parsedConfig)) + "\u0000");
   }
   hash.update(process.env["BALLAST_TSGO_VERSION"] ?? "local");
   return hash.digest("hex");
@@ -255,20 +362,36 @@ const ensureConfig = async (projectRoot: string): Promise<string> => {
 };
 
 /**
+ * A missing type root or config file is an environment failure: it can be
+ * fixed without touching a project source byte (for example when the service
+ * creates `types/current` after the first check), so never cache it.
+ */
+const cacheable = (result: TypecheckResult): boolean => {
+  if (result.ok) return true;
+  // Global diagnostics (TS2688 for a missing @types/node, for example) have
+  // no file(line,column) prefix and are therefore absent from `diagnostics`.
+  const text =
+    result.raw + "\n" + result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+  return !/TS(?:2688|6053|5083):/.test(text);
+};
+
+/**
  * Run `tsgo` for a project. Uses the project tsconfig when present, otherwise
  * a generated config covering the project and the workspace Ballast packages.
- * Results are cached by a hash of project sources/package.json.
+ * Results are cached by a hash of project sources, the resolved config and the
+ * real paths its type roots resolve to (so a repointed `types/current` is a
+ * new key).
  */
 export const typecheckProject = (
   projectRoot: string,
 ): Effect.Effect<TypecheckResult, TypecheckError> =>
   Effect.gen(function* () {
     const root = resolve(projectRoot);
-    const key = yield* Effect.promise(() => hashProject(root));
+    const config = yield* Effect.promise(() => ensureConfig(root));
+    const key = yield* Effect.promise(() => hashProject(root, config));
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
-    const config = yield* Effect.promise(() => ensureConfig(root));
     const result = yield* Effect.tryPromise({
       try: () => runTsgo(root, config),
       catch: (cause) =>
@@ -280,6 +403,6 @@ export const typecheckProject = (
       diagnostics,
       raw: result.output,
     };
-    cache.set(key, checked);
+    if (cacheable(checked)) cache.set(key, checked);
     return checked;
   });

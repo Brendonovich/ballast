@@ -273,7 +273,10 @@ tree to `<userData>/service/<version>`; the service writes `service.json`. The r
 keeps its version on disk; the app cleans old stages on launch, keeping the running one (the
 opencode `cleanStages` pattern). The service runs from the **stage path**, not from the app's
 resources, so an app update never mutates a running service. Development builds get a
-content-hashed version, so a rebuilt service is a new stage and `dev` replaces the running one.
+content-hashed version, not a git commit. The hash covers the whole staged tree,
+including copied `@ballast/*` type sources and `node_modules`; hashing only the
+bundles would let a type-only change reuse a stale stage. A rebuilt service is
+therefore a new stage and `dev` replaces the running one.
 
 App update:
 
@@ -316,6 +319,13 @@ writes an atomically replaced registration file with mode `0600` in a `0700` dir
   "startedAt": 1764000000000
 }
 ```
+
+Discovery checks the state directory, then the older data-directory location. An explicit
+`BALLAST_STATE_DIR` (environment or `--state-dir`) is authoritative and disables the legacy
+fallback, so a command aimed at a probe service cannot act on a different running service.
+`ballast service start|stop|restart|status` parse the same flags as `serve`, print the exact
+`service.json` (path, pid, url) they selected before acting, and refuse when more than one
+running service matches without a narrower `--state-dir`/`--data-dir`.
 
 Locations, in discovery order for CLI/other clients:
 
@@ -380,7 +390,7 @@ ballast projects list|get|add <path>|remove <id>
 ballast scripts list|get|start|stop|restart|logs|events [--project <id>]
 ballast connections list|configure|connect|disconnect|auth
 ballast pair [--code <code>]
-ballast service start|stop|restart|status
+ballast service start|stop|restart|status [--state-dir <dir>] [--data-dir <dir>]
 ballast doctor                      # discovery, apiVersion, health
 ballast plan <entry> [--in-process]  # dev: current behaviour
 ballast run <entry> [--in-process]   # dev: current behaviour

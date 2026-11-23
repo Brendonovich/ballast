@@ -36,13 +36,17 @@ const toManifest = <A extends ParamDefault>(
   key: string,
   options: ParamOptions<A>,
   source: ReturnType<typeof captureSource>,
+  manifestDefault: ParamDefault | undefined,
 ): ParamManifest => ({
   key,
   type,
   ...(source === undefined ? {} : { source }),
   ...(options.title === undefined ? {} : { title: options.title }),
   ...(options.description === undefined ? {} : { description: options.description }),
-  ...(options.default === undefined ? {} : { default: options.default }),
+  // Record the value the runtime actually uses. Boolean, enum and strings
+  // always have a concrete value, so omitting their implicit default would
+  // make the UI report them as required while the runtime supplies one.
+  ...(manifestDefault === undefined ? {} : { default: manifestDefault }),
   ...(options.options === undefined ? {} : { options: options.options }),
 });
 
@@ -71,6 +75,7 @@ const declare = <A extends ParamDefault>(
   decode: (value: unknown) => A,
   fallback: A,
   source: ReturnType<typeof captureSource>,
+  manifestDefault: ParamDefault | undefined,
 ): Effect.Effect<Param<A>> =>
   Effect.gen(function* () {
     const phase = yield* currentPhase;
@@ -80,7 +85,7 @@ const declare = <A extends ParamDefault>(
       yield* Option.match(recorder, {
         onNone: () =>
           Effect.die(new Error(`Param "${key}" was declared in plan phase without a ManifestRecorder`)),
-        onSome: (service) => service.param(toManifest(type, key, options, source)),
+        onSome: (service) => service.param(toManifest(type, key, options, source, manifestDefault)),
       });
 
       return makeParam(
@@ -107,6 +112,7 @@ export const string = (
     (value) => (typeof value === "string" ? value : (options.default ?? "")),
     options.default ?? "",
     captureSource(2),
+    options.default,
   );
 
 export const number = (
@@ -120,6 +126,7 @@ export const number = (
     (value) => (typeof value === "number" && Number.isFinite(value) ? value : (options.default ?? 0)),
     options.default ?? 0,
     captureSource(2),
+    options.default,
   );
 
 export const boolean = (
@@ -133,6 +140,7 @@ export const boolean = (
     (value) => (typeof value === "boolean" ? value : (options.default ?? false)),
     options.default ?? false,
     captureSource(2),
+    options.default ?? false,
   );
 
 /**
@@ -154,6 +162,7 @@ export const strings = (
         : (options.default ?? []),
     options.default ?? [],
     captureSource(2),
+    options.default ?? [],
   );
 
 const enumParam = <const Values extends readonly [string, ...ReadonlyArray<string>]>(
@@ -172,6 +181,7 @@ const enumParam = <const Values extends readonly [string, ...ReadonlyArray<strin
         : fallback,
     fallback,
     captureSource(2),
+    fallback,
   );
 };
 

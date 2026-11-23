@@ -39,6 +39,7 @@ import { Lifecycle, LifecycleLive } from "./lifecycle.ts";
 import { ProjectManager, ProjectManagerLive } from "./projects.ts";
 import { ProjectRuntime, ProjectRuntimeLive } from "./project-runtime.ts";
 import { AgentRpcsLive } from "./rpc.ts";
+import { ensureProjectTypes } from "./scaffold.ts";
 import {
   EventLog,
   EventLogLive,
@@ -147,7 +148,10 @@ const makeLayers = (
       ? { keyboardLayer: devKeyboardLayer, midiLayer: devMidiLayer }
       : {}),
   }).pipe(Layer.provideMerge(events), Layer.provideMerge(cloud));
-  const projects = ProjectRuntimeLive.pipe(Layer.provideMerge(connections));
+  const projects = ProjectRuntimeLive({
+    dataDir: options.dataDir,
+    version,
+  }).pipe(Layer.provideMerge(connections));
   const handlers = AgentRpcsLive({
     stateDir: options.stateDir,
     dataDir: options.dataDir,
@@ -217,6 +221,14 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       const router = yield* HttpRouter.HttpRouter;
       const eventRouter = yield* EventRouter;
 
+      // Create/repoint <dataDir>/types/current before any project is planned,
+      // including projects that outlived an app update.
+      yield* ensureProjectTypes({ dataDir: options.dataDir, version }).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("Could not prepare project types: " + error.message),
+        ),
+        Effect.ignore,
+      );
       yield* runtime.syncAll;
       yield* runtime.resumeEnabled();
       yield* eventRouter.finishWarmup;

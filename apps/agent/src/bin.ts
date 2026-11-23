@@ -41,10 +41,21 @@ type CliServices = Layer.Success<typeof NodePlatformLayer>;
 import { parseAssignment } from "./connection-config.ts";
 import type { ConnectionOptions } from "./connection-config.ts";
 import { runScript } from "./run.ts";
-import { ensureService, findRunningService, stopService } from "./service/background.ts";
+import {
+  ensureService,
+  findRunningServices,
+  stopService,
+} from "./service/background.ts";
+import type { RunningService } from "./service/background.ts";
 import { withAgentClient } from "./service/client.ts";
-import { parseServeOptions, readEnvironment } from "./service/config.ts";
-import type { ServiceRegistration } from "./service/config.ts";
+import {
+  parseServeOptions,
+  readEnvironment,
+  resolveServiceDirectories,
+  resolveStateDir,
+  serviceJsonPath,
+} from "./service/config.ts";
+import type { Environment, ServiceRegistration } from "./service/config.ts";
 import { runServe } from "./service/server.ts";
 import { authorizeTwitchAccount } from "./twitch/auth.ts";
 import { claimPairing } from "./twitch/cloud.ts";
@@ -68,7 +79,7 @@ const usage = `Usage:
   ballast connections list|get <id>|configure <id> key=value...
       |connect <id>|disconnect <id>|auth <id>
   ballast cloud status|begin|pair <code>|unpair [--machine-name <name>]
-  ballast service start|stop|restart|status
+  ballast service start|stop|restart|status [--state-dir <dir>] [--data-dir <dir>]
   ballast plan <entry.ts> [--diff <previous-manifest.json>]
   ballast run <entry.ts> [--param key=value]...
       [--connection integration/slot=url]...
@@ -826,30 +837,120 @@ const cloudCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, C
     throw new Error(`Unknown cloud command "${sub}"`);
   });
 
+const serviceEnvironmentKeys = [
+  "BALLAST_STATE_DIR",
+  "BALLAST_DATA_DIR",
+  "BALLAST_LOG_DIR",
+  "BALLAST_SERVICE_URL",
+  "BALLAST_SERVICE_TOKEN",
+  "BALLAST_SERVICE_PORT",
+  "XDG_STATE_HOME",
+  "XDG_DATA_HOME",
+  "LOCALAPPDATA",
+  "HOME",
+] as const;
+
 const serviceCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
-    const [sub] = args;
+    const path = yield* Path.Path;
+    const [sub] = positional(args, ["--state-dir", "--data-dir"]);
+    const base = yield* readEnvironment(serviceEnvironmentKeys);
+    const flags = new Map<string, string>();
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index] ?? "";
+      const name = ["--state-dir", "--data-dir"].find(
+        (candidate) => arg === candidate || arg.startsWith(candidate + "="),
+      );
+      if (name === undefined) {
+        if (arg.startsWith("--")) {
+          return yield* Effect.fail(new Error(`Unknown service option "${arg}"`));
+        }
+        continue;
+      }
+      if (arg.startsWith(name + "=")) {
+        const value = arg.slice(name.length + 1);
+        if (value === "") {
+          return yield* Effect.fail(new Error(name + " requires a directory"));
+        }
+        flags.set(name, value);
+        continue;
+      }
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return yield* Effect.fail(new Error(name + " requires a directory"));
+      }
+      flags.set(name, value);
+      index += 1;
+    }
+    const stateArg = flags.get("--state-dir");
+    const dataArg = flags.get("--data-dir");
+    const env: Environment = {
+      ...base,
+      ...(stateArg === undefined ? {} : { BALLAST_STATE_DIR: path.resolve(stateArg) }),
+      ...(dataArg === undefined ? {} : { BALLAST_DATA_DIR: path.resolve(dataArg) }),
+    };
     const describe = (registration: ServiceRegistration): string =>
       `Ballast ${registration.version} pid ${registration.pid} at ${registration.url}`;
+    const describeTarget = (service: RunningService): string =>
+      `service.json ${service.file} (pid ${service.registration.pid}, ${service.registration.url})`;
+    const targets = yield* findRunningServices(env);
+    const requireOne = (): Effect.Effect<RunningService | undefined, Error> => {
+      if (targets.length <= 1) return Effect.succeed(targets[0]);
+      for (const target of targets) console.error("found " + describeTarget(target));
+      return Effect.fail(
+        new Error(
+          "More than one running service matches; pass --state-dir <dir> or --data-dir <dir> to choose one",
+        ),
+      );
+    };
+    const directories = () =>
+      resolveServiceDirectories(path, env)
+        .map((directory) => serviceJsonPath(path, directory))
+        .join(", ");
+
     if (sub === "start") {
-      const ensured = yield* ensureService();
-      console.log((ensured.started ? "started " : "already running: ") + describe(ensured.registration));
+      const target = yield* requireOne();
+      if (target !== undefined) {
+        console.log("already running: " + describeTarget(target));
+        return;
+      }
+      console.log("starting service (service.json " + serviceJsonPath(path, resolveStateDir(path, env)) + ")");
+      const ensured = yield* ensureService(env);
+      console.log("started " + describeTarget(ensured));
       return;
     }
     if (sub === "stop") {
-      const stopped = yield* stopService();
+      const target = yield* requireOne();
+      if (target === undefined) {
+        console.log("service is not running (looked for " + directories() + ")");
+        return;
+      }
+      console.log("stopping " + describeTarget(target));
+      const stopped = yield* stopService(env);
       console.log(stopped === undefined ? "service is not running" : "stopped " + describe(stopped));
       return;
     }
     if (sub === "restart") {
-      yield* stopService();
-      const ensured = yield* ensureService();
-      console.log("restarted " + describe(ensured.registration));
+      const target = yield* requireOne();
+      if (target === undefined) {
+        console.log("starting service (service.json " + serviceJsonPath(path, resolveStateDir(path, env)) + ")");
+      } else {
+        console.log("restarting " + describeTarget(target));
+        yield* stopService(env);
+      }
+      const ensured = yield* ensureService(env);
+      console.log((target === undefined ? "started " : "restarted ") + describeTarget(ensured));
       return;
     }
     if (sub === "status") {
-      const running = yield* findRunningService();
-      console.log(running === undefined ? "stopped" : "running " + describe(running));
+      if (targets.length === 0) {
+        console.log("stopped (looked for " + directories() + ")");
+        return;
+      }
+      for (const target of targets) console.log("running " + describeTarget(target));
+      if (targets.length > 1) {
+        console.log("multiple services match; pass --state-dir <dir> or --data-dir <dir> to choose one");
+      }
       return;
     }
     throw new Error("Expected ballast service start|stop|restart|status");

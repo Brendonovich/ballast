@@ -120,7 +120,11 @@ Rules:
   ~~~
   `file` is project-relative, line is 1-based and column is 1-based.
 - Params are project-level settings, keyed by the param key. A param read by a
-  workflow body is the same project setting as one read by a handler.
+  workflow body is the same project setting as one read by a handler. Booleans,
+  enums and string lists always have a runtime value, so they record their
+  implicit default (false, the first enum value, []) in the manifest and are
+  not reported as required. A string or number without a default remains
+  required because an empty input is not a usable value.
 - `Ballast.run` loops must be named. They are for processes that live only
   while the bundle worker lives; anything that must survive a restart or a
   sleep belongs in a workflow activity. This distinction is documented in the
@@ -270,8 +274,15 @@ Planning must run `tsgo` before accepting a bundle. Decision:
   `effect` and `@types/node` from the service's own bundle, so a project
   outside the repo works in an editor and in the gate without installing
   packages;
-- run it from the agent stage, cache by the hash of project source files plus
-  the tsconfig, and reuse the result when nothing changed;
+- ensure (and, on a service update, repoint) `types/current` at service
+  startup and before every check or plan, so projects created by an older
+  service still resolve types;
+- run it from the agent stage, cache by the hash of project source files, the
+  resolved tsconfig bytes and the real paths its type roots resolve to (so a
+  repointed `types/current` is a cache miss), and reuse the result when
+  nothing changed; never cache environment failures such as a missing
+  `@types/node` (TS2688), because they can be fixed without changing a
+  project source byte;
 - a typecheck failure is a plan failure: keep the old worker, surface the
   `tsgo` diagnostic (file/line/message) in the project error.
 

@@ -25,7 +25,9 @@ still open, and what to build next.
   serves the Solid UI at `/`, unauthenticated `/health` for discovery, and typed Effect RPC at
   `/rpc`. `ShutdownService` exits 0; restart is stop + spawn by the caller. The CLI's
   `ballast service start|stop|restart|status` manages it, and other service commands start it in
-  the background when none is running.
+  the background when none is running. Service commands accept `--state-dir` and
+  `--data-dir` (or the matching environment variables), print the `service.json` they
+  select, and refuse to act when more than one running service matches.
 - **Desktop shell.** One Electron window (token → HttpOnly cookie), tray/menu, versioned service
   staging, detached `ballast serve` spawn on every launch (adopt same version, replace another
   version with rollback), stop-before-app-update, and a typed `window.ballast` bridge. No OS

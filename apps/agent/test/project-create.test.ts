@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -188,6 +188,46 @@ describe("project scaffolding and checks", () => {
       expect(repaired.ok).toBe(true);
       expect(repaired.summary.lastError).toBeUndefined();
       expect(repaired.summary.status).not.toBe("error");
+    }),
+    120_000,
+  );
+
+  it.live("prepares the shared type root on startup and whenever a project is added or planned", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-types-lifecycle-")));
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore));
+      const typesCurrent = join(root, "data", "types", "current");
+
+      const service = yield* startService(root);
+      yield* Effect.addFinalizer(() => service.stop());
+
+      // Startup prepares the root even before any project exists.
+      expect(yield* Effect.promise(() => readlink(typesCurrent))).toContain("/types/");
+
+      const projectRoot = join(root, "added-project");
+      yield* Effect.promise(() => mkdir(projectRoot, { recursive: true }));
+      yield* Effect.promise(() =>
+        writeFile(
+          join(projectRoot, "ballast.ts"),
+          'import { Effect } from "effect";\n\nexport default Effect.gen(function* () {\n  yield* Effect.log("ready");\n});\n',
+          "utf8",
+        ),
+      );
+
+      // An added project whose tsconfig outlived the type root recreates it.
+      yield* Effect.promise(() => rm(join(root, "data", "types"), { recursive: true, force: true }));
+      const added = yield* call(root, (client) => client.AddProject({ path: projectRoot, name: "Added" }));
+      expect(yield* Effect.promise(() => readlink(typesCurrent))).toContain("/types/");
+
+      // Planning and checking do the same before they run tsgo.
+      yield* Effect.promise(() => rm(join(root, "data", "types"), { recursive: true, force: true }));
+      yield* call(root, (client) => client.PlanProject({ projectId: added.summary.id }));
+      expect(yield* Effect.promise(() => readlink(typesCurrent))).toContain("/types/");
+
+      yield* Effect.promise(() => rm(join(root, "data", "types"), { recursive: true, force: true }));
+      const checked = yield* call(root, (client) => client.CheckProject({ projectId: added.summary.id }));
+      expect(checked.ok, checked.error).toBe(true);
+      expect(yield* Effect.promise(() => readlink(typesCurrent))).toContain("/types/");
     }),
     120_000,
   );

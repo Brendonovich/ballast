@@ -102,6 +102,23 @@ export const resolveDataDir = (
   return path.join(env["HOME"] ?? "", ".local", "share", "ballast");
 };
 
+/**
+ * Directories where a service registration may live. An explicit
+ * BALLAST_STATE_DIR is authoritative: never fall back to the default data
+ * directory, or a command aimed at a probe service could act on the user's
+ * real service instead. The data directory remains a legacy fallback only
+ * when no state directory was chosen explicitly.
+ */
+export const resolveServiceDirectories = (
+  path: Path.Path,
+  env: Environment,
+): ReadonlyArray<string> => {
+  const stateDir = resolveStateDir(path, env);
+  if (envValue(env, "BALLAST_STATE_DIR") !== undefined) return [stateDir];
+  const dataDir = resolveDataDir(path, env);
+  return dataDir === stateDir ? [stateDir] : [stateDir, dataDir];
+};
+
 const defaultWebDirs = (
   path: Path.Path,
   cwd: string,

@@ -43,6 +43,7 @@ import type { ActiveScript } from "./connections.ts";
 import { contentHash, readJson, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
+import { ensureProjectTypes } from "./scaffold.ts";
 import { EventRouter, Logs, ServiceHub } from "./telemetry.ts";
 import { makeTimerManager } from "./timers.ts";
 
@@ -283,7 +284,13 @@ const fileLanguage = (path: string): ProjectFileContent["language"] => {
   return "text";
 };
 
-export const ProjectRuntimeLive = Layer.effect(
+export interface ProjectRuntimeOptions {
+  readonly dataDir: string;
+  readonly version: string;
+}
+
+export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
+  Layer.effect(
   ProjectRuntime,
   Effect.gen(function* () {
     const projects = yield* ProjectManager;
@@ -300,6 +307,12 @@ export const ProjectRuntimeLive = Layer.effect(
     const provide = <A, E>(
       effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
+    const ensureTypes = provide(
+      ensureProjectTypes({
+        dataDir: options.dataDir,
+        version: options.version,
+      }),
+    );
     const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
     const timers = yield* makeTimerManager({ clock, logs, hub });
     const state = yield* Ref.make<ReadonlyMap<string, ProjectRuntimeRecord>>(new Map());
@@ -747,6 +760,9 @@ export const ProjectRuntimeLive = Layer.effect(
 
     const planAndApply = (record: ProjectRuntimeRecord, force: boolean): Effect.Effect<ProjectRuntimeRecord, AgentError> =>
       Effect.gen(function* () {
+        // Projects that predate a service update point their tsconfig at
+        // types/current, which may not exist yet or may name another version.
+        yield* ensureTypes;
         const resolved = yield* resolveProjectEntry(record.project.root).pipe(Effect.mapError((error) => agentError("invalid", error.message)));
         const fingerprint = yield* provide(projectFingerprint(record.project.root));
         if (!force && record.fingerprint === fingerprint && record.manifest !== undefined) {
@@ -1039,6 +1055,7 @@ export const ProjectRuntimeLive = Layer.effect(
     const check = (projectId: string): Effect.Effect<ProjectCheckResult, AgentError> =>
       semaphore.withPermit(Effect.gen(function* () {
         const record = yield* requireRecord(projectId);
+        yield* ensureTypes;
         const options = yield* optionsFor(record);
         const bound = yield* bindingsFor(record);
         const requirements = yield* requirementsFor(record);

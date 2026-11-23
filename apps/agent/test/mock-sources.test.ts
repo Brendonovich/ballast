@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
@@ -49,5 +49,27 @@ describe("embedded script sources", () => {
         expect(manifest.runs.map((run) => run.name)).toEqual(["ready"]);
       }).pipe(Effect.provide(NodeServices.layer)),
     120_000,
+  );
+
+  it.live(
+    "repoints types/current when the service version changes",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-types-version-")));
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+        );
+        const dataDir = join(root, "data");
+
+        const first = yield* ensureProjectTypes({ dataDir, version: "0.1.0-one" });
+        expect(first).toBe(join(dataDir, "types", "current"));
+        expect(yield* Effect.promise(() => readlink(first))).toContain("0-1-0-one");
+
+        const second = yield* ensureProjectTypes({ dataDir, version: "0.1.0-two" });
+        expect(second).toBe(first);
+        expect(yield* Effect.promise(() => readlink(first))).toContain("0-1-0-two");
+        expect(yield* Effect.promise(() => readlink(join(dataDir, "types", "0-1-0-two")))).toContain("node_modules");
+      }).pipe(Effect.provide(NodeServices.layer)),
+    60_000,
   );
 });
