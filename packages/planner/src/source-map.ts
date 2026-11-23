@@ -1,9 +1,6 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { relative, resolve } from "node:path";
 import { SourceMapConsumer } from "source-map-js";
-
-const mapBase = dirname(fileURLToPath(import.meta.url));
 import type { Manifest } from "@ballast/core";
 
 const stripFileUrl = (file: string): string => {
@@ -14,8 +11,18 @@ const stripFileUrl = (file: string): string => {
 
 const normalizeSource = (source: string, projectRoot: string): string => {
   const file = stripFileUrl(source);
-  const absolute = file.startsWith("/") ? file : resolve(mapBase, file);
-  return relative(projectRoot, absolute).split("\\").join("/");
+  if (file.startsWith("/")) {
+    const relativePath = relative(projectRoot, file);
+    return relativePath.startsWith("..") ? file : relativePath.split("\\").join("/");
+  }
+  const parts = file.split("/");
+  for (let index = 0; index < parts.length; index += 1) {
+    const candidate = parts.slice(index).join("/");
+    if (existsSync(resolve(projectRoot, candidate))) return candidate;
+  }
+  const base = parts[parts.length - 1];
+  if (base !== undefined && existsSync(resolve(projectRoot, base))) return base;
+  return file;
 };
 
 /**
@@ -60,9 +67,17 @@ export const mapManifestSources = (
 
   return {
     ...manifest,
+    params: manifest.params.map((param) => ({
+      ...param,
+      ...(param.source === undefined ? {} : { source: map(param.source) }),
+    })),
     topics: manifest.topics.map((topic) => ({
       ...topic,
       ...(topic.source === undefined ? {} : { source: map(topic.source) }),
+    })),
+    runs: manifest.runs.map((run) => ({
+      ...run,
+      ...(run.source === undefined ? {} : { source: map(run.source) }),
     })),
     timers: manifest.timers.map((timer) => ({
       ...timer,

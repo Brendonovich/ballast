@@ -12,22 +12,22 @@ export const topicConnectionTypes = Effect.gen(function* () {
   const fake = yield* Fake.Connection("main");
   const obs = yield* OBS.Connection("main");
 
-  yield* Fake.Tick.subscribe(fake, (tick) => Effect.log(String(tick.n)));
-  yield* OBS.CurrentProgramSceneChanged.subscribe(obs, (event) =>
+  yield* Fake.Tick.subscribe("tick", fake, (tick) => Effect.log(String(tick.n)));
+  yield* OBS.CurrentProgramSceneChanged.subscribe("scene-changed", obs, (event) =>
     Effect.log(event.sceneName),
   );
 
   // @ts-expect-error an OBS topic requires an OBS connection, not a Fake one
-  yield* OBS.CurrentProgramSceneChanged.subscribe(fake, (event) =>
+  yield* OBS.CurrentProgramSceneChanged.subscribe("wrong", fake, (event) =>
     Effect.log(event.sceneName),
   );
 
   const broadcaster = yield* Twitch.Account("broadcaster");
-  yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, (event) =>
+  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (event) =>
     Effect.log(event.reward.title),
   );
   // @ts-expect-error a Twitch topic requires a Twitch connection, not a Fake one
-  yield* Twitch.ChannelPointsRedemption.subscribe(fake, (event) =>
+  yield* Twitch.ChannelPointsRedemption.subscribe("wrong", fake, (event) =>
     Effect.log(event.reward.title),
   );
 

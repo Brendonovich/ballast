@@ -26,7 +26,7 @@ export default Effect.gen(function* () {
     const broadcaster = yield* Twitch.Account("broadcaster");
     const obs = yield* OBS.Connection("main");
 
-    yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, (event) =>
+    yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (event) =>
       Effect.gen(function* () {
         if (event.reward.title !== (yield* rewardTitle)) return;
 
@@ -59,7 +59,7 @@ export default Effect.gen(function* () {
     const broadcaster = yield* Twitch.Account("broadcaster");
     const sendMessage = yield* broadcaster.helix("sendChatMessage");
 
-    yield* Twitch.Cheer.subscribe(broadcaster, (event) =>
+    yield* Twitch.Cheer.subscribe("cheer", broadcaster, (event) =>
       Effect.gen(function* () {
         if (event.bits < (yield* minBits)) return;
         yield* sendMessage({
@@ -85,7 +85,7 @@ export default Effect.gen(function* () {
     const fake = yield* Fake.Connection("main");
     const echo = yield* Fake.Echo(fake);
 
-    yield* Fake.Tick.subscribe(fake, (tick) =>
+    yield* Fake.Tick.subscribe("tick", fake, (tick) =>
       Effect.gen(function* () {
         const text = (yield* prefix) + " tick " + tick.n;
         const { text: echoed } = yield* echo({ text });
@@ -107,6 +107,7 @@ export default Effect.gen(function* () {
     const obs = yield* OBS.Connection("secondary");
 
     yield* Ballast.run(
+      "rotation",
       Effect.gen(function* () {
         const interval = yield* intervalSeconds;
         const { scenes } = yield* obs.GetSceneList();

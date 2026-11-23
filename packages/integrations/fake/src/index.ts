@@ -38,7 +38,7 @@ export const Connection = (
 
 /**
  * The agent's local tick driver emits one event per second. Subscribe with
- * `Fake.Tick.subscribe(fake, (tick) => ...)`.
+ * `Fake.Tick.subscribe("tick", fake, (tick) => ...)`.
  */
 export const Tick = Ballast.Topic<TickPayload, Integration>({
   integration: INTEGRATION,

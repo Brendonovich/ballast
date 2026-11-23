@@ -114,10 +114,14 @@ export const runPlanInfo = (
 
     const manifest = yield* Ref.get(ref);
     const normalized = normalizeManifest(manifest);
-    const projectRoot = options.projectRoot ?? dirname(absoluteEntry);
+    const projectRoot =
+      options.projectRoot ??
+      (basename(absoluteEntry) === "ballast.ts"
+        ? dirname(absoluteEntry)
+        : undefined);
     const mapped =
-      bundle.sourceMap === undefined
-        ? normalized
+      projectRoot === undefined || bundle.sourceMap === undefined
+        ? stripSources(normalized)
         : mapManifestSources(
             normalized,
             bundle.sourceMap,
@@ -138,30 +142,62 @@ export const runPlan = (
 /**
  * Validate a manifest loaded from disk (the CLI's `--diff` input).
  */
+const stripSources = (manifest: Manifest): Manifest => ({
+  ...manifest,
+  params: manifest.params.map(({ source: _source, ...param }) => param),
+  topics: manifest.topics.map(({ source: _source, ...topic }) => topic),
+  timers: manifest.timers.map(({ source: _source, ...timer }) => timer),
+  workflows: manifest.workflows.map(({ source: _source, ...workflow }) => workflow),
+  runs: manifest.runs.map(({ source: _source, ...run }) => run),
+});
+
 const assertUniqueNames = (manifest: Manifest): void => {
-  const topics = new Set<string>();
+  const formatSource = (source: Manifest["topics"][number]["source"]): string =>
+    source === undefined
+      ? "<unknown source>"
+      : `${source.file}:${source.line}:${source.column}`;
+  const topics = new Map<string, string>();
   for (const topic of manifest.topics) {
-    if (topic.name === undefined) continue;
-    if (topics.has(topic.name)) {
+    const previous = topics.get(topic.name);
+    if (previous !== undefined) {
       throw new PlanError({
-        message: `Duplicate subscription name "${topic.name}"`,
+        message: `Duplicate subscription name "${topic.name}" at ${previous} and ${formatSource(topic.source)}`,
       });
     }
-    topics.add(topic.name);
+    topics.set(topic.name, formatSource(topic.source));
   }
 
-  const assertUnique = (kind: string, names: ReadonlyArray<string>): void => {
-    const seen = new Set<string>();
-    for (const name of names) {
-      if (seen.has(name)) {
-        throw new PlanError({ message: `Duplicate ${kind} name "${name}"` });
+  const assertUnique = (
+    kind: string,
+    units: ReadonlyArray<{ readonly name: string; readonly source?: Manifest["topics"][number]["source"] }>,
+  ): void => {
+    const seen = new Map<string, string>();
+    for (const unit of units) {
+      const previous = seen.get(unit.name);
+      if (previous !== undefined) {
+        throw new PlanError({
+          message: `Duplicate ${kind} name "${unit.name}" at ${previous} and ${formatSource(unit.source)}`,
+        });
       }
-      seen.add(name);
+      seen.set(unit.name, formatSource(unit.source));
     }
   };
-  assertUnique("param", manifest.params.map((value) => value.key));
-  assertUnique("timer", manifest.timers.map((value) => value.name));
-  assertUnique("workflow", manifest.workflows.map((value) => value.name));
+  assertUnique(
+    "param",
+    manifest.params.map((value) => ({ name: value.key, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
+  assertUnique(
+    "timer",
+    manifest.timers.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
+  assertUnique(
+    "workflow",
+    manifest.workflows.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
+  assertUnique(
+    "run",
+    manifest.runs.map((value) => ({ name: value.name, ...(value.source === undefined ? {} : { source: value.source }) })),
+  );
 };
 
 export const decodeManifest = (input: unknown): Manifest =>

@@ -186,6 +186,7 @@ export interface WebhookSubscribeOptions {
 
 export interface WebhookJsonTopic<A> {
   readonly subscribe: (
+    name: string,
     hook: WebhookRef,
     handler: (delivery: A) => Effect.Effect<void>,
     options?: WebhookSubscribeOptions,
@@ -206,18 +207,19 @@ const webhookTopic = (
   });
 
 const subscribeWebhook = (
+  name: string,
   hook: WebhookRef,
   handler: (delivery: WebhookDelivery) => Effect.Effect<void>,
   options?: WebhookSubscribeOptions,
 ): Effect.Effect<void, never, Ballast.EventHost> =>
-  webhookTopic(hook.slot, options).subscribe(hook, handler);
+  webhookTopic(hook.slot, options).subscribe(name, hook, handler);
 
 const webhookJson = <A>(
   schema: Schema.Codec<A, unknown, never, never>,
 ): WebhookJsonTopic<A> => ({
-  subscribe: (hook, handler, options) => {
+  subscribe: (name, hook, handler, options) => {
     const base = webhookTopic(hook.slot, options);
-    return base.subscribe(hook, (delivery) =>
+    return base.subscribe(name, hook, (delivery) =>
       Effect.gen(function* () {
         const text = new TextDecoder().decode(delivery.body);
         const parsed = yield* Effect.try({
@@ -244,6 +246,7 @@ const webhookJson = <A>(
 export interface WebhookFunction {
   (slot: string): Effect.Effect<WebhookRef>;
   readonly subscribe: (
+    name: string,
     hook: WebhookRef,
     handler: (delivery: WebhookDelivery) => Effect.Effect<void>,
     options?: WebhookSubscribeOptions,
@@ -254,7 +257,7 @@ export interface WebhookFunction {
 }
 
 /**
- * Http.Webhook("kofi") declares a slot; Http.Webhook.subscribe(hook, handler)
+ * Http.Webhook("kofi") declares a slot; Http.Webhook.subscribe("donation", hook, handler)
  * records the topic. The driver answers providers with the static response from
  * connection config; a handler cannot return a response (decision 0005).
  */

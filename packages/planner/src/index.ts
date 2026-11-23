@@ -1,4 +1,15 @@
 export { plan, planDetails } from "./plan-worker-client.ts";
+export { resolveProjectEntry, projectEntryOverride, ProjectEntryError } from "./project.ts";
+export type { ProjectEntry } from "./project.ts";
+export { planProject, diffProject, ProjectPlanError } from "./project-plan.ts";
+export type {
+  PlannedProject,
+  ProjectManifestDiff,
+  UnitChange,
+  UnitKind,
+} from "./project-plan.ts";
+export { typecheckProject, TypecheckError } from "./typecheck.ts";
+export type { TypecheckDiagnostic, TypecheckResult } from "./typecheck.ts";
 export { runPlan, runPlanInfo, decodeManifest, PlanError } from "./plan.ts";
 export type { PlanOptions, PlannedScript } from "./plan.ts";
 export { bundlePlanScript } from "./bundle.ts";

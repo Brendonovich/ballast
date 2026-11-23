@@ -6,6 +6,7 @@ export default Effect.gen(function* () {
   const tap = yield* Keyboard.Tap(keyboard);
 
   yield* Keyboard.Hotkey.subscribe(
+    "hotkey",
     keyboard,
     (event) =>
       Effect.gen(function* () {
@@ -15,7 +16,7 @@ export default Effect.gen(function* () {
     { keys: ["Ctrl", "Shift", "F1"] },
   );
 
-  yield* Keyboard.KeyDown.subscribe(keyboard, (event) =>
+  yield* Keyboard.KeyDown.subscribe("key-down", keyboard, (event) =>
     Effect.log(`key ${event.key} down`),
   );
 });

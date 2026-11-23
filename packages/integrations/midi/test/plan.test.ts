@@ -27,6 +27,7 @@ describe("plan MIDI scripts", () => {
             integration: "midi",
             slot: "controller",
             topic: "midi/ControlChange",
+            name: "control-change",
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -35,6 +36,7 @@ describe("plan MIDI scripts", () => {
             integration: "midi",
             slot: "controller",
             topic: "midi/RawMessage",
+            name: "raw-message",
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -46,6 +48,7 @@ describe("plan MIDI scripts", () => {
         unresolved: [],
         timers: [],
         workflows: [],
+        runs: [],
       });
     }),
   );

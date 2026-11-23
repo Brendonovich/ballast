@@ -10,7 +10,7 @@ import * as Workflow from "effect/workflow/Workflow";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import type { Scope } from "effect/Scope";
 import type { Input as DurationInput } from "effect/Duration";
-import { ManifestRecorder, currentPhase } from "@ballast/core";
+import { ManifestRecorder, captureSource, currentPhase } from "@ballast/core";
 import type { WorkflowManifest } from "@ballast/core";
 
 export { Activity, DurableClock, DurableDeferred, Workflow };
@@ -123,8 +123,9 @@ export const make = <
   >,
 ): Effect.Effect<
     WorkflowHandle<Tag, Schema.Struct<Fields> & NoServices, Success, Error>
-  > =>
-  Effect.gen(function* () {
+  > => {
+  const source = captureSource(2);
+  return Effect.gen(function* () {
     const workflow = Workflow.make<
       Tag,
       Schema.Struct<Fields> & NoServices,
@@ -137,7 +138,10 @@ export const make = <
       ...(options.error === undefined ? {} : { error: options.error }),
     });
     registry.set(workflow._tag, workflow);
-    const manifest = toManifest(workflow, options.title);
+    const manifest = {
+      ...toManifest(workflow, options.title),
+      ...(source === undefined ? {} : { source }),
+    };
 
     const engine = yield* Effect.serviceOption(WorkflowEngine.WorkflowEngine);
     if (Option.isSome(engine)) {
@@ -233,6 +237,7 @@ export const make = <
       resolve,
     };
   });
+};
 
 /**
  * Sugar over Effect's `Activity.make`. The activity body is wrapped with

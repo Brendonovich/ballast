@@ -6,17 +6,19 @@ export default Effect.gen(function* () {
     const bot = yield* Twitch.Account("bot");
 
     yield* Twitch.ChannelPointsRedemption.subscribe(
+      "reward-1",
       broadcaster,
       () => Effect.void,
       { rewardId: "reward-1" },
     );
     yield* Twitch.ChannelPointsRedemption.subscribe(
+      "reward-2",
       broadcaster,
       () => Effect.void,
       { rewardId: "reward-2" },
     );
-    yield* Twitch.ChatMessage.subscribe(bot, () => Effect.void, { broadcaster });
-    yield* Twitch.Raid.subscribe(broadcaster, () => Effect.void, {
+    yield* Twitch.ChatMessage.subscribe("chat", bot, () => Effect.void, { broadcaster });
+    yield* Twitch.Raid.subscribe("raid", broadcaster, () => Effect.void, {
       direction: "outgoing",
     });
 });

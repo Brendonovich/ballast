@@ -20,7 +20,7 @@ export default Effect.gen(function* () {
   const api = yield* Http.Client("kofi-api", { hosts: ["api.example.com"] });
   const obs = yield* OBS.Connection("main");
 
-  yield* Http.Webhook.json(Donation).subscribe(hook, (donation) =>
+  yield* Http.Webhook.json(Donation).subscribe("donation", hook, (donation) =>
     Effect.gen(function* () {
       if (donation.amount <= 0) return;
       const summary = yield* api.get("/v1/summary", { schema: Summary });

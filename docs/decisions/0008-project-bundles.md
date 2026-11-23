@@ -1,7 +1,7 @@
 # 0008 — Project bundles: one project, one bundle, named units
 
-*Status: design accepted by the user · prototype of source locations and named
-subscriptions in core/planner · 2026-11-23 · effect `4.0.6`*
+*Status: W1 (core units), W2 (planner project bundles) and W6 (integration
+cutover) implemented · 2026-11-23 · effect `4.0.6`*
 
 ## Context
 
@@ -140,8 +140,9 @@ The prototype proves this for named subscriptions:
   (`packages/planner/src/bundle.ts`), reads it with `source-map-js`, and maps
   the location in `packages/planner/src/source-map.ts`;
 - the fixture `packages/planner/test/fixtures/project/ballast.ts` imports
-  `src/a.ts`, where the subscription is declared. The planned manifest points
-  at `src/a.ts`, line 14, column 17.
+  `src/a.ts`, where the units are declared. The planned manifest points at
+  `src/a.ts` for the param (line 15), timer (line 20), run (line 27),
+  workflow (line 34) and subscription (line 47).
 
 The same hook will be applied to params, timers, workflows and run loops. A
 source link is **not** captured for unnamed legacy subscriptions, so existing
@@ -155,25 +156,16 @@ The final API is:
 yield* Tick.subscribe("tick-handler", connection, handler);
 ~~~
 
-Today `subscribe(connection, handler, options?)` is used by every integration
-(and by existing example scripts). To keep apps/agent and integrations
-compiling while the project-bundle work lands, core now has both:
+W6 is implemented: the legacy unnamed form is gone.
 
 ~~~ts
-Tick.subscribe(connection, handler, options?)          // legacy, unnamed
-Tick.subscribeNamed("tick-handler", connection, handler, options?)
+Tick.subscribe("tick-handler", connection, handler, options?)
 ~~~
 
-Plan:
-
-1. add `subscribeNamed` to the core Topic API and manifest (done in the
-   prototype);
-2. migrate the 8 integration packages that declare topics: `fake`, `http`,
-   `keyboard`, `midi`, `obs`, `twitch`, `vtube-studio`, `websocket`;
-3. migrate examples to names;
-4. change `subscribe` to the named signature and remove `subscribeNamed`
-   (no compatibility layer, per project rules);
-5. planner fails duplicate names and requires a name for every subscription.
+All 8 integration packages that declare topics (`fake`, `http`, `keyboard`,
+`midi`, `obs`, `twitch`, `vtube-studio`, `websocket`), the examples, and
+the call sites in tests/apps were cut over. The planner rejects duplicate
+subscription names and requires a name for every subscription.
 
 `Topic.subscribe` gains a leading name; direct integration calls listed in
 step 2 are the compilation impact. `Topic` declarations themselves do not
@@ -412,15 +404,18 @@ Ordering:
 5. W5 can start against a protocol mock and connect after W4;
 6. W7 continuously, with a final whole-project E2E.
 
-Prototype this round:
+Implemented this round:
 
-- W1 partial: source capture + named `subscribeNamed` in core; planner source
-  map mapping; multi-file fixture test; duplicate named subscription check.
-- W3 fully: one-call workflow API, tests, example.
-- W2 partial: source map generation/mapping; full project entry and tsgo gate
-  are design-only.
-- W4/W5/W6 are design/cutover plans, not implemented; `apps/*` and
-  `agent-protocol` untouched.
+- W1: named `subscribe`, named `Ballast.run`, source capture for all unit
+  kinds, unit annotations, duplicate-name planning errors with both sources,
+  additive `runs` manifest field.
+- W2: entry resolution (`ballast.ts` / `package.json#ballast.entry`),
+  whole-project planning, source-map mapping, tsgo gate with generated
+  tsconfig + cache, unit diff.
+- W6: all 8 integrations, examples, tests and app call sites cut over.
+- W4/W5 remain service/UI work; only call-site edits were made in apps, and
+  `packages/agent-protocol/src/mock-sources.ts` was changed only at its
+  subscribe/run call sites.
 
 ## 10. Limits and open questions
 
@@ -478,7 +473,7 @@ Planned manifest for the 2-file fixture:
       "slot": "main",
       "topic": "fake/tick",
       "name": "named-tick",
-      "source": { "file": "src/a.ts", "line": 14, "column": 17 },
+      "source": { "file": "src/a.ts", "line": 47, "column": 17 },
       "scopes": ["fake:read"],
       "onStale": "drop",
       "maxAgeMs": 60000
@@ -486,8 +481,26 @@ Planned manifest for the 2-file fixture:
   ],
   "requests": [],
   "unresolved": [],
-  "timers": [],
-  "workflows": []
+  "timers": [
+    {
+      "name": "heartbeat",
+      "source": { "file": "src/a.ts", "line": 20, "column": 12 },
+      "onStale": "deliver",
+      "maxAgeMs": 604800000
+    }
+  ],
+  "workflows": [
+    {
+      "name": "fixture-workflow",
+      "source": { "file": "src/a.ts", "line": 34, "column": 12 }
+    }
+  ],
+  "runs": [
+    {
+      "name": "ticker",
+      "source": { "file": "src/a.ts", "line": 27, "column": 12 }
+    }
+  ]
 }
 ~~~
 
@@ -503,8 +516,11 @@ pnpm --filter @ballast/workflow test       # 6 passed
 pnpm --filter @ballast/core typecheck
 pnpm --filter @ballast/core test           # 15 passed
 pnpm --filter @ballast/planner typecheck
-pnpm --filter @ballast/planner test        # 16 passed (source map fixture)
+pnpm --filter @ballast/planner test        # 21 passed (source map, typecheck, diff)
 pnpm --filter @ballast/examples typecheck
+pnpm typecheck                             # clean
+pnpm test                                  # all workspace tests passed
+fnm exec --using=24.22.2 pnpm --filter @ballast/e2e test  # 2 passed, 1 skipped
 ~~~
 
 The workflow one-call API sample is in `examples/redeem-takeover.ts`;

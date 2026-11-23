@@ -50,7 +50,7 @@ export interface ChatMessageOptions {
   /**
    * The channel whose chat to read. Defaults to the subscribing account.
    * Use this with a bot account as the connection:
-   * `Twitch.ChatMessage.subscribe(bot, handler, { broadcaster })`.
+   * `Twitch.ChatMessage.subscribe("chat", bot, handler, { broadcaster })`.
    */
   readonly broadcaster?: TwitchConnection;
 }

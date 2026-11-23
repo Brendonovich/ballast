@@ -17,6 +17,7 @@
     "source-map-js": "1.2.4"
   },
   "devDependencies": {
+    "@ballast/workflow": "workspace:*",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "vitest": "catalog:"

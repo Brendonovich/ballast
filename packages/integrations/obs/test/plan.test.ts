@@ -30,6 +30,7 @@ describe("plan OBS script", () => {
             integration: "obs",
             slot: "main",
             topic: "obs/CurrentProgramSceneChanged",
+            name: "scene-changed",
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -39,6 +40,7 @@ describe("plan OBS script", () => {
         unresolved: [],
         timers: [],
         workflows: [],
+        runs: [{ name: "scene-loop" }],
       });
     }),
   );

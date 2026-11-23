@@ -13,6 +13,7 @@ export {
   RequestManifestSchema,
   TimerManifestSchema,
   WorkflowManifestSchema,
+  RunManifestSchema,
   UnresolvedManifestSchema,
   emptyManifest,
   connectionKey,
@@ -20,6 +21,7 @@ export {
   requestManifestKey,
   timerManifestKey,
   workflowManifestKey,
+  runManifestKey,
 } from "./manifest.ts";
 export type {
   SourceLocation,
@@ -36,11 +38,13 @@ export type {
   RequestManifest,
   TimerManifest,
   WorkflowManifest,
+  RunManifest,
   UnresolvedManifest,
 } from "./manifest.ts";
 export { ScriptPhase, currentPhase } from "./phase.ts";
 export { captureSource } from "./source.ts";
 export type { DeclarationSource } from "./source.ts";
+export { UnitName, withUnit, withUnitHandler } from "./unit.ts";
 export type { Phase } from "./phase.ts";
 export {
   ManifestRecorder,

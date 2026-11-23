@@ -10,7 +10,7 @@ export default Effect.gen(function* () {
   const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes("main") });
   const broadcaster = yield* Twitch.Account("broadcaster");
   const obs = yield* OBS.Connection("main");
-  yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, (e) =>
+  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (e) =>
     Effect.gen(function* () {
       if (e.reward.title !== (yield* rewardTitle)) return;
       yield* obs.SetCurrentProgramScene({ sceneName: yield* scene });

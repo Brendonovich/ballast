@@ -21,6 +21,7 @@ describe("plan HTTP scripts", () => {
           integration: "http",
           slot: "kofi",
           topic: "http/webhook",
+          name: "donation",
           scopes: ["http:webhook:kofi"],
           onStale: "drop",
           maxAgeMs: 60_000,

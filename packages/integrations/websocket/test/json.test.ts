@@ -17,6 +17,7 @@ describe("WebSocket JSON topic", () => {
           _topic: Ballast.TopicMetadata<A, I>,
           _connection: Ballast.ConnectionRef<I>,
           next: (event: A) => Effect.Effect<void>,
+          _name: string,
         ) =>
           Effect.sync(() => {
             handler = (message) => next(message as A);
@@ -24,7 +25,7 @@ describe("WebSocket JSON topic", () => {
       });
 
       yield* Json(User)
-        .subscribe({ slot: "test" }, (user) =>
+        .subscribe("json", { slot: "test" }, (user) =>
           Effect.sync(() => {
             values.push(user);
           }),

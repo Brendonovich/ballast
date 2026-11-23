@@ -28,7 +28,7 @@ export default Effect.gen(function* () {
     const prefix = yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
     const fake = yield* Fake.Connection("main");
     const echo = yield* Fake.Echo(fake);
-    yield* Fake.Tick.subscribe(fake, (tick) =>
+    yield* Fake.Tick.subscribe("tick", fake, (tick) =>
       Effect.gen(function* () {
         const { text } = yield* echo({ text: \`\${yield* prefix} tick \${tick.n}\` });
         yield* Effect.log(text);
@@ -44,10 +44,11 @@ import { Effect } from "effect";
 export default Effect.gen(function* () {
     const scene = yield* Ballast.Param.string("scene", { options: OBS.scenes("main"), default: "Scene 1" });
     const obs = yield* OBS.Connection("main");
-    yield* OBS.CurrentProgramSceneChanged.subscribe(obs, (event) =>
+    yield* OBS.CurrentProgramSceneChanged.subscribe("scene-changed", obs, (event) =>
       Effect.log(\`scene now \${event.sceneName}\`),
     );
     yield* Ballast.run(
+      "obs-loop",
       Effect.gen(function* () {
         const target = yield* scene;
         yield* obs.SetCurrentProgramScene({ sceneName: target });

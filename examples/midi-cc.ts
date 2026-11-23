@@ -10,7 +10,7 @@ export default Effect.gen(function* () {
   });
   const sendNote = yield* Midi.SendNoteOn(midi);
 
-  yield* Midi.ControlChange.subscribe(midi, (event) =>
+  yield* Midi.ControlChange.subscribe("control-change", midi, (event) =>
     Effect.gen(function* () {
       if (event.control !== 7) return;
       yield* sendNote({
@@ -22,7 +22,7 @@ export default Effect.gen(function* () {
     }),
   );
 
-  yield* Midi.RawMessage.subscribe(midi, (event) =>
+  yield* Midi.RawMessage.subscribe("raw-message", midi, (event) =>
     Effect.log(`raw ${event.data.join(" ")}`),
   );
 });

@@ -119,6 +119,7 @@ export interface WebSocketJsonTopic<A> {
   readonly topic: string;
   readonly schema: Schema.Codec<A, unknown, never, never>;
   readonly subscribe: (
+    name: string,
     connection: { readonly slot: string },
     handler: (event: A) => import("effect/Effect").Effect<void>,
   ) => import("effect/Effect").Effect<void, never, import("@ballast/core").EventHost>;

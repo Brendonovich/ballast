@@ -4,6 +4,7 @@ import type {
   ConnectionManifest,
   ParamManifest,
   RequestManifest,
+  RunManifest,
   TimerManifest,
   TopicManifest,
   UnresolvedManifest,
@@ -24,6 +25,7 @@ export interface ManifestRecorderService {
   readonly unresolved: (unresolved: UnresolvedManifest) => Effect.Effect<void>;
   readonly timer: (timer: TimerManifest) => Effect.Effect<void>;
   readonly workflow: (workflow: WorkflowManifest) => Effect.Effect<void>;
+  readonly run: (run: RunManifest) => Effect.Effect<void>;
 }
 
 export class ManifestRecorder extends Context.Service<ManifestRecorder, ManifestRecorderService>()(
@@ -70,7 +72,10 @@ export class RequestClients extends Context.Service<RequestClients, RequestClien
 
 /** Collects long-running loops registered with `Ballast.run` during init. */
 export interface ScriptRunnerService {
-  readonly run: (effect: Effect.Effect<void, never, never>) => Effect.Effect<void>;
+  readonly run: (
+    name: string,
+    effect: Effect.Effect<void, never, never>,
+  ) => Effect.Effect<void>;
 }
 
 export class ScriptRunner extends Context.Service<ScriptRunner, ScriptRunnerService>()(

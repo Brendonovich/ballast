@@ -41,7 +41,7 @@ const timerScript = (options: {
     '    (fire) => Effect.log("TIMER_FIRED " + fire.key + " " + fire.payload.n + " " + fire.lateByMs),',
     '    { title: "Cooldown", onStale: "' + options.onStale + '", maxAgeMs: ' + options.maxAgeMs + " },",
     "  );",
-    "  yield* Ballast.run(",
+    '  yield* Ballast.run("timer-loop",',
     "    Effect.gen(function* () {",
     ...(options.gated === true ? ["      if (!(yield* schedule)) return;"] : []),
     "      const value = yield* n;",

@@ -330,8 +330,9 @@ export const Json = <A>(
     integration: base.integration,
     topic: base.topic,
     schema,
-    subscribe: (connection, handler) =>
+    subscribe: (name, connection, handler) =>
       base.subscribe(
+        name,
         // The base topic only needs the slot; callers pass a connection handle.
         { ...connection, integration: INTEGRATION, location: "local" },
         (message) =>

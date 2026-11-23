@@ -1,5 +1,6 @@
 import * as Ballast from "@ballast/core";
-import { Effect } from "effect";
+import * as Workflow from "@ballast/workflow";
+import { Effect, Schema } from "effect";
 
 const tick = Ballast.Topic<{ n: number }, "fake">({
   integration: "fake",
@@ -11,7 +12,39 @@ export const subscribeTicks = (
   connection: Ballast.ConnectionRef<"fake">,
 ) =>
   Effect.gen(function* () {
-    yield* tick.subscribeNamed("named-tick", connection, (event) =>
+    const greeting = yield* Ballast.Param.string("greeting", {
+      title: "Greeting",
+      default: "hi",
+    });
+
+    yield* Ballast.Timer.subscribe(
+      "heartbeat",
+      Schema.Void,
+      () => Effect.log("heartbeat"),
+      { title: "Heartbeat" },
+    );
+
+    yield* Ballast.run(
+      "ticker",
+      Effect.gen(function* () {
+        yield* Effect.log("ticker " + (yield* greeting));
+      }),
+    );
+
+    yield* Workflow.make(
+      "fixture-workflow",
+      {
+        payload: Schema.Struct({ id: Schema.String }),
+        success: Schema.Void,
+        idempotencyKey: (payload) => payload.id,
+      },
+      () =>
+        Effect.gen(function* () {
+          yield* Workflow.sleep("hold", "1 second");
+        }),
+    );
+
+    yield* tick.subscribe("named-tick", connection, (event) =>
       Effect.log(`tick ${event.n}`),
     );
   });

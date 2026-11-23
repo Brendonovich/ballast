@@ -1,7 +1,17 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { plan, planDetails, PlanError } from "../src/index.ts";
+import {
+  plan,
+  planDetails,
+  planProject,
+  resolveProjectEntry,
+  PlanError,
+  ProjectPlanError,
+} from "../src/index.ts";
 
 const example = fileURLToPath(new URL("../../../examples/tick-echo.ts", import.meta.url));
 const callRequest = fileURLToPath(
@@ -10,6 +20,9 @@ const callRequest = fileURLToPath(
 const untitled = fileURLToPath(new URL("./fixtures/tick-echo.ts", import.meta.url));
 const takeover = fileURLToPath(new URL("../../../examples/redeem-takeover.ts", import.meta.url));
 const project = fileURLToPath(new URL("./fixtures/project/ballast.ts", import.meta.url));
+const duplicateProject = fileURLToPath(
+  new URL("./fixtures/duplicate/ballast.ts", import.meta.url),
+);
 
 describe("plan", () => {
   it.effect("produces the tick-echo manifest", () =>
@@ -25,6 +38,7 @@ describe("plan", () => {
             integration: "fake",
             slot: "main",
             topic: "fake/tick",
+            name: "tick",
             scopes: ["fake:read"],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -41,6 +55,7 @@ describe("plan", () => {
         unresolved: [],
         timers: [],
         workflows: [],
+        runs: [],
       });
     }),
   );
@@ -62,11 +77,14 @@ describe("plan", () => {
 
   it.effect("records a workflow declaration and its Twitch scope", () =>
     Effect.gen(function* () {
-      const manifest = yield* plan(takeover);
+      const manifest = yield* plan(takeover, {
+        projectRoot: fileURLToPath(new URL("../../../examples", import.meta.url)),
+      });
 
       expect(manifest.workflows.map((workflow) => workflow.name)).toEqual([
         "redeem-takeover",
       ]);
+      expect(manifest.workflows[0]?.source?.file).toContain("redeem-takeover.ts");
       expect(
         manifest.requests.find((request) => request.request === "helix/updateRedemptionStatus")
           ?.scopes,
@@ -83,8 +101,71 @@ describe("plan", () => {
 
       expect(topic?.name).toBe("named-tick");
       expect(topic?.source?.file).toBe("src/a.ts");
-      expect(topic?.source?.line).toBe(14);
+      expect(topic?.source?.line).toBe(47);
       expect(topic?.source?.column).toBeGreaterThan(0);
+      expect(manifest.params[0]?.source?.file).toBe("src/a.ts");
+      expect(manifest.timers[0]?.source?.file).toBe("src/a.ts");
+      expect(manifest.runs[0]?.source?.file).toBe("src/a.ts");
+      expect(manifest.workflows[0]?.name).toBe("fixture-workflow");
+      expect(manifest.workflows[0]?.source?.file).toBe("src/a.ts");
+    }),
+  );
+
+  it.effect("rejects duplicate subscription names with both source locations", () =>
+    Effect.gen(function* () {
+      const error = yield* plan(duplicateProject, {
+        projectRoot: fileURLToPath(new URL("./fixtures/duplicate", import.meta.url)),
+      }).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PlanError);
+      expect(error.message).toContain("Duplicate subscription name \"same-name\"");
+      expect(error.message).toContain("src/a.ts");
+      expect(error.message).toContain("src/b.ts");
+    }),
+  );
+
+  it.effect("typechecks a project and reports file/line errors", () =>
+    Effect.gen(function* () {
+      const error = yield* planProject(
+        fileURLToPath(new URL("./fixtures/type-error", import.meta.url)),
+      ).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ProjectPlanError);
+      if (!(error instanceof ProjectPlanError)) return;
+      expect(error.message).toContain("ballast.ts:3:");
+      expect(error.diagnostics[0]?.file).toBe("ballast.ts");
+      expect(error.diagnostics[0]?.line).toBe(3);
+    }),
+  );
+
+  it.effect("plans a whole project through the entry file", () =>
+    Effect.gen(function* () {
+      const project = yield* planProject(
+        fileURLToPath(new URL("./fixtures/project", import.meta.url)),
+      );
+
+      expect(project.entry.entry).toBe("ballast.ts");
+      expect(project.manifest.topics[0]?.name).toBe("named-tick");
+      expect(project.manifest.topics[0]?.source?.file).toBe("src/a.ts");
+    }),
+  );
+
+  it.effect("resolves the package.json entry override", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-entry-")));
+      yield* Effect.promise(() =>
+        writeFile(
+          join(root, "package.json"),
+          JSON.stringify({ ballast: { entry: "main.ts" } }),
+          "utf8",
+        ),
+      );
+      yield* Effect.promise(() => writeFile(join(root, "main.ts"), "export default 1;\n", "utf8"));
+
+      const resolved = yield* resolveProjectEntry(root);
+
+      expect(resolved.entry).toBe("main.ts");
+      expect(resolved.entryFile).toBe(join(root, "main.ts"));
     }),
   );
 

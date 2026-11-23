@@ -5,6 +5,7 @@ import {
   type Manifest,
   type ParamManifest,
   type RequestManifest,
+  type RunManifest,
   type TimerManifest,
   type TopicManifest,
   type UnresolvedManifest,
@@ -80,7 +81,7 @@ export const makeManifestRecorder = (ref: Ref.Ref<Manifest>): ManifestRecorderSe
   param: (param: ParamManifest) =>
     Ref.update(ref, (manifest) => ({
       ...manifest,
-      params: upsert(manifest.params, param, (value) => value.key),
+      params: [...manifest.params, param],
     })),
   connection: (connection: ConnectionManifest) =>
     Ref.update(ref, (manifest) => ({
@@ -94,7 +95,10 @@ export const makeManifestRecorder = (ref: Ref.Ref<Manifest>): ManifestRecorderSe
   topic: (topic: TopicManifest) =>
     Ref.update(ref, (manifest) => ({
       ...manifest,
-      topics: upsertTopic(manifest.topics, topic),
+      topics:
+        topic.name === undefined
+          ? upsertTopic(manifest.topics, topic)
+          : [...manifest.topics, topic],
     })),
   request: (request: RequestManifest) =>
     Ref.update(ref, (manifest) => ({
@@ -109,12 +113,17 @@ export const makeManifestRecorder = (ref: Ref.Ref<Manifest>): ManifestRecorderSe
   timer: (timer: TimerManifest) =>
     Ref.update(ref, (manifest) => ({
       ...manifest,
-      timers: upsert(manifest.timers, timer, (value) => value.name),
+      timers: [...manifest.timers, timer],
     })),
   workflow: (workflow: WorkflowManifest) =>
     Ref.update(ref, (manifest) => ({
       ...manifest,
-      workflows: upsert(manifest.workflows, workflow, (value) => value.name),
+      workflows: [...manifest.workflows, workflow],
+    })),
+  run: (run: RunManifest) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      runs: [...manifest.runs, run],
     })),
 });
 
@@ -143,6 +152,9 @@ export const normalizeManifest = (manifest: Manifest): Manifest => ({
   unresolved: [...manifest.unresolved].sort((left, right) => byStrings(left.path, right.path)),
   timers: [...(manifest.timers ?? [])].sort((left, right) => byStrings(left.name, right.name)),
   workflows: [...(manifest.workflows ?? [])].sort((left, right) =>
+    byStrings(left.name, right.name),
+  ),
+  runs: [...(manifest.runs ?? [])].sort((left, right) =>
     byStrings(left.name, right.name),
   ),
 });

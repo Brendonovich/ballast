@@ -3,6 +3,7 @@ import * as Effectable from "effect/Effectable";
 import * as Option from "effect/Option";
 import type { ParamDefault, ParamManifest, ParamOptionSource, ParamType } from "./manifest.ts";
 import { currentPhase } from "./phase.ts";
+import { captureSource } from "./source.ts";
 import { ManifestRecorder, Settings } from "./services.ts";
 
 export interface Param<A> extends Effect.Effect<A> {
@@ -32,9 +33,11 @@ const toManifest = <A extends ParamDefault>(
   type: ParamType,
   key: string,
   options: ParamOptions<A>,
+  source: ReturnType<typeof captureSource>,
 ): ParamManifest => ({
   key,
   type,
+  ...(source === undefined ? {} : { source }),
   ...(options.title === undefined ? {} : { title: options.title }),
   ...(options.default === undefined ? {} : { default: options.default }),
   ...(options.options === undefined ? {} : { options: options.options }),
@@ -64,6 +67,7 @@ const declare = <A extends ParamDefault>(
   options: ParamOptions<A>,
   decode: (value: unknown) => A,
   fallback: A,
+  source: ReturnType<typeof captureSource>,
 ): Effect.Effect<Param<A>> =>
   Effect.gen(function* () {
     const phase = yield* currentPhase;
@@ -73,7 +77,7 @@ const declare = <A extends ParamDefault>(
       yield* Option.match(recorder, {
         onNone: () =>
           Effect.die(new Error(`Param "${key}" was declared in plan phase without a ManifestRecorder`)),
-        onSome: (service) => service.param(toManifest(type, key, options)),
+        onSome: (service) => service.param(toManifest(type, key, options, source)),
       });
 
       return makeParam(
@@ -99,6 +103,7 @@ export const string = (
     options,
     (value) => (typeof value === "string" ? value : (options.default ?? "")),
     options.default ?? "",
+    captureSource(2),
   );
 
 export const number = (
@@ -111,6 +116,7 @@ export const number = (
     options,
     (value) => (typeof value === "number" && Number.isFinite(value) ? value : (options.default ?? 0)),
     options.default ?? 0,
+    captureSource(2),
   );
 
 export const boolean = (
@@ -123,6 +129,7 @@ export const boolean = (
     options,
     (value) => (typeof value === "boolean" ? value : (options.default ?? false)),
     options.default ?? false,
+    captureSource(2),
   );
 
 const enumParam = <const Values extends readonly [string, ...ReadonlyArray<string>]>(
@@ -140,6 +147,7 @@ const enumParam = <const Values extends readonly [string, ...ReadonlyArray<strin
         ? (value as Values[number])
         : fallback,
     fallback,
+    captureSource(2),
   );
 };
 

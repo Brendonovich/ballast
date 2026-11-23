@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { emptyManifest, type Manifest } from "@ballast/core";
-import { diff } from "../src/index.ts";
+import { diff, diffProject } from "../src/index.ts";
 
 const manifest = (overrides: Partial<Manifest> = {}): Manifest => ({
   ...emptyManifest("script"),
@@ -11,6 +11,7 @@ const tickTopic = {
   integration: "fake",
   slot: "main",
   topic: "fake/tick",
+  name: "tick",
   scopes: ["fake:read"],
   onStale: "drop",
   maxAgeMs: 60_000,
@@ -164,6 +165,36 @@ describe("diff", () => {
       "redeem-takeover",
     ]);
     expect(result.workflows.removed).toEqual([]);
+  });
+
+  it("diffs project units by kind and name", () => {
+    const previous = manifest({
+      topics: [tickTopic],
+      runs: [{ name: "loop" }],
+    });
+    const next = manifest({
+      topics: [{ ...tickTopic, scopes: ["fake:read", "fake:extra"] }],
+      timers: [
+        {
+          name: "cooldown",
+          onStale: "deliver",
+          maxAgeMs: 60_000,
+          payloadSchema: {},
+          payloadFingerprint: "abc",
+        },
+      ],
+    });
+
+    const result = diffProject(previous, next);
+
+    expect(result.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "topic", name: "tick", change: "changed" }),
+        expect.objectContaining({ kind: "timer", name: "cooldown", change: "added" }),
+        expect.objectContaining({ kind: "run", name: "loop", change: "removed" }),
+      ]),
+    );
+    expect(result.requiresConsent).toBe(true);
   });
 
   it("diffs params without requiring consent", () => {

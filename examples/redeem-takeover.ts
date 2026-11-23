@@ -92,7 +92,7 @@ export default Effect.gen(function* () {
       }),
   );
 
-  yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, (event) =>
+  yield* Twitch.ChannelPointsRedemption.subscribe("takeover-trigger", broadcaster, (event) =>
     Effect.gen(function* () {
       yield* takeover.execute(
         {

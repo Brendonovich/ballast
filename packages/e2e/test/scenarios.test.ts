@@ -70,7 +70,7 @@ const redeemScript = [
   '',
   'export default Effect.gen(function* () {',
   '  const broadcaster = yield* Twitch.Account("broadcaster");',
-  '  yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, (event) =>',
+  '  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, (event) =>',
   '    Effect.sync(() => console.log("E2E_REWARD:" + event.reward.title)),',
   '  );',
   '  yield* Effect.log("E2E_STARTED");',
@@ -86,7 +86,7 @@ const secondScript = [
   '',
   'export default Effect.gen(function* () {',
   '  const broadcaster = yield* Twitch.Account("broadcaster");',
-  '  yield* Twitch.ChannelPointsRedemption.subscribe(broadcaster, () => Effect.void);',
+  '  yield* Twitch.ChannelPointsRedemption.subscribe("redemption", broadcaster, () => Effect.void);',
   '});',
 ].join("\n");
 
@@ -98,7 +98,7 @@ const kofiScript = [
   '',
   'export default Effect.gen(function* () {',
   '  const hook = yield* Http.Webhook("kofi");',
-  '  yield* Http.Webhook.subscribe(hook, (delivery) =>',
+  '  yield* Http.Webhook.subscribe("donation", hook, (delivery) =>',
   '    Effect.sync(() => console.log("E2E_HOOK:" + new TextDecoder().decode(delivery.body))),',
   '  );',
   '});',

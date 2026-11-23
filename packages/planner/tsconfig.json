@@ -6,6 +6,7 @@
     "types": ["node"]
   },
   "include": ["src", "test"],
+  "exclude": ["test/fixtures/type-error", "test/fixtures/project", "test/fixtures/duplicate"],
   "references": [
     {
       "path": "../core"

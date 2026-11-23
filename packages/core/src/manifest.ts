@@ -68,8 +68,8 @@ export const TopicManifestSchema = Schema.Struct({
   integration: Schema.String,
   slot: Schema.String,
   topic: Schema.String,
-  /** Optional stable subscription name; required by the project-bundle API. */
-  name: Schema.optional(Schema.String),
+  /** Stable subscription name, unique per project. */
+  name: Schema.String,
   source: Schema.optional(SourceLocationSchema),
   scopes: Schema.Array(Schema.String),
   onStale: OnStaleSchema,
@@ -135,6 +135,12 @@ export const WorkflowManifestSchema = Schema.Struct({
 });
 export type WorkflowManifest = Schema.Schema.Type<typeof WorkflowManifestSchema>;
 
+export const RunManifestSchema = Schema.Struct({
+  name: Schema.String,
+  source: Schema.optional(SourceLocationSchema),
+});
+export type RunManifest = Schema.Schema.Type<typeof RunManifestSchema>;
+
 /**
  * Everything planning a script discovers before it runs. This is the exact
  * shape in docs/HANDOFF.md §6 Step 3, plus the additive `timers` field from
@@ -155,6 +161,9 @@ export const ManifestSchema = Schema.Struct({
   workflows: Schema.Array(WorkflowManifestSchema).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  runs: Schema.Array(RunManifestSchema).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type Manifest = Schema.Schema.Type<typeof ManifestSchema>;
 
@@ -170,6 +179,7 @@ export const emptyManifest = (scriptId: string): Manifest => ({
   unresolved: [],
   timers: [],
   workflows: [],
+  runs: [],
 });
 
 export const connectionKey = (connection: ConnectionManifest): string =>
@@ -193,3 +203,5 @@ export const requestManifestKey = (request: RequestManifest): string =>
 export const timerManifestKey = (timer: TimerManifest): string => timer.name;
 
 export const workflowManifestKey = (workflow: WorkflowManifest): string => workflow.name;
+
+export const runManifestKey = (run: RunManifest): string => run.name;

@@ -10,10 +10,15 @@ import type { EventHost } from "./topic.ts";
 import { ManifestRecorder, ScriptRunner } from "./services.ts";
 import type { EventBus, RequestClients, ScriptRunnerService, Settings } from "./services.ts";
 import { TimerHost, TimerHostPlan, TimerHostRuntime } from "./timer.ts";
+import { captureSource } from "./source.ts";
+import { withUnit } from "./unit.ts";
 
 export interface ScriptRuntimeContext {
   readonly phase: Phase;
-  readonly run: (effect: Effect.Effect<void, never, never>) => Effect.Effect<void>;
+  readonly run: (
+    name: string,
+    effect: Effect.Effect<void, never, never>,
+  ) => Effect.Effect<void>;
   /** Long-running loops registered with `Ballast.run`, plus host exports. */
   readonly exports: Effect.Effect<Record<string, unknown>>;
 }
@@ -60,17 +65,23 @@ interface ScriptRunnerState {
  * `exports`; the runtime worker does, once init has declared everything.
  */
 const makeScriptRunner = (): ScriptRunnerState => {
-  const loops: Effect.Effect<void, never, never>[] = [];
+  const loops: Array<{
+    readonly name: string;
+    readonly effect: Effect.Effect<void, never, never>;
+  }> = [];
 
   return {
     service: {
-      run: (effect) =>
+      run: (name, effect) =>
         Effect.sync(() => {
-          loops.push(effect);
+          loops.push({ name, effect });
         }),
     },
     exports: Effect.sync(() => ({
-      program: Effect.all(loops, { concurrency: "unbounded" }),
+      program: Effect.all(
+        loops.map((loop) => withUnit(loop.name, loop.effect)),
+        { concurrency: "unbounded" },
+      ),
     })),
   };
 };
@@ -130,9 +141,31 @@ export const evaluateScript = <E, R extends ScriptHostServices>(
     };
   });
 
-/** Register a long-running loop. Runs when the host evaluates `exports.program`. */
-export const run = (effect: Effect.Effect<void, never, never>): Effect.Effect<void, never, ScriptRunner> =>
-  Effect.flatMap(ScriptRunner, (runner) => runner.run(effect));
+/**
+ * Register a long-running, non-durable loop. Runs when the host evaluates
+ * `exports.program`. A loop that must survive a restart belongs in a workflow.
+ */
+export const run = (
+  name: string,
+  effect: Effect.Effect<void, never, never>,
+): Effect.Effect<void, never, ScriptRunner> => {
+  const source = captureSource(2);
+  return Effect.gen(function* () {
+    const phase = yield* currentPhase;
+    if (phase === "plan") {
+      const recorder = yield* Effect.serviceOption(ManifestRecorder);
+      if (Option.isSome(recorder)) {
+        yield* recorder.value.run({
+          name,
+          ...(source === undefined ? {} : { source }),
+        });
+      }
+      return;
+    }
+    const runner = yield* ScriptRunner;
+    yield* runner.run(name, effect);
+  });
+};
 
 /** The phase the current script is evaluated in. */
 export const phase: Effect.Effect<Phase> = currentPhase;

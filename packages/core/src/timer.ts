@@ -6,6 +6,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { OnStale, TimerManifest } from "./manifest.ts";
+import type { DeclarationSource } from "./source.ts";
+import { captureSource } from "./source.ts";
 import { ManifestRecorder } from "./services.ts";
 import type { ManifestRecorderService } from "./services.ts";
 
@@ -42,6 +44,8 @@ export interface TimerOptions<A> {
 
 export interface TimerSpec<A> extends TimerOptions<A> {
   readonly name: string;
+  /** Raw declaration location; the planner maps it to project source. */
+  readonly source?: DeclarationSource;
 }
 
 export interface TimerMetadata<A> {
@@ -51,6 +55,7 @@ export interface TimerMetadata<A> {
   readonly maxAgeMs: number;
   readonly payloadSchema: unknown;
   readonly payloadFingerprint: string;
+  readonly source: DeclarationSource | undefined;
   /** Canonical JSON codec used for persistence and delivery. */
   readonly codec: Schema.Codec<A, Schema.Json, never, never>;
 }
@@ -161,12 +166,14 @@ export const toTimerMetadata = <A>(spec: TimerSpec<A>): TimerMetadata<A> => {
     maxAgeMs,
     payloadSchema,
     payloadFingerprint: payloadFingerprint(payloadSchema),
+    source: spec.source,
     codec,
   };
 };
 
 export const toTimerManifest = (timer: TimerMetadata<unknown>): TimerManifest => ({
   name: timer.name,
+  ...(timer.source === undefined ? {} : { source: timer.source }),
   ...(timer.title === undefined ? {} : { title: timer.title }),
   onStale: timer.onStale,
   maxAgeMs: timer.maxAgeMs,
@@ -333,11 +340,20 @@ export const TimerHostRuntime: Layer.Layer<TimerHost> = Layer.effect(
  * Declare a durable timer. Call this in init and subscribe in the same init;
  * schedule instances from handlers or `Ballast.run`.
  */
+const makeTimerInternal = <A>(
+  name: string,
+  options: TimerOptions<A>,
+  source: DeclarationSource | undefined,
+): Effect.Effect<Timer<A>, never, TimerHost> =>
+  Effect.flatMap(TimerHost, (host) =>
+    host.make({ name, ...options, ...(source === undefined ? {} : { source }) }),
+  );
+
 export const make = <A>(
   name: string,
   options: TimerOptions<A>,
 ): Effect.Effect<Timer<A>, never, TimerHost> =>
-  Effect.flatMap(TimerHost, (host) => host.make({ name, ...options }));
+  makeTimerInternal(name, options, captureSource(2));
 
 /**
  * Declare a timer, subscribe its handler, and return the handle in one step.
@@ -357,12 +373,18 @@ export const subscribe = <A>(
   payload: Schema.Codec<A, unknown, never, never>,
   handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
   options: Omit<TimerOptions<A>, "payload"> = {},
-): Effect.Effect<Timer<A>, never, TimerHost> =>
-  Effect.gen(function* () {
-    const timer = yield* make(name, { ...options, payload });
+): Effect.Effect<Timer<A>, never, TimerHost> => {
+  const source = captureSource(2);
+  return Effect.gen(function* () {
+    const timer = yield* makeTimerInternal(
+      name,
+      { ...options, payload },
+      source,
+    );
     yield* timer.subscribe(handler);
     return timer;
   });
+};
 
 /** Declare a timer with no payload; `after` takes only a key and a duration. */
 export const unit = (

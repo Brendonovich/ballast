@@ -38,6 +38,11 @@ const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderS
       ...manifest,
       workflows: [...manifest.workflows, workflow],
     })),
+  run: (run) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      runs: [...manifest.runs, run],
+    })),
 });
 
 const cooldownPayload = Schema.Struct({ user: Schema.String });

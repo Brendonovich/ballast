@@ -6,6 +6,7 @@ import {
   type Manifest,
   type ParamManifest,
   type RequestManifest,
+  type RunManifest,
   type TimerManifest,
   type TopicManifest,
   type WorkflowManifest,
@@ -28,6 +29,7 @@ export interface ManifestDiff {
   readonly requests: DiffSet<RequestManifest>;
   readonly timers: DiffSet<TimerManifest>;
   readonly workflows: DiffSet<WorkflowManifest>;
+  readonly runs: DiffSet<RunManifest>;
   readonly scopes: DiffSet<string>;
 }
 
@@ -79,6 +81,7 @@ export const diff = (previous: Manifest, next: Manifest): ManifestDiff => {
     requests: diffBy(previous.requests, next.requests, requestManifestKey),
     timers: diffBy(previous.timers ?? [], next.timers ?? [], (timer) => timer.name),
     workflows: diffBy(previous.workflows ?? [], next.workflows ?? [], (workflow) => workflow.name),
+    runs: diffBy(previous.runs ?? [], next.runs ?? [], (run) => run.name),
     scopes,
   };
 };

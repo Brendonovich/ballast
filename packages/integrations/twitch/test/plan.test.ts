@@ -33,6 +33,7 @@ describe("plan Twitch scripts", () => {
             integration: "twitch",
             slot: "broadcaster",
             topic: "twitch/channel.channel_points_custom_reward_redemption.add",
+            name: "redemption",
             scopes: ["channel:read:redemptions"],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -43,6 +44,7 @@ describe("plan Twitch scripts", () => {
         unresolved: [],
         timers: [],
         workflows: [],
+        runs: [],
       });
     }),
   );

@@ -29,8 +29,8 @@ import { Effect } from "effect";
 export default Effect.gen(function* () {
   const hotkey = yield* Ballast.Param.string("hotkey", { options: VTS.hotkeys("main"), default: "Wave" });
   const vts = yield* VTS.Connection("main");
-  yield* VTS.HotkeyTriggered.subscribe(vts, (event) => Effect.log("hotkey " + event.hotkeyName), { ignoreHotkeysTriggeredByAPI: true });
-  yield* Ballast.run(Effect.gen(function* () {
+  yield* VTS.HotkeyTriggered.subscribe("hotkey", vts, (event) => Effect.log("hotkey " + event.hotkeyName), { ignoreHotkeysTriggeredByAPI: true });
+  yield* Ballast.run("vts-loop", Effect.gen(function* () {
     yield* vts.HotkeyTrigger({ hotkeyID: yield* hotkey });
     yield* Effect.log("vts triggered");
     yield* Effect.never;
@@ -44,7 +44,7 @@ import { Effect } from "effect";
 
 export default Effect.gen(function* () {
   const bridge = yield* WebSocket.Server("bridge", { port: 0, path: "/bridge" });
-  yield* WebSocket.ServerMessage.subscribe(bridge, (message) =>
+  yield* WebSocket.ServerMessage.subscribe("server-message", bridge, (message) =>
     message.text === undefined ? Effect.void : Effect.log("ws server " + message.text),
   );
 });
@@ -56,7 +56,7 @@ import { Effect } from "effect";
 
 export default Effect.gen(function* () {
   const upstream = yield* WebSocket.Client("upstream");
-  yield* WebSocket.Message.subscribe(upstream, (message) =>
+  yield* WebSocket.Message.subscribe("client-message", upstream, (message) =>
     message.text === undefined ? Effect.void : Effect.log("ws client " + message.text),
   );
 });
@@ -70,7 +70,7 @@ const Summary = Schema.Struct({ total: Schema.Number });
 
 export default Effect.gen(function* () {
   const api = yield* Http.Client("api", { hosts: ["127.0.0.1"] });
-  yield* Ballast.run(Effect.gen(function* () {
+  yield* Ballast.run("http-loop", Effect.gen(function* () {
     const response = yield* api.get("/summary", { schema: Summary });
     yield* Effect.log("http total " + response.body.total);
     yield* Effect.never;
@@ -86,7 +86,7 @@ const Donation = Schema.Struct({ from: Schema.String, amount: Schema.Number });
 
 export default Effect.gen(function* () {
   const hook = yield* Http.Webhook("kofi");
-  yield* Http.Webhook.json(Donation).subscribe(hook, (donation) =>
+  yield* Http.Webhook.json(Donation).subscribe("donation", hook, (donation) =>
     Effect.log("donation " + donation.from + " " + donation.amount),
   );
 });
@@ -98,7 +98,7 @@ import { Effect } from "effect";
 
 export default Effect.gen(function* () {
   const keyboard = yield* Keyboard.Connection("main");
-  yield* Keyboard.KeyDown.subscribe(keyboard, (event) => Effect.log("keydown " + event.key));
+  yield* Keyboard.KeyDown.subscribe("key-down", keyboard, (event) => Effect.log("keydown " + event.key));
 });
 `;
 
@@ -108,7 +108,7 @@ import { Effect } from "effect";
 
 export default Effect.gen(function* () {
   const midi = yield* Midi.Connection("controller");
-  yield* Midi.NoteOn.subscribe(midi, (event) => Effect.log("midi note " + event.note));
+  yield* Midi.NoteOn.subscribe("note-on", midi, (event) => Effect.log("midi note " + event.note));
 });
 `;
 

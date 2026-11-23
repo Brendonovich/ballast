@@ -118,7 +118,7 @@ const hotkeyBase = Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions>({
  */
 export const Hotkey: Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions> = {
   ...hotkeyBase,
-  subscribe: (connection, handler, options) => {
+  subscribe: (name, connection, handler, options) => {
     if (options === undefined) {
       return Effect.die(
         new Error('Keyboard.Hotkey.subscribe requires options: { keys: ["Ctrl", "F1"] }'),
@@ -135,7 +135,13 @@ export const Hotkey: Ballast.Topic<HotkeyPayload, Integration, HotkeyOptions> = 
     };
 
     return Effect.flatMap(Ballast.EventHost, (host) =>
-      host.subscribe(metadata, connection, handler),
+      host.subscribe(
+        metadata,
+        connection,
+        Ballast.withUnitHandler(name, handler),
+        name,
+        Ballast.captureSource(1),
+      ),
     );
   },
 };

@@ -22,6 +22,7 @@ describe("plan keyboard scripts", () => {
             integration: "keyboard",
             slot: "main",
             topic: "keyboard/Hotkey",
+            name: "hotkey",
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -31,6 +32,7 @@ describe("plan keyboard scripts", () => {
             integration: "keyboard",
             slot: "main",
             topic: "keyboard/KeyDown",
+            name: "key-down",
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -40,6 +42,7 @@ describe("plan keyboard scripts", () => {
         unresolved: [],
         timers: [],
         workflows: [],
+        runs: [],
       });
     }),
   );

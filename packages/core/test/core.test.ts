@@ -33,6 +33,11 @@ const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderS
       ...manifest,
       workflows: [...manifest.workflows, workflow],
     })),
+  run: (run) =>
+    Ref.update(ref, (manifest) => ({
+      ...manifest,
+      runs: [...manifest.runs, run],
+    })),
 });
 
 describe("@ballast/core plan phase", () => {
@@ -59,7 +64,7 @@ describe("@ballast/core plan phase", () => {
             topic: "fake/tick",
             scopes: ["fake:read"],
           });
-          yield* tick.subscribe(connection, () => Effect.void);
+          yield* tick.subscribe("tick", connection, () => Effect.void);
           expect(tick.key(connection)).toBe("fake/main/fake/tick");
           expect(tick.topic).toBe("fake/tick");
           expect(tick.scopes).toEqual(["fake:read"]);
@@ -75,15 +80,17 @@ describe("@ballast/core plan phase", () => {
         { integration: "fake", slot: "main", location: "local" },
       ]);
       expect(manifest.topics).toEqual([
-        {
+        expect.objectContaining({
           integration: "fake",
           slot: "main",
           topic: "fake/tick",
+          name: "tick",
           scopes: ["fake:read"],
           onStale: "drop",
           maxAgeMs: 60_000,
-        },
+        }),
       ]);
+      expect(manifest.topics[0]?.source).toBeDefined();
       expect(manifest.requests).toEqual([
         {
           integration: "fake",

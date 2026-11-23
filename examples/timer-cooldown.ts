@@ -23,7 +23,7 @@ export default Effect.gen(function* () {
     },
   );
 
-  yield* Fake.Tick.subscribe(fake, (tick) =>
+  yield* Fake.Tick.subscribe("tick", fake, (tick) =>
     Effect.gen(function* () {
       const user = `tick-${tick.n}`;
       // The key is idempotent: a new tick replaces the pending cooldown instead

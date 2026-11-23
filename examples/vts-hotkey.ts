@@ -10,6 +10,7 @@ export default Effect.gen(function* () {
   const vts = yield* VTS.Connection("main");
 
   yield* VTS.HotkeyTriggered.subscribe(
+    "hotkey-triggered",
     vts,
     (event) =>
       Effect.log(
@@ -18,7 +19,7 @@ export default Effect.gen(function* () {
     { ignoreHotkeysTriggeredByAPI: true },
   );
 
-  yield* Ballast.run(
+  yield* Ballast.run("hotkey-loop",
     Effect.gen(function* () {
       const name = yield* hotkey;
       yield* Effect.log("triggering hotkey " + name);

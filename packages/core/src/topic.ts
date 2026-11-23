@@ -7,6 +7,7 @@ import type { ConnectionRef } from "./connection.ts";
 import type { OnStale, TopicCondition, TopicManifest } from "./manifest.ts";
 import type { DeclarationSource } from "./source.ts";
 import { captureSource } from "./source.ts";
+import { withUnitHandler } from "./unit.ts";
 import { EventBus, ManifestRecorder } from "./services.ts";
 import type { EventBusService, ManifestRecorderService } from "./services.ts";
 
@@ -46,16 +47,6 @@ export interface Topic<
    * the third argument and turn them into manifest `condition` entries.
    */
   readonly subscribe: (
-    connection: ConnectionRef<Integration>,
-    handler: (event: A) => Effect.Effect<void, never, never>,
-    options?: Options,
-  ) => Effect.Effect<void, never, EventHost>;
-  /**
-   * Named subscription used by project bundles. The name identifies the unit
-   * and is recorded with a source link in the manifest. The old unnamed
-   * `subscribe` remains for the current integrations until they cut over.
-   */
-  readonly subscribeNamed: (
     name: string,
     connection: ConnectionRef<Integration>,
     handler: (event: A) => Effect.Effect<void, never, never>,
@@ -98,40 +89,36 @@ export const Topic = <A, Integration extends string, Options = void>(
     ...(spec.schema === undefined ? {} : { schema: spec.schema }),
   };
 
-  const subscribeImpl = (
-    name: string | undefined,
-    connection: ConnectionRef<Integration>,
-    handler: (event: A) => Effect.Effect<void, never, never>,
-    options: Options | undefined,
-  ) => {
-    const condition = spec.condition?.(connection, options);
-    const bound: TopicMetadata<A, Integration> =
-      condition === undefined ? metadata : { ...metadata, condition };
-    const source = name === undefined ? undefined : captureSource(3);
-    return Effect.flatMap(EventHost, (host) =>
-      host.subscribe(bound, connection, handler, name, source),
-    );
-  };
-
   return {
     ...metadata,
-    subscribe: (connection, handler, options) =>
-      subscribeImpl(undefined, connection, handler, options),
-    subscribeNamed: (name, connection, handler, options) =>
-      subscribeImpl(name, connection, handler, options),
+    subscribe: (name, connection, handler, options) => {
+      const condition = spec.condition?.(connection, options);
+      const bound: TopicMetadata<A, Integration> =
+        condition === undefined ? metadata : { ...metadata, condition };
+      const source = captureSource(2);
+      return Effect.flatMap(EventHost, (host) =>
+        host.subscribe(
+          bound,
+          connection,
+          withUnitHandler(name, handler),
+          name,
+          source,
+        ),
+      );
+    },
   };
 };
 
 export const toTopicManifest = <A, Integration extends string>(
   topic: TopicMetadata<A, Integration>,
   connection: ConnectionRef<Integration>,
-  name?: string,
+  name: string,
   source?: DeclarationSource,
 ): TopicManifest => ({
   integration: topic.integration,
   slot: connection.slot,
   topic: topic.topic,
-  ...(name === undefined ? {} : { name }),
+  name,
   ...(source === undefined ? {} : { source }),
   scopes: [...topic.scopes],
   onStale: topic.onStale,
@@ -144,7 +131,7 @@ export interface EventHostService {
     topic: TopicMetadata<A, Integration>,
     connection: ConnectionRef<Integration>,
     handler: (event: A) => Effect.Effect<void, never, never>,
-    name?: string,
+    name: string,
     source?: DeclarationSource,
   ) => Effect.Effect<void>;
 }
@@ -159,7 +146,7 @@ const subscribeInPlan = <A, Integration extends string>(
   recorder: Option.Option<ManifestRecorderService>,
   topic: TopicMetadata<A, Integration>,
   connection: ConnectionRef<Integration>,
-  name?: string,
+  name: string,
   source?: DeclarationSource,
 ): Effect.Effect<void> =>
   Option.match(recorder, {

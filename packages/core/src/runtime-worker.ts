@@ -16,6 +16,7 @@ import type {
   SettingsService,
 } from "./services.ts";
 import { TimerRuntime } from "./timer.ts";
+import { withUnit } from "./unit.ts";
 import type { TimerFire, TimerRuntimeService } from "./timer.ts";
 
 interface RuntimeWorkerData {
@@ -141,10 +142,13 @@ const runtimeProgram = (
         Effect.gen(function* () {
           const dispatch = (fire: TimerFire<unknown>): Effect.Effect<void> =>
             Effect.suspend(() =>
-              handler({
-                ...fire,
-                payload: Schema.decodeUnknownSync(timer.codec)(fire.payload),
-              }),
+              withUnit(
+                timer.name,
+                handler({
+                  ...fire,
+                  payload: Schema.decodeUnknownSync(timer.codec)(fire.payload),
+                }),
+              ),
             );
           const existing = timerHandlers.get(timer.name);
           if (existing === undefined) {

@@ -27,6 +27,7 @@ describe("plan VTube Studio script", () => {
             integration: "vts",
             slot: "main",
             topic: "vts/HotkeyTriggered",
+            name: "hotkey-triggered",
             scopes: [],
             onStale: "drop",
             maxAgeMs: 60_000,
@@ -37,6 +38,7 @@ describe("plan VTube Studio script", () => {
         unresolved: [],
         timers: [],
         workflows: [],
+        runs: [{ name: "hotkey-loop" }],
       });
     }),
   );
