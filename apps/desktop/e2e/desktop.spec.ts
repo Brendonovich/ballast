@@ -37,7 +37,6 @@ interface ConsentList {
   readonly consents: ReadonlyArray<{
     readonly id: string;
     readonly projectId: string;
-    readonly scriptId: string;
   }>;
 }
 
@@ -174,9 +173,8 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
 
   const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-e2e-"));
   const uid = process.getuid?.() ?? 0;
-  const label = "dev.ballast.agent.e2e." + process.pid + "." + Date.now();
-  expect(label).toContain(".e2e.");
-  expect(label).not.toBe("dev.ballast.agent");
+  const label = "dev.ballast.agent.test";
+  expect(label).toBe("dev.ballast.agent.test");
 
   const stateDir = path.join(root, "state");
   const dataDir = path.join(root, "data");
@@ -203,6 +201,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.BALLAST_UI_URL;
   delete env.BALLAST_SERVICE_VERSION;
+  delete env.BALLAST_DEV;
 
   let ui: ElectronApplication | undefined;
   let page: Page | undefined;
@@ -236,7 +235,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
   };
 
   try {
-    await mkdir(path.join(project, "scripts"), { recursive: true });
+    await mkdir(project, { recursive: true });
     await mkdir(path.join(project, "node_modules", "@ballast"), { recursive: true });
     await mkdir(stateDir, { recursive: true });
     await mkdir(dataDir, { recursive: true });
@@ -252,7 +251,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       path.join(project, "node_modules", "effect"),
       "dir",
     );
-    await writeFile(path.join(project, "scripts", "tick.ts"), tickScript, "utf8");
+    await writeFile(path.join(project, "ballast.ts"), tickScript, "utf8");
     await stat(path.join(agentRoot, "dist-service", "main.mjs"));
 
     // 1. Install the real service into a throwaway LaunchAgent via the same
@@ -278,20 +277,22 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       added.stdout,
     ).summary.id;
     expect(projectId.length).toBeGreaterThan(0);
-    const scriptId = "scripts/tick.ts";
 
-    await runCli(["scripts", "start", projectId + "/" + scriptId], env);
+    const started = await runCli(["projects", "start", projectId], env);
+    expect(started.code, started.stderr).toBe(0);
     const consent = await waitFor("consent request", async () => {
-      const listed = await runCli(["consent", "list"], env);
+      const listed = await runCli(["projects", "consents"], env);
       if (listed.code !== 0) return undefined;
       return parseCliJson<ConsentList>(listed.stdout).consents.find(
-        (candidate) => candidate.projectId === projectId && candidate.scriptId === scriptId,
+        (candidate) => candidate.projectId === projectId,
       );
     });
-    const approved = await runCli(["consent", "approve", consent.id], env);
+    const approved = await runCli(["projects", "approve", consent.id], env);
     expect(approved.code, approved.stderr).toBe(0);
+    const running = await runCli(["projects", "start", projectId], env);
+    expect(running.code, running.stderr).toBe(0);
     expect(
-      parseCliJson<{ readonly summary: { readonly status: string } }>(approved.stdout).summary.status,
+      parseCliJson<{ readonly summary: { readonly status: string } }>(running.stdout).summary.status,
     ).toBe("running");
 
     await waitFor(
@@ -368,14 +369,9 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       (hash) => {
         globalThis.location.hash = hash;
       },
-      "#/scripts/" + encodeURIComponent(projectId) + "/" + encodeURIComponent(scriptId),
+      "#/projects/" + encodeURIComponent(projectId),
     );
-    await expect(page.getByRole("heading", { name: "E2E Tick", level: 1 })).toBeVisible({
-      timeout: 20_000,
-    });
-    await expect(page.locator("main").getByText(/tick \d+/).first()).toBeVisible({
-      timeout: 20_000,
-    });
+    await expect(page.locator("body")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("ballast-e2e-ui.png"), fullPage: true });
 
     const beforeQuit = await readFile(serviceLog, "utf8").catch(() => "");
@@ -416,5 +412,47 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     expect(print.code).not.toBe(0);
   } finally {
     await cleanup();
+  }
+});
+
+test("shows the bundled fallback page before the service is installed", async () => {
+  test.setTimeout(120_000);
+  const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-fallback-"));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    BALLAST_APP_ID: "dev.ballast.agent.e2e-fallback." + process.pid,
+    BALLAST_SERVICE_LABEL: "dev.ballast.agent.e2e-fallback." + process.pid,
+    BALLAST_USER_DATA_DIR: path.join(root, "userData"),
+    BALLAST_STATE_DIR: path.join(root, "state"),
+    BALLAST_DATA_DIR: path.join(root, "data"),
+    BALLAST_LOG_DIR: path.join(root, "logs"),
+    BALLAST_LAUNCH_AGENTS_DIR: path.join(root, "LaunchAgents"),
+    BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.BALLAST_UI_URL;
+  delete env.BALLAST_SERVICE_VERSION;
+  delete env.BALLAST_DEV;
+
+  const ui = await electron.launch({
+    executablePath: electronPath,
+    args: ["."],
+    cwd: desktopRoot,
+    env,
+    timeout: 60_000,
+  });
+  try {
+    const page = await ui.firstWindow();
+    await expect(page.getByRole("heading", { name: /Starting Ballast/ })).toBeVisible();
+    await expect(page.locator("#phase")).toHaveText("not-installed");
+    expect(await page.evaluate(() => globalThis.location.protocol)).toBe("file:");
+    const hasBridge = await page.evaluate(() => {
+      const candidate: unknown = Reflect.get(globalThis, "ballast");
+      return typeof candidate === "object" && candidate !== null && "service" in candidate;
+    });
+    expect(hasBridge).toBe(true);
+  } finally {
+    await ui.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
   }
 });

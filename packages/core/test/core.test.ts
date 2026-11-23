@@ -6,7 +6,7 @@ import * as Ref from "effect/Ref";
 import * as Ballast from "../src/index.ts";
 
 const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderService => ({
-  script: (id) => Ref.update(ref, (manifest) => ({ ...manifest, script: { id } })),
+  project: (project) => Ref.update(ref, (manifest) => ({ ...manifest, project })),
   param: (param) =>
     Ref.update(ref, (manifest) => ({ ...manifest, params: [...manifest.params, param] })),
   connection: (connection) =>
@@ -74,7 +74,7 @@ describe("@ballast/core plan phase", () => {
       yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder);
 
       const manifest = yield* Ref.get(ref);
-      expect(manifest.script.id).toBe("records");
+      expect(manifest.project).toEqual({ id: "records", entry: "ballast.ts" });
       expect(manifest.params.map((param) => param.key)).toEqual(["prefix"]);
       expect(manifest.connections).toEqual([
         { integration: "fake", slot: "main", location: "local" },

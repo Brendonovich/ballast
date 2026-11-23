@@ -27,6 +27,17 @@ import {
   RemoveProjectRequest,
 } from "./projects.ts";
 import {
+  CreateProjectRequest,
+  ListProjectFilesRequest,
+  ListProjectFilesResponse,
+  ProjectCheckResult,
+  ProjectConsentRequest,
+  ProjectFileContent,
+  ReadProjectFileRequest,
+  SetProjectEnabledRequest,
+  SetProjectParamRequest,
+} from "./project.ts";
+import {
   RejectConsentRequest,
   ScriptIdRequest,
   SetScriptEnabledRequest,
@@ -207,6 +218,97 @@ export const SetScriptEnabled = Rpc.make("SetScriptEnabled", {
   error: AgentError,
 });
 
+/** Project bundle lifecycle. One project = one entry + one worker. */
+export const CreateProject = Rpc.make("CreateProject", {
+  payload: CreateProjectRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+/** Typecheck + bundle + plan + diff, without applying or starting. */
+export const CheckProject = Rpc.make("CheckProject", {
+  payload: ProjectIdRequest,
+  success: ProjectCheckResult,
+  error: AgentError,
+});
+
+export const PlanProject = Rpc.make("PlanProject", {
+  payload: ProjectIdRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+export const StartProject = Rpc.make("StartProject", {
+  payload: ProjectIdRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+export const StopProject = Rpc.make("StopProject", {
+  payload: ProjectIdRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+export const RestartProject = Rpc.make("RestartProject", {
+  payload: ProjectIdRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+export const SetProjectParam = Rpc.make("SetProjectParam", {
+  payload: SetProjectParamRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+export const SetProjectEnabled = Rpc.make("SetProjectEnabled", {
+  payload: SetProjectEnabledRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+/** Read-only project file tree and files (no write/upload RPC). */
+export const ListProjectFiles = Rpc.make("ListProjectFiles", {
+  payload: ListProjectFilesRequest,
+  success: ListProjectFilesResponse,
+  error: AgentError,
+});
+
+export const ReadProjectFile = Rpc.make("ReadProjectFile", {
+  payload: ReadProjectFileRequest,
+  success: ProjectFileContent,
+  error: AgentError,
+});
+
+/** The entry file, replacing GetScriptSource. */
+export const GetProjectSource = Rpc.make("GetProjectSource", {
+  payload: ProjectIdRequest,
+  success: ProjectFileContent,
+  error: AgentError,
+});
+
+export const ListProjectConsents = Rpc.make("ListProjectConsents", {
+  payload: Schema.Struct({ projectId: Schema.optionalKey(Schema.String) }),
+  success: Schema.Struct({ consents: Schema.Array(ProjectConsentRequest) }),
+  error: AgentError,
+});
+
+export const ApproveProjectConsent = Rpc.make("ApproveProjectConsent", {
+  payload: Schema.Struct({ consentId: Schema.String }),
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+export const RejectProjectConsent = Rpc.make("RejectProjectConsent", {
+  payload: Schema.Struct({
+    consentId: Schema.String,
+    reason: Schema.optionalKey(Schema.String),
+  }),
+  success: ProjectDetail,
+  error: AgentError,
+});
+
 /** Consent is per script and per plan, not global. */
 /** Durable timer instances; declarations live in `ScriptManifest.timers`. */
 export const ListTimers = Rpc.make("ListTimers", {
@@ -360,6 +462,20 @@ export const AgentRpcs = RpcGroup.make(
   RestartScript,
   SetScriptParam,
   SetScriptEnabled,
+  CreateProject,
+  CheckProject,
+  PlanProject,
+  StartProject,
+  StopProject,
+  RestartProject,
+  SetProjectParam,
+  SetProjectEnabled,
+  ListProjectFiles,
+  ReadProjectFile,
+  GetProjectSource,
+  ListProjectConsents,
+  ApproveProjectConsent,
+  RejectProjectConsent,
   ListTimers,
   CancelTimer,
   ListConsents,

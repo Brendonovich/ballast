@@ -287,7 +287,7 @@ export const toWireManifest = (
   })),
 });
 
-const toWireDiff = (
+export const toWireDiff = (
   changes: PlannerDiff,
   options: ReadonlyMap<string, ReadonlyArray<string>>,
   connections: ReadonlyMap<
@@ -1388,7 +1388,9 @@ export const ScriptManagerLive = Layer.effect(
               }
             }
           }
-          yield* reconcileConnections;
+          if ((yield* records()).some((record) => record.projectId === projectId)) {
+            yield* reconcileConnections;
+          }
         }),
       );
 
@@ -1520,7 +1522,7 @@ export const ScriptManagerLive = Layer.effect(
       cancelTimer: (request: CancelTimerRequest) =>
         timers.cancel({
           projectId: request.projectId,
-          scriptId: request.scriptId,
+          scriptId: request.scriptId ?? "",
           timer: request.timer,
           key: request.key,
         }),

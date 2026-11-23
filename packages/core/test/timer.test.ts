@@ -11,7 +11,7 @@ import { TestClock } from "effect/testing";
 import * as Ballast from "../src/index.ts";
 
 const makeRecorder = (ref: Ref.Ref<Ballast.Manifest>): Ballast.ManifestRecorderService => ({
-  script: (id) => Ref.update(ref, (manifest) => ({ ...manifest, script: { id } })),
+  project: (project) => Ref.update(ref, (manifest) => ({ ...manifest, project })),
   param: (param) =>
     Ref.update(ref, (manifest) => ({ ...manifest, params: [...manifest.params, param] })),
   connection: (connection) =>

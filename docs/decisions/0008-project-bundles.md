@@ -1,7 +1,8 @@
 # 0008 — Project bundles: one project, one bundle, named units
 
-*Status: W1 (core units), W2 (planner project bundles) and W6 (integration
-cutover) implemented · 2026-11-23 · effect `4.0.6`*
+*Status: W1 (core units), W2 (planner project bundles), W4 (project runtime),
+the protocol half of W5, and W6 (integration cutover) implemented · 2026-11-23 ·
+effect `4.0.6`*
 
 ## Context
 
@@ -310,6 +311,13 @@ Migration at project discovery:
 Backwards compatibility is not a product requirement, but migration must not
 silently lose user state.
 
+**Implementation choice:** the service performs a clean reset for the first
+project-bundle cutover. It reads/writes only `.ballast/settings.json` with
+`{ enabled, params }` and `.ballast/applied.json`; old per-script settings,
+applied files and timer entries are ignored rather than merged. This avoids a
+silent collision between two scripts' params or unit names while the UI is
+still moving to the project surface.
+
 ## 6. Agent protocol
 
 The protocol becomes project/unit-oriented. Additive/renamed at the next
@@ -339,9 +347,11 @@ apiVersion bump:
   read-only file tree/source pane. There is no file write/upload RPC.
 - Logs/events: filters become `{ projectId?, unitKind?, unitName? }`; records
   carry `unitKind` and `unitName` instead of `scriptId`.
-- Mutations: `StartProject`, `StopProject`, `RestartProject`,
-  `PlanProject`, `SetProjectParam`, `ApproveProjectConsent`,
-  `RejectProjectConsent`; `ListConsents` is project-level.
+- Mutations: `CreateProject` (scaffold), `StartProject`, `StopProject`,
+  `RestartProject`, `PlanProject`, `CheckProject` (non-applying), `SetProjectParam`,
+  `ApproveProjectConsent`, `RejectProjectConsent`; `ListConsents` is project-level.
+  The projects base directory is `BALLAST_PROJECTS_DIR` (default
+  `<home>/ballast-projects`).
 - Workflow/timer surfaces: executions/timers are listed by project and unit
   name, not script id.
 - Migration/versioning: rename RPCs or add new ones; bump `apiVersion` when

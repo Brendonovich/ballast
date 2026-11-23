@@ -64,25 +64,25 @@ export interface TimerManager {
   readonly loadProject: (project: { readonly id: string; readonly root: string }) => Effect.Effect<void>;
   readonly registerName: (input: {
     readonly projectId: string;
-    readonly scriptId: string;
+    readonly scriptId?: string;
     readonly generation: number;
     readonly name: string;
   }) => Effect.Effect<void>;
   readonly activate: (input: {
     readonly projectId: string;
-    readonly scriptId: string;
+    readonly scriptId?: string;
     readonly generation: number;
     readonly session: RuntimeSession;
     readonly manifest: Manifest;
   }) => Effect.Effect<void>;
   readonly deactivate: (input: {
     readonly projectId: string;
-    readonly scriptId: string;
+    readonly scriptId?: string;
     readonly generation?: number;
   }) => Effect.Effect<void>;
   readonly schedule: (input: {
     readonly projectId: string;
-    readonly scriptId: string;
+    readonly scriptId?: string;
     readonly generation: number;
     readonly declaration: TimerManifest;
     readonly manifest: Manifest;
@@ -92,7 +92,7 @@ export interface TimerManager {
   }) => Effect.Effect<void, string>;
   readonly cancel: (input: {
     readonly projectId: string;
-    readonly scriptId: string;
+    readonly scriptId?: string;
     readonly timer: string;
     readonly key: string;
   }) => Effect.Effect<boolean>;
@@ -115,14 +115,27 @@ export const timerStorePath = (projectRoot: string): string =>
  */
 const timerKey = (timer: string, key: string): string => `${timer}\u0000${key}`;
 
-const scriptKey = (projectId: string, scriptId: string): string =>
-  `${projectId}\u0000${scriptId}`;
+const scriptKey = (projectId: string, scriptId?: string): string =>
+  projectId + "\u0000" + (scriptId ?? "");
+
+const activeFor = (
+  active: ReadonlyMap<string, ActiveSession>,
+  projectId: string,
+  scriptId: string | undefined,
+): ActiveSession | undefined => {
+  const direct = active.get(scriptKey(projectId, scriptId));
+  if (direct !== undefined || scriptId !== undefined) return direct;
+  for (const [key, session] of active) {
+    if (key.startsWith(projectId + "\u0000")) return session;
+  }
+  return undefined;
+};
 
 const sortTimers = (timers: Iterable<ScheduledTimer>): ReadonlyArray<ScheduledTimer> =>
   [...timers].sort(
     (left, right) =>
       left.dueAt - right.dueAt ||
-      left.scriptId.localeCompare(right.scriptId) ||
+      (left.scriptId ?? "").localeCompare(right.scriptId ?? "") ||
       left.timer.localeCompare(right.timer) ||
       left.key.localeCompare(right.key),
   );
@@ -208,7 +221,7 @@ export const makeTimerManager = (
         for (const [projectId, entries] of storesNow) {
           for (const entry of entries.values()) {
             if (entry.state !== "pending") continue;
-            const session = activeNow.get(scriptKey(projectId, entry.scriptId));
+            const session = activeFor(activeNow, projectId, entry.scriptId);
             if (session === undefined || !session.timerNames.has(entry.timer)) continue;
             const declaration = session.manifest.timers.find(
               (timer) => timer.name === entry.timer,
@@ -242,13 +255,12 @@ export const makeTimerManager = (
       entry: ScheduledTimer,
       activeNow: ReadonlyMap<string, ActiveSession>,
     ): TimerSummary => {
-      const session = activeNow.get(scriptKey(projectId, entry.scriptId));
+      const session = activeFor(activeNow, projectId, entry.scriptId);
       const declaration = session?.manifest.timers.find(
         (timer) => timer.name === entry.timer,
       );
       return {
         projectId,
-        scriptId: entry.scriptId,
         timer: entry.timer,
         ...(declaration?.title === undefined ? {} : { title: declaration.title }),
         key: entry.key,
@@ -287,12 +299,12 @@ export const makeTimerManager = (
     const onFire = (fire: TimerFireRecord): Effect.Effect<void> =>
       mutex.withPermit(
         Effect.gen(function* () {
-          const projectId = fire.scriptId;
+          const projectId = fire.scriptId ?? "";
           const entries = (yield* Ref.get(stores)).get(projectId);
           const entry = entries?.get(timerKey(fire.timer, fire.key));
           if (entry === undefined || entry.state !== "pending") return;
 
-          const session = (yield* Ref.get(active)).get(scriptKey(projectId, entry.scriptId));
+          const session = activeFor(yield* Ref.get(active), projectId, entry.scriptId);
           const declaration = session?.manifest.timers.find(
             (timer) => timer.name === entry.timer,
           );
@@ -638,7 +650,7 @@ export const makeTimerManager = (
 
           const now = options.clock.currentTimeMillisUnsafe();
           const entry: ScheduledTimer = {
-            scriptId: input.scriptId,
+            ...(input.scriptId === undefined ? {} : { scriptId: input.scriptId }),
             timer: input.declaration.name,
             key: input.key,
             payload: input.payload,
@@ -693,7 +705,7 @@ export const makeTimerManager = (
         }
         return timers.sort(
           (left, right) =>
-            left.dueAt - right.dueAt || left.scriptId.localeCompare(right.scriptId),
+            left.dueAt - right.dueAt || left.timer.localeCompare(right.timer) || left.key.localeCompare(right.key),
         );
       });
 

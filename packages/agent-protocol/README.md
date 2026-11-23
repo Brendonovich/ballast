@@ -20,6 +20,43 @@ The transport-independent contract between the Ballast agent service, the deskto
   `TimerSummary` rows, `CancelTimer` removes one instance, and `timer-fired` is a service event.
   The worker-only `RegisterTimer`/`ScheduleTimer`/`CancelTimer` RPCs are in `RuntimeRpcs`.
 
+## Project bundles (0008)
+
+The primary surface is project-oriented. A project is one entry
+(`ballast.ts` or `package.json#ballast.entry`) and one worker.
+
+- `ProjectSummary` — `id`, `name`, `root`, optional `entry`, `enabled`,
+  `status: "stopped" | "running" | "needs-consent" | "error"`, `unitCount`,
+  `createdAt`, `updatedAt`, optional `lastError`.
+- `ProjectDetail` — `{ summary, manifest, units, appliedAt?, pendingConsent?,
+  lastErrorSource?, scripts }`. `scripts` remains only for the script-oriented
+  cutover UI.
+- `ProjectManifest` — `{ project: { id, entry }, params, connections, topics,
+  requests, timers, workflows, runs, unresolved }`; topic/timer/workflow/run
+  entries carry `name` and optional `source: { file, line, column }`.
+- `UnitSummary` — `{ kind: "topic" | "timer" | "workflow" | "param" | "run",
+  name, title?, source?, status: "active" | "waiting" | "error",
+  lastActivityAt? }`.
+- Lifecycle RPCs — `CreateProject`, `CheckProject`, `PlanProject`,
+  `StartProject`, `StopProject`, `RestartProject`, `SetProjectParam`,
+  `SetProjectEnabled`. `CreateProject({ name, directory? })` scaffolds a
+  stopped project (default `<BALLAST_PROJECTS_DIR>/<slug>`); `CheckProject`
+  typechecks/bundles/plans/diffs without applying and returns structured
+  diagnostics, units, changes, consent need, missing scopes/connections and the
+  applied manifest.
+- Files — `ListProjectFiles`, `ReadProjectFile`, `GetProjectSource`;
+  read-only, project-relative paths.
+- Consents — `ListProjectConsents`, `ApproveProjectConsent`,
+  `RejectProjectConsent` with `ProjectConsentRequest`.
+- Logs/events — `StreamLogs` and `StreamEvents` accept `unitKind` and
+  `unitName`; entries carry the same fields plus `projectId`.
+- Timers — `ListTimers({ projectId?, includeFinished? })` and
+  `CancelTimer({ projectId, timer, key })`. `scriptId` is no longer part of
+  `TimerSummary`.
+- Service events — `project-changed`, `reload-failed` (`message`, optional
+  `source`, `at`), `project-file-changed`, `project-consent`,
+  `project-consent-resolved`.
+
 ## Using the mock
 
 ```ts

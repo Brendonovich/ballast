@@ -1,13 +1,19 @@
 #!/usr/bin/env -S node --experimental-strip-types --no-warnings=ExperimentalWarning
 // The CLI talks to `@ballast/planner`; TypeScript files are run directly via
 // Node's built-in type stripping (Node >= 22.18), so no build step is needed.
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Stream } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { decodeManifest, diff, plan } from "@ballast/planner";
+import {
+  decodeManifest,
+  diff,
+  plan,
+  planProject,
+  resolveProjectEntry,
+} from "@ballast/planner";
 import { parseAssignment } from "./connection-config.ts";
 import type { ConnectionOptions } from "./connection-config.ts";
 import { runScript } from "./run.ts";
@@ -246,13 +252,26 @@ const parseRunArgs = (args: ReadonlyArray<string>): RunArgs => {
   return { entry, params, connections, secrets, twitchModes, cloudUrl };
 };
 
+const entryFor = (path: string): Effect.Effect<string, Error> =>
+  Effect.gen(function* () {
+    const info = yield* Effect.tryPromise({
+      try: () => stat(path),
+      catch: (cause) => new Error(String(cause)),
+    });
+    if (!info.isDirectory()) return path;
+    return (yield* resolveProjectEntry(path).pipe(
+      Effect.mapError((error) => new Error(error.message)),
+    )).entryFile;
+  });
+
 const runCommand = (args: ReadonlyArray<string>): Effect.Effect<never, Error> =>
   Effect.gen(function* () {
     const options = yield* Effect.try({
       try: () => parseRunArgs(args),
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
-    return yield* runScript(options);
+    const entry = yield* entryFor(options.entry);
+    return yield* runScript({ ...options, entry });
   });
 
 const planCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
@@ -262,9 +281,18 @@ const planCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error> =>
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
 
-    const manifest = yield* plan(options.entry, { resolveDir }).pipe(
-      Effect.mapError((error) => new Error(error.message)),
-    );
+    const info = yield* Effect.tryPromise({
+      try: () => stat(options.entry),
+      catch: (cause) => new Error(String(cause)),
+    });
+    const manifest = yield* (info.isDirectory()
+      ? planProject(options.entry).pipe(
+          Effect.map((project) => project.manifest),
+          Effect.mapError((error) => new Error(error.message)),
+        )
+      : plan(options.entry, { resolveDir }).pipe(
+          Effect.mapError((error) => new Error(error.message)),
+        ));
 
     if (options.diffAgainst === undefined) {
       yield* printJson(manifest);
@@ -636,6 +664,43 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
       if (id === undefined) throw new Error("projects remove requires an id");
       yield* service((client) => client.RemoveProject({ projectId: id }));
       console.log(`removed ${id}`);
+      return;
+    }
+    if (sub === "consents") {
+      yield* printJson(
+        yield* service((client) =>
+          client.ListProjectConsents({}),
+        ),
+      );
+      return;
+    }
+    if (sub === "approve" || sub === "reject") {
+      const values = positional(rest, []);
+      const id = values[0];
+      if (id === undefined) throw new Error(`projects ${sub} requires a consent id`);
+      yield* printJson(
+        yield* service((client) =>
+          sub === "approve"
+            ? client.ApproveProjectConsent({ consentId: id })
+            : client.RejectProjectConsent({ consentId: id }),
+        ),
+      );
+      return;
+    }
+    if (sub === "start" || sub === "stop" || sub === "restart" || sub === "plan") {
+      const values = positional(rest, []);
+      const id = values[0];
+      if (id === undefined) throw new Error(`projects ${sub} requires an id`);
+      const detail = yield* service((client) =>
+        sub === "start"
+          ? client.StartProject({ projectId: id })
+          : sub === "stop"
+            ? client.StopProject({ projectId: id })
+            : sub === "restart"
+              ? client.RestartProject({ projectId: id })
+              : client.PlanProject({ projectId: id }),
+      );
+      yield* printJson(detail);
       return;
     }
     throw new Error(`Unknown projects command "${sub}"`);

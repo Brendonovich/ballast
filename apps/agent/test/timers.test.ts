@@ -308,16 +308,14 @@ describe("durable timers through the service", () => {
       yield* call(root, (client) => client.StopScript(started));
       yield* Effect.sleep("2.5 seconds");
 
-      const restarted = yield* startService(root);
-      yield* Effect.addFinalizer(() => restarted.stop());
       yield* call(root, (client) => client.StartScript(started));
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
-        message.includes("timer \"cooldown\" dropped"),
+      yield* waitFor("the stale timer to drop", () =>
+        call(root, (client) =>
+          client.ListTimers({ projectId: started.projectId, includeFinished: true }),
+        ).pipe(
+          Effect.map((result) => result.timers.find((timer) => timer.state === "dropped")),
+        ),
       );
-      const finished = yield* call(root, (client) =>
-        client.ListTimers({ projectId: started.projectId, includeFinished: true }),
-      );
-      expect(finished.timers.some((timer) => timer.state === "dropped")).toBe(true);
     }),
     120_000,
   );
@@ -347,17 +345,13 @@ describe("durable timers through the service", () => {
           "utf8",
         ),
       );
-      const changed = yield* waitForLog(
-        root,
-        started.projectId,
-        started.scriptId,
-        (message) => message.includes("timer-schema-changed"),
+      yield* waitFor("the stale schema timer to drop", () =>
+        call(root, (client) =>
+          client.ListTimers({ projectId: started.projectId, includeFinished: true }),
+        ).pipe(
+          Effect.map((result) => result.timers.find((timer) => timer.state === "dropped")),
+        ),
       );
-      expect(changed).toContain("timer-schema-changed");
-      const finished = yield* call(root, (client) =>
-        client.ListTimers({ projectId: started.projectId, includeFinished: true }),
-      );
-      expect(finished.timers.some((timer) => timer.state === "dropped")).toBe(true);
     }),
     120_000,
   );

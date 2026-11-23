@@ -147,8 +147,9 @@ export type RunManifest = Schema.Schema.Type<typeof RunManifestSchema>;
  * decision 0006 and `workflows` from decision 0007.
  */
 export const ManifestSchema = Schema.Struct({
-  script: Schema.Struct({
+  project: Schema.Struct({
     id: Schema.String,
+    entry: Schema.String,
   }),
   params: Schema.Array(ParamManifestSchema),
   connections: Schema.Array(ConnectionManifestSchema),
@@ -170,8 +171,11 @@ export type Manifest = Schema.Schema.Type<typeof ManifestSchema>;
 /** The schema, exported under the manifest's name for hosts that validate input. */
 export const Manifest = ManifestSchema;
 
-export const emptyManifest = (scriptId: string): Manifest => ({
-  script: { id: scriptId },
+export const emptyManifest = (
+  projectId: string,
+  entry = "ballast.ts",
+): Manifest => ({
+  project: { id: projectId, entry },
   params: [],
   connections: [],
   topics: [],

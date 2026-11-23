@@ -10,6 +10,9 @@ import {
   type ServiceEvent,
   type ServiceInfo,
   type ServiceSnapshot,
+  type ScriptSummary,
+  type ProjectSummary,
+  type TimerSummary,
   type HealthStatus,
   type CloudStatus,
 } from "@ballast/agent-protocol";
@@ -20,6 +23,8 @@ import { ConnectionManager } from "./connections.ts";
 import { Lifecycle } from "./lifecycle.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
+import { ProjectRuntime } from "./project-runtime.ts";
+import { scaffoldProject } from "./scaffold.ts";
 import { ScriptManager } from "./scripts.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
 
@@ -35,6 +40,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
   const handlers = Effect.gen(function* () {
     const projects = yield* ProjectManager;
     const scripts = yield* ScriptManager;
+    const runtime = yield* ProjectRuntime;
     const connections = yield* ConnectionManager;
     const cloud = yield* CloudLink;
     const lifecycle = yield* Lifecycle;
@@ -74,6 +80,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
 
     const health = Effect.gen(function* () {
       const counts = yield* scripts.counts;
+      const projectCounts = yield* runtime.counts;
       const connectionList = yield* connections.summaries();
       const cloudStatus = yield* cloud.status;
       const projectList = yield* projects.projects;
@@ -86,7 +93,12 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         apiVersion: AGENT_API_VERSION,
         pid: process.pid,
         uptimeMs: Math.max(0, Date.now() - options.startedAt),
-        projects: { total: projectList.length },
+        projects: {
+          total: projectList.length,
+          running: projectCounts.running,
+          needsConsent: projectCounts.needsConsent,
+          error: projectCounts.error,
+        },
         scripts: counts,
         connections: {
           total: connectionList.length,
@@ -105,20 +117,65 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
 
     const projectScripts = (projectId: string) => scripts.summaries(projectId);
 
-    const projectSummary = (project: ProjectRecord, scriptCount: number) => ({
-      id: project.id,
-      name: project.name,
-      root: project.root,
-      createdAt: project.createdAt,
-      updatedAt: project.updatedAt,
-      scriptCount,
-    });
+    const legacyProjectSummary = (
+      project: ProjectRecord,
+      projectScriptSummaries: ReadonlyArray<ScriptSummary>,
+    ): ProjectSummary => {
+      const status: ProjectSummary["status"] = projectScriptSummaries.some(
+        (script) => script.status === "running",
+      )
+        ? "running"
+        : projectScriptSummaries.some((script) => script.status === "needs-consent")
+          ? "needs-consent"
+          : projectScriptSummaries.some((script) => script.status === "error")
+            ? "error"
+            : "stopped";
+      const lastError = projectScriptSummaries.find(
+        (script) => script.lastError !== undefined,
+      )?.lastError;
+      return {
+        id: project.id,
+        name: project.name,
+        root: project.root,
+        entry: projectScriptSummaries[0]?.entry ?? "ballast.ts",
+        enabled: projectScriptSummaries.some((script) => script.enabled),
+        status,
+        unitCount: 0,
+        scriptCount: projectScriptSummaries.length,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+        ...(lastError === undefined ? {} : { lastError }),
+      };
+    };
+
+    const projectSummary = (project: ProjectRecord) =>
+      Effect.gen(function* () {
+        const current = yield* runtime.summary(project.id);
+        if (current !== undefined) return current;
+        const projectScriptSummaries = yield* projectScripts(project.id);
+        return legacyProjectSummary(project, projectScriptSummaries);
+      });
 
     const projectDetail = (project: ProjectRecord) =>
       Effect.gen(function* () {
+        const current = yield* runtime.summary(project.id);
+        if (current !== undefined) return yield* runtime.detail(project.id);
         const projectScriptSummaries = yield* projectScripts(project.id);
+        const summary = legacyProjectSummary(project, projectScriptSummaries);
         return {
-          summary: projectSummary(project, projectScriptSummaries.length),
+          summary,
+          manifest: {
+            project: { id: project.id, entry: summary.entry ?? "ballast.ts" },
+            params: [],
+            connections: [],
+            topics: [],
+            requests: [],
+            timers: [],
+            workflows: [],
+            runs: [],
+            unresolved: [],
+          },
+          units: [],
           scripts: projectScriptSummaries,
         };
       });
@@ -136,10 +193,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       const serviceInfo = yield* info;
       const serviceHealth = yield* health;
       const summaries = yield* Effect.forEach(projectList, (project) =>
-        Effect.gen(function* () {
-          const count = (yield* projectScripts(project.id)).length;
-          return projectSummary(project, count);
-        }),
+        projectSummary(project),
       );
       return {
         info: serviceInfo,
@@ -194,17 +248,32 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       ListProjects: () =>
         Effect.gen(function* () {
           const list = yield* projects.projects;
-          const summaries = yield* Effect.forEach(list, (project) =>
-            Effect.gen(function* () {
-              const count = (yield* projectScripts(project.id)).length;
-              return projectSummary(project, count);
-            }),
-          );
+          const summaries = yield* Effect.forEach(list, (project) => projectSummary(project));
           return { projects: summaries };
         }),
 
       GetProject: ({ projectId }: { readonly projectId: string }) =>
         Effect.flatMap(requireProject(projectId), projectDetail),
+
+      CreateProject: (request: {
+        readonly name: string;
+        readonly directory?: string;
+      }) =>
+        Effect.gen(function* () {
+          const scaffolded = yield* scaffoldProject({
+            name: request.name,
+            ...(request.directory === undefined ? {} : { directory: request.directory }),
+          });
+          const project = yield* projects.add({
+            path: scaffolded.root,
+            name: scaffolded.name,
+          });
+          yield* scripts.syncProject(project.id);
+          yield* runtime.syncProject(project.id);
+          yield* hub.publish({ _tag: "project", project: yield* projectSummary(project) });
+          yield* publishHealth;
+          return yield* projectDetail(project);
+        }),
 
       AddProject: (request: { readonly path: string; readonly name?: string }) =>
         Effect.gen(function* () {
@@ -213,13 +282,9 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
             ...(request.name === undefined ? {} : { name: request.name }),
           });
           yield* scripts.syncProject(project.id);
-          yield* hub.publish({
-            _tag: "project",
-            project: projectSummary(
-              project,
-              (yield* projectScripts(project.id)).length,
-            ),
-          });
+          yield* runtime.syncProject(project.id);
+          const summary = yield* projectSummary(project);
+          yield* hub.publish({ _tag: "project", project: summary });
           yield* publishHealth;
           return yield* projectDetail(project);
         }),
@@ -228,10 +293,37 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         Effect.gen(function* () {
           yield* requireProject(projectId);
           yield* scripts.removeProject(projectId);
+          yield* runtime.removeProject(projectId);
           yield* projects.remove(projectId);
           yield* hub.publish({ _tag: "project-removed", projectId });
           yield* publishHealth;
         }),
+
+      CheckProject: ({ projectId }: { readonly projectId: string }) => runtime.check(projectId),
+      PlanProject: ({ projectId }: { readonly projectId: string }) => runtime.plan(projectId),
+      StartProject: ({ projectId }: { readonly projectId: string }) => runtime.start(projectId),
+      StopProject: ({ projectId }: { readonly projectId: string }) => runtime.stop(projectId),
+      RestartProject: ({ projectId }: { readonly projectId: string }) => runtime.restart(projectId),
+      SetProjectParam: (request: {
+        readonly projectId: string;
+        readonly key: string;
+        readonly value: string | number | boolean;
+      }) => runtime.setParam(request.projectId, request.key, request.value),
+      SetProjectEnabled: (request: {
+        readonly projectId: string;
+        readonly enabled: boolean;
+      }) => runtime.setEnabled(request.projectId, request.enabled),
+      ListProjectFiles: ({ projectId }: { readonly projectId: string }) => runtime.files(projectId),
+      ReadProjectFile: ({ projectId, path }: { readonly projectId: string; readonly path: string }) =>
+        runtime.readFile(projectId, path),
+      GetProjectSource: ({ projectId }: { readonly projectId: string }) =>
+        runtime.entrySource(projectId),
+      ListProjectConsents: (request: { readonly projectId?: string }) =>
+        Effect.map(runtime.consents(request.projectId), (consents) => ({ consents })),
+      ApproveProjectConsent: ({ consentId }: { readonly consentId: string }) =>
+        runtime.approve(consentId),
+      RejectProjectConsent: (request: { readonly consentId: string; readonly reason?: string }) =>
+        runtime.reject(request.consentId, request.reason),
 
       ListScripts: (request: { readonly projectId?: string }) =>
         Effect.map(scripts.summaries(request.projectId), (list) => ({ scripts: list })),
@@ -272,15 +364,27 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         readonly scriptId?: string;
         readonly includeFinished?: boolean;
       }) =>
-        Effect.map(scripts.listTimers(request), (timers) => ({ timers })),
+        Effect.gen(function* () {
+          const legacy = yield* scripts.listTimers(request);
+          const project = yield* runtime.listTimers(request);
+          const merged = new Map<string, TimerSummary>();
+          for (const timer of [...legacy, ...project]) {
+            merged.set(timer.projectId + "\u0000" + timer.timer + "\u0000" + timer.key, timer);
+          }
+          return { timers: [...merged.values()] };
+        }),
 
       CancelTimer: (request: {
         readonly projectId: string;
-        readonly scriptId: string;
+        readonly scriptId?: string;
         readonly timer: string;
         readonly key: string;
       }) =>
-        Effect.map(scripts.cancelTimer(request), (cancelled) => ({ cancelled })),
+        Effect.gen(function* () {
+          const cancelled = yield* runtime.cancelTimer(request);
+          if (cancelled) return { cancelled };
+          return { cancelled: yield* scripts.cancelTimer(request) };
+        }),
 
       ListConsents: (request: { readonly projectId?: string }) =>
         Effect.map(scripts.consents(request.projectId), (consents) => ({ consents })),
@@ -330,6 +434,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       StreamLogs: (request: {
         readonly projectId?: string;
         readonly scriptId?: string;
+        readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+        readonly unitName?: string;
         readonly afterSeq?: number;
         readonly levels?: ReadonlyArray<"debug" | "info" | "warn" | "error">;
         readonly limit?: number;
@@ -337,6 +443,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         logs.stream({
           ...(request.projectId === undefined ? {} : { projectId: request.projectId }),
           ...(request.scriptId === undefined ? {} : { scriptId: request.scriptId }),
+          ...(request.unitKind === undefined ? {} : { unitKind: request.unitKind }),
+          ...(request.unitName === undefined ? {} : { unitName: request.unitName }),
           ...(request.afterSeq === undefined ? {} : { afterSeq: request.afterSeq }),
           ...(request.levels === undefined ? {} : { levels: request.levels }),
           ...(request.limit === undefined ? {} : { limit: request.limit }),
@@ -345,6 +453,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       StreamEvents: (request: {
         readonly projectId?: string;
         readonly scriptId?: string;
+        readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+        readonly unitName?: string;
         readonly integration?: string;
         readonly topic?: string;
         readonly afterSeq?: number;
@@ -353,6 +463,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         events.stream({
           ...(request.projectId === undefined ? {} : { projectId: request.projectId }),
           ...(request.scriptId === undefined ? {} : { scriptId: request.scriptId }),
+          ...(request.unitKind === undefined ? {} : { unitKind: request.unitKind }),
+          ...(request.unitName === undefined ? {} : { unitName: request.unitName }),
           ...(request.integration === undefined
             ? {}
             : { integration: request.integration }),

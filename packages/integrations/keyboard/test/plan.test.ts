@@ -14,7 +14,7 @@ describe("plan keyboard scripts", () => {
       const manifest = yield* plan(example);
 
       expect(manifest).toEqual({
-        script: { id: "keyboard-hotkey" },
+        project: { id: "keyboard-hotkey", entry: "keyboard-hotkey.ts" },
         params: [],
         connections: [{ integration: "keyboard", slot: "main", location: "local" }],
         topics: [

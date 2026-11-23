@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
@@ -27,7 +28,66 @@ export class TypecheckError extends Error {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const requireFromPlanner = createRequire(import.meta.url);
 const cache = new Map<string, TypecheckResult>();
+
+interface Toolchain {
+  readonly modulesRoot: string;
+  readonly ballastRoot: string;
+  readonly effectRoot: string;
+  readonly tsgo: string;
+}
+
+const nativeTsgo = (): string | undefined => {
+  try {
+    const previewPackage = requireFromPlanner.resolve("@typescript/native-preview/package.json");
+    const previewRequire = createRequire(previewPackage);
+    const platformName =
+      "@typescript/native-preview-" + process.platform + "-" + process.arch;
+    const platformPackage = previewRequire.resolve(platformName + "/package.json");
+    return join(
+      dirname(platformPackage),
+      "lib",
+      process.platform === "win32" ? "tsgo.exe" : "tsgo",
+    );
+  } catch {
+    return undefined;
+  }
+};
+
+const locateToolchain = (): Toolchain => {
+  const effectRoot = dirname(requireFromPlanner.resolve("effect/package.json"));
+  const coreEntry = requireFromPlanner.resolve("@ballast/core");
+  const marker = join("node_modules", "@ballast");
+  const markerIndex = coreEntry.lastIndexOf(marker + "/");
+  if (markerIndex >= 0) {
+    const modulesRoot = coreEntry.slice(0, markerIndex + "node_modules".length);
+    const ballastRoot = join(modulesRoot, "@ballast");
+    return {
+      modulesRoot,
+      ballastRoot,
+      effectRoot,
+      tsgo: nativeTsgo() ?? join(modulesRoot, ".bin", "tsgo"),
+    };
+  }
+  const modulesRoot = join(repoRoot, "node_modules");
+  return {
+    modulesRoot,
+    ballastRoot: join(repoRoot, "packages"),
+    effectRoot,
+    tsgo: nativeTsgo() ?? join(modulesRoot, ".bin", "tsgo"),
+  };
+};
+
+const toolchain = locateToolchain();
+
+const nodeTypesRoot = ((): string | undefined => {
+  try {
+    return dirname(dirname(requireFromPlanner.resolve("@types/node/package.json")));
+  } catch {
+    return undefined;
+  }
+})();
 
 const walk = async (directory: string, files: Array<string>): Promise<void> => {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -97,7 +157,7 @@ const runTsgo = (
   config: string,
 ): Promise<{ readonly code: number; readonly output: string }> =>
   new Promise((resolvePromise, reject) => {
-    const binary = resolve(repoRoot, "node_modules/.bin/tsgo");
+    const binary = toolchain.tsgo;
     const command = existsSync(binary) ? binary : "tsgo";
     execFile(
       command,
@@ -124,29 +184,71 @@ const generatedConfig = (projectRoot: string): string => {
 
 const ensureConfig = async (projectRoot: string): Promise<string> => {
   const projectConfig = join(projectRoot, "tsconfig.json");
-  if (existsSync(projectConfig)) return projectConfig;
+  const hasProjectConfig = existsSync(projectConfig);
   const configPath = generatedConfig(projectRoot);
   await mkdir(dirname(configPath), { recursive: true });
-  const configDir = dirname(configPath);
-  const repoRelative = relative(configDir, repoRoot).split("\\").join("/");
+  const packagePaths = [
+    join(toolchain.ballastRoot, "*", "src", "index.ts"),
+    join(toolchain.ballastRoot, "integrations", "*", "src", "index.ts"),
+  ];
+  const integrationPackages: Readonly<Record<string, string>> = {
+    "@ballast/fake": "fake",
+    "@ballast/module-http": "http",
+    "@ballast/module-obs": "obs",
+    "@ballast/module-twitch": "twitch",
+    "@ballast/module-vtube-studio": "vtube-studio",
+    "@ballast/module-keyboard": "keyboard",
+    "@ballast/module-midi": "midi",
+    "@ballast/module-websocket": "websocket",
+  };
+  const exactPaths: Record<string, ReadonlyArray<string>> = {};
+  for (const [name, directory] of Object.entries(integrationPackages)) {
+    exactPaths[name] = [
+      join(toolchain.ballastRoot, name.slice("@ballast/".length), "src", "index.ts"),
+      join(toolchain.ballastRoot, "integrations", directory, "src", "index.ts"),
+    ];
+  }
   await writeFile(
     configPath,
     JSON.stringify(
       {
-        extends: resolve(repoRoot, "tsconfig.base.json"),
+        ...(hasProjectConfig
+          ? { extends: relative(dirname(configPath), projectConfig).split("\\").join("/") }
+          : {}),
         compilerOptions: {
-          noEmit: true,
-          composite: false,
+          ...(hasProjectConfig
+            ? {}
+            : {
+                target: "ES2024",
+                module: "ESNext",
+                moduleResolution: "bundler",
+                lib: ["ES2024"],
+                strict: true,
+                exactOptionalPropertyTypes: true,
+                noUncheckedIndexedAccess: true,
+                noUnusedLocals: true,
+                noUnusedParameters: true,
+                verbatimModuleSyntax: true,
+              }),
           declaration: false,
           declarationMap: false,
-          emitDeclarationOnly: false,
+          sourceMap: false,
+          skipLibCheck: true,
+          noEmit: true,
+          composite: false,
+          allowImportingTsExtensions: true,
           paths: {
-            "@ballast/*": [
-              repoRelative + "/packages/integrations/*/src/index.ts",
-              repoRelative + "/packages/*/src/index.ts",
+            ...exactPaths,
+            "@ballast/*": packagePaths,
+            effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
+            "effect/*": [
+              join(toolchain.effectRoot, "dist", "*.d.ts"),
+              join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
             ],
           },
-          types: ["node"],
+          ...(nodeTypesRoot === undefined
+            ? {}
+            : { typeRoots: [nodeTypesRoot], types: ["node"] }),
         },
         include: ["../**/*.ts"],
         exclude: ["../node_modules", "../dist", "../.ballast"],

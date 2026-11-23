@@ -27,6 +27,7 @@ import { devKeyboardLayer, devMidiLayer } from "./dev-input.ts";
 import { registerHttpRoutes } from "./http.ts";
 import { Lifecycle, LifecycleLive } from "./lifecycle.ts";
 import { ProjectManager, ProjectManagerLive } from "./projects.ts";
+import { ProjectRuntime, ProjectRuntimeLive } from "./project-runtime.ts";
 import { AgentRpcsLive } from "./rpc.ts";
 import { ScriptManager, ScriptManagerLive } from "./scripts.ts";
 import {
@@ -126,13 +127,14 @@ const makeLayers = (options: ServeOptions, startedAt: number, version: string) =
       : {}),
   }).pipe(Layer.provideMerge(events));
   const scripts = ScriptManagerLive.pipe(Layer.provideMerge(connections));
+  const projects = ProjectRuntimeLive.pipe(Layer.provideMerge(scripts));
   const handlers = AgentRpcsLive({
     stateDir: options.stateDir,
     dataDir: options.dataDir,
     startedAt,
     version,
     cloudUrl: options.cloudUrl,
-  }).pipe(Layer.provideMerge(scripts));
+  }).pipe(Layer.provideMerge(projects));
   const server = NodeHttpServer.layer(() => createServer(), {
     host: "127.0.0.1",
     port: options.port,
@@ -175,6 +177,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
 
       const projects = yield* ProjectManager;
       const scripts = yield* ScriptManager;
+      const runtime = yield* ProjectRuntime;
       const connections = yield* ConnectionManager;
       const cloud = yield* CloudLink;
       const logs = yield* Logs;
@@ -183,18 +186,20 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       const router = yield* HttpRouter.HttpRouter;
 
       yield* scripts.syncAll;
+      yield* runtime.syncAll;
       yield* scripts.resumeEnabled();
+      yield* runtime.resumeEnabled();
 
       const devToken = options.dev ? process.env["BALLAST_DEV_TOKEN"] : undefined;
       const health = (): Effect.Effect<Record<string, unknown>> =>
         Effect.gen(function* () {
           const counts = yield* scripts.counts;
+          const projectCounts = yield* runtime.counts;
           const connectionList = yield* connections.summaries();
           const cloudStatus = yield* cloud.status;
-          const projectList = yield* projects.projects;
           const shellPermissions = yield* connections.permissions();
           return {
-            projects: { total: projectList.length },
+            projects: projectCounts,
             scripts: counts,
             connections: {
               total: connectionList.length,
@@ -233,6 +238,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
           Effect.gen(function* () {
             yield* Effect.sleep("1 second");
             yield* scripts.syncAll.pipe(Effect.catchCause(() => Effect.void));
+            yield* runtime.syncAll.pipe(Effect.catchCause(() => Effect.void));
           }),
         );
       }).pipe(Effect.forkScoped);
@@ -269,6 +275,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       const code = yield* lifecycle.wait;
       yield* Effect.log(`Ballast service stopping (exit ${code})`);
       yield* scripts.closeAll();
+      yield* runtime.closeAll();
       yield* connections.close();
       yield* cloud.close();
       return code;

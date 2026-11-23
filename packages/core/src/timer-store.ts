@@ -19,7 +19,8 @@ export type TimerState = Schema.Schema.Type<typeof TimerStateSchema>;
  * delivered, so a host restart does not replay a fire (at-most-once).
  */
 export const ScheduledTimerSchema = Schema.Struct({
-  scriptId: Schema.String,
+  /** Legacy per-script owner; project-mode timers omit it. */
+  scriptId: Schema.optional(Schema.String),
   timer: Schema.String,
   key: Schema.String,
   payload: Schema.Json,
@@ -44,7 +45,7 @@ export const decodeTimerStoreSnapshot = (input: unknown): TimerStoreSnapshot =>
   Schema.decodeUnknownSync(TimerStoreSnapshotSchema)(input);
 
 export interface TimerScheduleInput {
-  readonly scriptId: string;
+  readonly scriptId?: string;
   readonly timer: string;
   readonly key: string;
   readonly delayMs: number;
@@ -55,7 +56,7 @@ export interface TimerScheduleInput {
 }
 
 export interface TimerFireRecord {
-  readonly scriptId: string;
+  readonly scriptId?: string;
   readonly timer: string;
   readonly key: string;
   readonly payload: Schema.Json;
@@ -95,11 +96,11 @@ export interface TimerSchedulerOptions {
 }
 
 const instanceKey = (timer: Pick<ScheduledTimer, "scriptId" | "timer" | "key">): string =>
-  `${timer.scriptId}\u0000${timer.timer}\u0000${timer.key}`;
+  `${timer.scriptId ?? ""}\u0000${timer.timer}\u0000${timer.key}`;
 
 const compareTimers = (left: ScheduledTimer, right: ScheduledTimer): number =>
   left.dueAt - right.dueAt ||
-  left.scriptId.localeCompare(right.scriptId) ||
+  (left.scriptId ?? "").localeCompare(right.scriptId ?? "") ||
   left.timer.localeCompare(right.timer) ||
   left.key.localeCompare(right.key);
 
@@ -147,7 +148,7 @@ export const makeTimerScheduler = (
       Effect.gen(function* () {
         const now = clock.currentTimeMillisUnsafe();
         const timer: ScheduledTimer = {
-          scriptId: input.scriptId,
+          ...(input.scriptId === undefined ? {} : { scriptId: input.scriptId }),
           timer: input.timer,
           key: input.key,
           payload: input.payload,
@@ -222,7 +223,7 @@ export const makeTimerScheduler = (
             lateByMs,
           });
           fires.push({
-            scriptId: timer.scriptId,
+            ...(timer.scriptId === undefined ? {} : { scriptId: timer.scriptId }),
             timer: timer.timer,
             key: timer.key,
             payload: timer.payload,

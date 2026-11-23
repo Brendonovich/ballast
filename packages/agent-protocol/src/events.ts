@@ -2,8 +2,8 @@ import { Schema } from "effect";
 
 import { CloudStatus } from "./cloud.ts";
 import { ConnectionSummary } from "./connections.ts";
-import { ProjectSummary } from "./projects.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
+import { ProjectConsentRequest, ProjectSummary, SourceLocation } from "./project.ts";
 import { ConsentRequest, ScriptSummary } from "./scripts.ts";
 import { TimerSummary } from "./timers.ts";
 
@@ -32,6 +32,37 @@ export const ServiceEvent = Schema.Union([
     snapshot: ServiceSnapshot,
   }),
   Schema.TaggedStruct("project", {
+    project: ProjectSummary,
+  }),
+  Schema.TaggedStruct("project-changed", {
+    project: ProjectSummary,
+  }),
+  /**
+   * A project reload failed (typecheck, bundle or plan). The previous worker
+   * keeps running when there was one.
+   */
+  Schema.TaggedStruct("reload-failed", {
+    projectId: Schema.String,
+    message: Schema.String,
+    source: Schema.optionalKey(SourceLocation),
+    at: Schema.Number,
+  }),
+  /**
+   * A project file changed on disk. Open source viewers refetch the file.
+   */
+  Schema.TaggedStruct("project-file-changed", {
+    projectId: Schema.String,
+    path: Schema.String,
+    sha256: Schema.String,
+    updatedAt: Schema.Number,
+  }),
+  Schema.TaggedStruct("project-consent", {
+    consent: ProjectConsentRequest,
+  }),
+  Schema.TaggedStruct("project-consent-resolved", {
+    projectId: Schema.String,
+    consentId: Schema.String,
+    approved: Schema.Boolean,
     project: ProjectSummary,
   }),
   Schema.TaggedStruct("project-removed", {

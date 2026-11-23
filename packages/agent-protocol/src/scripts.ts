@@ -63,6 +63,14 @@ export const ParamView = Schema.Struct({
   type: ParamType,
   title: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
+  /** Declaration site, for project-bundle params. */
+  source: Schema.optionalKey(
+    Schema.Struct({
+      file: Schema.String,
+      line: Schema.Number,
+      column: Schema.Number,
+    }),
+  ),
   default: Schema.optionalKey(ParamValue),
   value: Schema.optionalKey(ParamValue),
   required: Schema.Boolean,

@@ -1,30 +1,12 @@
 import { Schema } from "effect";
 
-import { ScriptSummary } from "./scripts.ts";
+import { ProjectDetail, ProjectSummary } from "./project.ts";
 
 /**
- * One folder the service watches. Projects are independent: each has its own
- * scripts, params, applied manifests and consent. Connections and cloud
- * pairing are service-wide (see decision 0003 §2), so two projects can share
- * `obs/main` or `twitch/broadcaster` without configuring them twice.
+ * One folder the service watches. A project is one bundle with one entry and
+ * one worker; connections and cloud pairing remain service-wide.
  */
-export const ProjectSummary = Schema.Struct({
-  id: Schema.String,
-  /** A user-facing name, defaulting to the folder name when added. */
-  name: Schema.String,
-  /** Absolute path of the project folder on this machine. */
-  root: Schema.String,
-  createdAt: Schema.Number,
-  updatedAt: Schema.Number,
-  scriptCount: Schema.Number,
-});
-export type ProjectSummary = typeof ProjectSummary.Type;
-
-export const ProjectDetail = Schema.Struct({
-  summary: ProjectSummary,
-  scripts: Schema.Array(ScriptSummary),
-});
-export type ProjectDetail = typeof ProjectDetail.Type;
+export { ProjectDetail, ProjectSummary };
 
 export const AddProjectRequest = Schema.Struct({
   /** Absolute path of an existing folder to watch. */

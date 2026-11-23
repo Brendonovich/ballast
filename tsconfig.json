@@ -17,6 +17,9 @@
       "path": "packages/agent-protocol"
     },
     {
+      "path": "packages/mcp"
+    },
+    {
       "path": "packages/integrations/fake"
     },
     {

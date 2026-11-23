@@ -16,7 +16,12 @@ import {
 import type { AgentError, ParamValue } from "./common.ts";
 import { agentError } from "./common.ts";
 import type { LogEntry, EventRecord } from "./logs.ts";
-import type { ProjectSummary } from "./projects.ts";
+import type {
+  ProjectConsentRequest,
+  ProjectSummary,
+  UnitSummary,
+} from "./project.ts";
+import { emptyProjectManifest } from "./project.ts";
 import type {
   ConsentRequest,
   ManifestDiff,
@@ -94,6 +99,10 @@ const mainProject: ProjectSummary = {
   id: "proj_main",
   name: "Main Channel",
   root: "/Users/streamer/Ballast/main",
+  entry: "ballast.ts",
+  enabled: true,
+  status: "running",
+  unitCount: 4,
   createdAt: base - 30 * 24 * HOUR,
   updatedAt: base + 2 * HOUR,
   scriptCount: 2,
@@ -103,6 +112,10 @@ const altProject: ProjectSummary = {
   id: "proj_alt",
   name: "Second Channel",
   root: "/Users/streamer/Ballast/second",
+  entry: "ballast.ts",
+  enabled: false,
+  status: "stopped",
+  unitCount: 4,
   createdAt: base - 12 * 24 * HOUR,
   updatedAt: base + 55 * MINUTE,
   scriptCount: 2,
@@ -793,6 +806,9 @@ const healthOf = (state: MockState): HealthStatus => {
     uptimeMs: Math.max(0, Date.now() - state.info.startedAt),
     projects: {
       total: state.projectOrder.length,
+      running: 1,
+      needsConsent: 0,
+      error: 0,
     },
     scripts: {
       total: scripts.length,
@@ -1017,6 +1033,37 @@ const handlers = Effect.gen(function* () {
       return project === undefined ? [] : [project];
     });
 
+  const unitsOf = (
+    state: MockState,
+    projectId: string,
+  ): ReadonlyArray<UnitSummary> =>
+    projectScripts(state, projectId).flatMap((detail) => {
+      const status = detail.summary.status === "running" ? "active" : "waiting";
+      return [
+        ...detail.manifest.topics.map(
+          (topic): UnitSummary => ({
+            kind: "topic",
+            name: topic.topic,
+            status,
+          }),
+        ),
+        ...detail.manifest.timers.map(
+          (timer): UnitSummary => ({
+            kind: "timer",
+            name: timer.name,
+            status,
+          }),
+        ),
+        ...detail.manifest.params.map(
+          (param): UnitSummary => ({
+            kind: "param",
+            name: param.key,
+            status: "active",
+          }),
+        ),
+      ];
+    });
+
   return {
     GetServiceInfo: () => Effect.map(Ref.get(store.state), (state) => state.info),
     GetHealth: () => Effect.map(Ref.get(store.state), healthOf),
@@ -1033,11 +1080,254 @@ const handlers = Effect.gen(function* () {
       Effect.gen(function* () {
         const state = yield* Ref.get(store.state);
         const project = yield* requireProject(state, projectId);
+        const scripts = projectScripts(state, projectId).map((detail) => detail.summary);
+        const entry = project.entry ?? "ballast.ts";
         return {
           summary: project,
-          scripts: projectScripts(state, projectId).map((detail) => detail.summary),
+          manifest: emptyProjectManifest(projectId, entry),
+          units: unitsOf(state, project.id),
+          scripts,
         };
       }),
+
+    PlanProject: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          return {
+            summary: project,
+            manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    StartProject: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          const next = { ...project, enabled: true, status: "running" as const };
+          const projects = new Map(state.projects);
+          projects.set(projectId, next);
+          yield* Ref.set(store.state, { ...state, projects });
+          return {
+            summary: next,
+            manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    StopProject: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          const next = { ...project, enabled: false, status: "stopped" as const };
+          const projects = new Map(state.projects);
+          projects.set(projectId, next);
+          yield* Ref.set(store.state, { ...state, projects });
+          return {
+            summary: next,
+            manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    RestartProject: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          return {
+            summary: project,
+            manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    SetProjectParam: (request: { readonly projectId: string; readonly key: string; readonly value: ParamValue }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, request.projectId);
+          return {
+            summary: project,
+            manifest: emptyProjectManifest(request.projectId, project.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, request.projectId).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    SetProjectEnabled: (request: { readonly projectId: string; readonly enabled: boolean }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, request.projectId);
+          const next = {
+            ...project,
+            enabled: request.enabled,
+            status: request.enabled ? ("running" as const) : ("stopped" as const),
+          };
+          const projects = new Map(state.projects);
+          projects.set(request.projectId, next);
+          yield* Ref.set(store.state, { ...state, projects });
+          return {
+            summary: next,
+            manifest: emptyProjectManifest(request.projectId, next.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, request.projectId).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    ListProjectFiles: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          const entry = project.entry ?? "ballast.ts";
+          return { entry, files: [{ path: entry, kind: "file" as const }] };
+        }),
+      ),
+
+    ReadProjectFile: (request: { readonly projectId: string; readonly path: string }) =>
+      Effect.gen(function* () {
+        const content = `// mock source for ${request.path}\n`;
+        return {
+          path: request.path,
+          content,
+          sha256: yield* sourceSha256(content),
+          updatedAt: Date.now(),
+          language: "typescript" as const,
+        };
+      }),
+
+    GetProjectSource: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          const path = project.entry ?? "ballast.ts";
+          const content = `// mock source for ${path}\n`;
+          return {
+            path,
+            content,
+            sha256: yield* sourceSha256(content),
+            updatedAt: Date.now(),
+            language: "typescript" as const,
+          };
+        }),
+      ),
+
+    ListProjectConsents: ({ projectId }: { readonly projectId?: string }) =>
+      Effect.map(Ref.get(store.state), (state) => ({
+        consents: [...state.consents.values()]
+          .filter((consent) => projectId === undefined || consent.projectId === projectId)
+          .map(
+            (consent): ProjectConsentRequest => ({
+              id: consent.id,
+              projectId: consent.projectId,
+              projectName:
+                state.projects.get(consent.projectId)?.name ?? consent.projectId,
+              createdAt: consent.createdAt,
+              reason: consent.reason,
+              summary: consent.summary,
+              diff: consent.diff,
+            }),
+          ),
+      })),
+
+    ApproveProjectConsent: ({ consentId }: { readonly consentId: string }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const consent = state.consents.get(consentId);
+        if (consent === undefined) {
+          return yield* fail(agentError("not-found", `No pending consent "${consentId}"`));
+        }
+        const project = yield* requireProject(state, consent.projectId);
+        return {
+          summary: project,
+          manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+          units: unitsOf(state, project.id),
+          scripts: projectScripts(state, project.id).map((detail) => detail.summary),
+        };
+      }),
+
+    RejectProjectConsent: (request: { readonly consentId: string; readonly reason?: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const consent = state.consents.get(request.consentId);
+          if (consent === undefined) {
+            return yield* fail(agentError("not-found", `No pending consent "${request.consentId}"`));
+          }
+          const project = yield* requireProject(state, consent.projectId);
+          return {
+            summary: project,
+            manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+            units: unitsOf(state, project.id),
+            scripts: projectScripts(state, project.id).map((detail) => detail.summary),
+          };
+        }),
+      ),
+
+    CreateProject: (request: {
+      readonly name: string;
+      readonly directory?: string;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const now = Date.now();
+        const id = `proj_${state.nextProjectSeq}`;
+        const directory =
+          request.directory ?? `/Users/streamer/ballast-projects/${request.name.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}`;
+        const project: ProjectSummary = {
+          id,
+          name: request.name,
+          root: directory,
+          entry: "ballast.ts",
+          enabled: false,
+          status: "stopped",
+          unitCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          scriptCount: 0,
+        };
+        const projects = new Map(state.projects);
+        projects.set(id, project);
+        yield* Ref.set(store.state, {
+          ...state,
+          projects,
+          projectOrder: [...state.projectOrder, id],
+          nextProjectSeq: state.nextProjectSeq + 1,
+        });
+        return {
+          summary: project,
+          manifest: emptyProjectManifest(id, "ballast.ts"),
+          units: [],
+          scripts: [],
+        };
+      }),
+
+    CheckProject: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(state, projectId);
+          return {
+            summary: project,
+            ok: true,
+            manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            appliedManifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            units: unitsOf(state, projectId),
+            changes: [],
+            requiresConsent: false,
+            missingConnections: [],
+            missingScopes: [],
+            diagnostics: [],
+          };
+        }),
+      ),
 
     AddProject: (request: {
       readonly path: string;
@@ -1065,6 +1355,10 @@ const handlers = Effect.gen(function* () {
           id: `proj_${state.nextProjectSeq}`,
           name: request.name?.trim() || folder,
           root,
+          entry: "ballast.ts",
+          enabled: false,
+          status: "stopped",
+          unitCount: 0,
           createdAt: now,
           updatedAt: now,
           scriptCount: 0,
@@ -1092,7 +1386,12 @@ const handlers = Effect.gen(function* () {
           { _tag: "project", project },
           { _tag: "health", health: healthOf(nextState) },
         ]);
-        return { summary: project, scripts: [] };
+        return {
+          summary: project,
+          manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+          units: unitsOf(state, project.id),
+          scripts: [],
+        };
       }),
 
     RemoveProject: ({ projectId }: { readonly projectId: string }) =>

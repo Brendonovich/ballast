@@ -12,7 +12,7 @@ describe("plan MIDI scripts", () => {
       const manifest = yield* plan(example);
 
       expect(manifest).toEqual({
-        script: { id: "midi-cc" },
+        project: { id: "midi-cc", entry: "midi-cc.ts" },
         params: [
           {
             key: "output",

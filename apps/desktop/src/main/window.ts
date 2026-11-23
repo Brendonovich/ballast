@@ -189,7 +189,10 @@ export function createWindowController(options: WindowControllerOptions): Window
     }
 
     if (!status.running || status.url === null) {
-      if (mode === "service") await loadFallback(target);
+      // Nothing to load yet: show the bundled "Starting Ballast…" page instead
+      // of leaving the new window on about:blank. loadFallback is a no-op once
+      // the page is already showing.
+      await loadFallback(target);
       return;
     }
 

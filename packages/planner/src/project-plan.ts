@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type { Manifest } from "@ballast/core";
@@ -55,7 +56,9 @@ export const planProject = (
     const planned = yield* planDetails(entry.entryFile, {
       ...options,
       scriptId: entry.entry,
+      projectId: options.projectId ?? basename(entry.root),
       projectRoot: entry.root,
+      projectEntry: entry.entry,
     }).pipe(
       Effect.mapError(
         (error) =>

@@ -4,6 +4,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as Predicate from "effect/Predicate";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import type { Scope } from "effect/Scope";
 import { ScriptPhase } from "./phase.ts";
@@ -47,11 +48,13 @@ interface TimerRegistration {
   ) => Effect.Effect<void, never, never>;
 }
 
-const plainLogger = Logger.make<unknown, void>(({ message, cause }) => {
+const plainLogger = Logger.make<unknown, void>(({ message, cause, fiber }) => {
   const text = Array.isArray(message)
     ? message.map((part) => String(part)).join(" ")
     : String(message);
-  console.log(text);
+  const annotations = fiber.getRef(References.CurrentLogAnnotations);
+  const unit = annotations["unit"];
+  console.log(typeof unit === "string" ? "[unit:" + unit + "] " + text : text);
   if (cause.reasons.length > 0) {
     console.error(Cause.pretty(cause));
   }

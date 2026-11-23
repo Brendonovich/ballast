@@ -115,7 +115,7 @@ export type {
   TimerState,
   ScheduledTimer,
 } from "./timer-store.ts";
-export { evaluateScript, run, phase, recordScriptId } from "./script.ts";
+export { evaluateScript, run, phase, recordProject } from "./script.ts";
 export { providePlan } from "./plan-host.ts";
 export type {
   Script,

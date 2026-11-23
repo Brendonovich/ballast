@@ -73,10 +73,10 @@ const upsertRequest = (
  * via two capabilities) yields one manifest entry with merged scopes.
  */
 export const makeManifestRecorder = (ref: Ref.Ref<Manifest>): ManifestRecorderService => ({
-  script: (id: string) =>
+  project: (project) =>
     Ref.update(ref, (manifest) => ({
       ...manifest,
-      script: { id },
+      project,
     })),
   param: (param: ParamManifest) =>
     Ref.update(ref, (manifest) => ({
@@ -131,7 +131,7 @@ const byStrings = (left: string, right: string): number => left.localeCompare(ri
 
 /** Stable ordering keeps CLI output and diffs deterministic. */
 export const normalizeManifest = (manifest: Manifest): Manifest => ({
-  script: manifest.script,
+  project: manifest.project,
   params: [...manifest.params].sort((left, right) => byStrings(left.key, right.key)),
   connections: [...manifest.connections].sort(
     (left, right) =>

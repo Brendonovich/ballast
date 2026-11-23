@@ -25,6 +25,8 @@ const readFlag = (prefix: string): string | undefined => {
 const demoRaw = readFlag("--ballast-demo=");
 const demo: DemoAction | undefined = demoActions.find((action) => action === demoRaw);
 const background = process.argv.includes("--background");
+/** dev.mjs sets this: a dev launch installs/starts the built service automatically. */
+const dev = process.env["BALLAST_DEV"] === "1" && !app.isPackaged;
 const quitAfterRaw = readFlag("--ballast-quit-after-ms=");
 const quitAfterMs = quitAfterRaw === undefined ? undefined : Number(quitAfterRaw);
 
@@ -257,8 +259,23 @@ async function start(): Promise<void> {
     logger.info("desktop quitting; background service is not stopped");
   });
 
-  await refreshStatus();
+  const initialStatus = await refreshStatus();
   if (!background) windowsController.show();
+
+  // In dev, bring the freshly built service up without a manual tray click.
+  // install() reuses the running stage when nothing changed and hands off when
+  // the built version differs; start() only covers an installed-but-stopped one.
+  if (dev && (!initialStatus.running || initialStatus.updateAvailable)) {
+    const needsInstall = !initialStatus.installed || initialStatus.updateAvailable;
+    logger.info("dev: starting background service", {
+      phase: initialStatus.phase,
+      installedVersion: initialStatus.installedVersion,
+      builtVersion: initialStatus.builtVersion,
+    });
+    await perform(needsInstall ? "Install background service" : "Start background service", () =>
+      needsInstall ? launcher.install() : launcher.start(),
+    );
+  }
 
   const timer = setInterval(() => {
     void refreshStatus().catch((cause: unknown) => {

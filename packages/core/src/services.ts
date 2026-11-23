@@ -17,7 +17,10 @@ import type { RequestRef } from "./request.ts";
  * `Ref<Manifest>` behind it; scripts and integrations never see the ref.
  */
 export interface ManifestRecorderService {
-  readonly script: (id: string) => Effect.Effect<void>;
+  readonly project: (project: {
+    readonly id: string;
+    readonly entry: string;
+  }) => Effect.Effect<void>;
   readonly param: (param: ParamManifest) => Effect.Effect<void>;
   readonly connection: (connection: ConnectionManifest) => Effect.Effect<void>;
   readonly topic: (topic: TopicManifest) => Effect.Effect<void>;

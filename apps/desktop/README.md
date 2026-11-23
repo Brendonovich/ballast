@@ -46,7 +46,10 @@ BALLAST_UI_URL=http://localhost:5173 pnpm --filter @ballast/desktop dev
 
 Without `BALLAST_UI_URL` the window waits for `service.json`, loads the service UI at
 `http://127.0.0.1:<port>/?token=…` (the service sets an `HttpOnly; SameSite=Strict` cookie and
-redirects to `/`), or shows the bundled fallback page while it comes up.
+redirects to `/`), or shows the bundled fallback page while it comes up. `dev` sets
+`BALLAST_DEV=1`, so a launch with no running service installs and starts the freshly built stage
+automatically (the same `service.install`/`service.start` calls the tray uses). Set
+`BALLAST_DEV=0` to skip that.
 
 Environment overrides, mostly for tests and development:
 
@@ -61,6 +64,7 @@ Environment overrides, mostly for tests and development:
 | `BALLAST_SERVICE_VERSION` | force the staged version (otherwise `version.json` / `package.json`) |
 | `BALLAST_SERVICE_PORT` | fixed port for development (default random) |
 | `BALLAST_UI_URL` | load a Vite dev UI instead of the service origin |
+| `BALLAST_DEV` | `1` (dev default): install/start the built service on launch; `0` disables |
 | `BALLAST_RESTART_THROTTLE_SECONDS` | launchd `ThrottleInterval` (default 5) |
 | `BALLAST_START_TIMEOUT_MS` | start/verify budget (default 30000) |
 | `BALLAST_UPDATE_URL` | build-time generic electron-updater feed |

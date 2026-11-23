@@ -15,7 +15,7 @@ describe("plan Twitch scripts", () => {
       const manifest = yield* plan(example);
 
       expect(manifest).toEqual({
-        script: { id: "redeem-to-scene" },
+        project: { id: "redeem-to-scene", entry: "redeem-to-scene.ts" },
         params: [
           { key: "rewardTitle", type: "string" },
           {

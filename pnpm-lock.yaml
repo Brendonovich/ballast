@@ -692,6 +692,58 @@ importers:
         specifier: 'catalog:'
         version: 8.23.0
 
+  packages/mcp:
+    dependencies:
+      '@ballast/agent-protocol':
+        specifier: workspace:*
+        version: link:../agent-protocol
+      '@ballast/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ballast/fake':
+        specifier: workspace:*
+        version: link:../integrations/fake
+      '@ballast/module-http':
+        specifier: workspace:*
+        version: link:../integrations/http
+      '@ballast/module-keyboard':
+        specifier: workspace:*
+        version: link:../integrations/keyboard
+      '@ballast/module-midi':
+        specifier: workspace:*
+        version: link:../integrations/midi
+      '@ballast/module-obs':
+        specifier: workspace:*
+        version: link:../integrations/obs
+      '@ballast/module-twitch':
+        specifier: workspace:*
+        version: link:../integrations/twitch
+      '@ballast/module-vtube-studio':
+        specifier: workspace:*
+        version: link:../integrations/vtube-studio
+      '@ballast/module-websocket':
+        specifier: workspace:*
+        version: link:../integrations/websocket
+      '@ballast/planner':
+        specifier: workspace:*
+        version: link:../planner
+      '@effect/platform-node':
+        specifier: 'catalog:'
+        version: 4.0.6(effect@4.0.6)(redis@6.3.1)
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.6
+    devDependencies:
+      '@effect/vitest':
+        specifier: 'catalog:'
+        version: 4.0.6(effect@4.0.6)(vitest@4.1.12(@types/node@24.13.3)(vite@8.3.8(@types/node@24.13.3)))
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.12(@types/node@24.13.3)(vite@8.3.8(@types/node@24.13.3))
+
   packages/planner:
     dependencies:
       '@ballast/core':

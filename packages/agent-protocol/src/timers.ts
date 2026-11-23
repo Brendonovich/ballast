@@ -7,7 +7,6 @@ export type TimerState = typeof TimerState.Type;
 /** One persisted timer instance, as the UI sees it. */
 export const TimerSummary = Schema.Struct({
   projectId: Schema.String,
-  scriptId: Schema.String,
   timer: Schema.String,
   title: Schema.optionalKey(Schema.String),
   key: Schema.String,
@@ -25,6 +24,7 @@ export type TimerSummary = typeof TimerSummary.Type;
 
 export const ListTimersRequest = Schema.Struct({
   projectId: Schema.optionalKey(Schema.String),
+  /** Legacy filter; project-mode timers are project-scoped. */
   scriptId: Schema.optionalKey(Schema.String),
   /** Include fired/dropped rows. Pending only by default. */
   includeFinished: Schema.optionalKey(Schema.Boolean),
@@ -38,7 +38,8 @@ export type ListTimersResponse = typeof ListTimersResponse.Type;
 
 export const CancelTimerRequest = Schema.Struct({
   projectId: Schema.String,
-  scriptId: Schema.String,
+  /** Legacy metadata; ignored by the project-scoped timer store. */
+  scriptId: Schema.optionalKey(Schema.String),
   timer: Schema.String,
   key: Schema.String,
 });

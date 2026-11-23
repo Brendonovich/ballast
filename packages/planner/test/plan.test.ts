@@ -30,7 +30,7 @@ describe("plan", () => {
       const manifest = yield* plan(example);
 
       expect(manifest).toEqual({
-        script: { id: "tick-echo" },
+        project: { id: "tick-echo", entry: "tick-echo.ts" },
         params: [{ key: "prefix", type: "string", title: "Prefix", default: ">" }],
         connections: [{ integration: "fake", slot: "main", location: "local" }],
         topics: [
@@ -64,7 +64,7 @@ describe("plan", () => {
     Effect.gen(function* () {
       const result = yield* planDetails(example);
       expect(result.title).toBe("Tick Echo");
-      expect(result.manifest.script.id).toBe("tick-echo");
+      expect(result.manifest.project.id).toBe("tick-echo");
     }),
   );
 

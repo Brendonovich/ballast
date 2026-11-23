@@ -23,9 +23,19 @@ const readWorkerData = (): { readonly entry: string } & PlanOptions => {
     "projectRoot" in workerData && typeof workerData.projectRoot === "string"
       ? workerData.projectRoot
       : undefined;
+  const projectId =
+    "projectId" in workerData && typeof workerData.projectId === "string"
+      ? workerData.projectId
+      : undefined;
+  const projectEntry =
+    "projectEntry" in workerData && typeof workerData.projectEntry === "string"
+      ? workerData.projectEntry
+      : undefined;
   return {
     entry: value,
     ...(scriptId === undefined ? {} : { scriptId }),
+    ...(projectId === undefined ? {} : { projectId }),
+    ...(projectEntry === undefined ? {} : { projectEntry }),
     ...(resolveDir === undefined ? {} : { resolveDir }),
     ...(projectRoot === undefined ? {} : { projectRoot }),
   };
@@ -42,6 +52,8 @@ const port = parentPort;
 const exit = await Effect.runPromiseExit(
   runPlanInfo(data.entry, {
     ...(data.scriptId === undefined ? {} : { scriptId: data.scriptId }),
+    ...(data.projectId === undefined ? {} : { projectId: data.projectId }),
+    ...(data.projectEntry === undefined ? {} : { projectEntry: data.projectEntry }),
     ...(data.resolveDir === undefined ? {} : { resolveDir: data.resolveDir }),
     ...(data.projectRoot === undefined ? {} : { projectRoot: data.projectRoot }),
   }),

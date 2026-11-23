@@ -17,6 +17,8 @@ export type RuntimeLogLevel = "debug" | "info" | "warn" | "error";
 export interface RuntimeLogLine {
   readonly level: RuntimeLogLevel;
   readonly message: string;
+  /** Unit annotation attached by `Ballast.withUnit`, when present. */
+  readonly unitName?: string;
 }
 
 export interface RuntimeTimerFire {
@@ -67,10 +69,21 @@ export interface RuntimeSession {
   readonly close: Effect.Effect<void>;
 }
 
+const unitLine = (
+  line: string,
+): { readonly message: string; readonly unitName?: string } => {
+  const match = /^\[unit:([^\]]+)\] (.*)$/.exec(line);
+  if (match === null) return { message: line };
+  const unitName = match[1];
+  const message = match[2];
+  if (unitName === undefined || message === undefined) return { message: line };
+  return { message, unitName };
+};
+
 /**
  * One runtime worker generation. The host owns the RPC server, the worker's
  * subscriptions and the worker's lifetime; closing the session closes the RPC
- * server scope and terminates the worker.
+ * scope and terminates the worker.
  */
 export const startRuntimeSession = (
   options: RuntimeSessionOptions,
@@ -236,14 +249,26 @@ export const startRuntimeSession = (
           if (worker?.stdout !== null && worker?.stdout !== undefined) {
             const reader = createInterface({ input: worker.stdout });
             reader.on("line", (line) => {
-              if (line.trim() !== "") onLog({ level: levelOf(line), message: line });
+              if (line.trim() === "") return;
+              const traced = unitLine(line);
+              onLog({
+                level: levelOf(traced.message),
+                message: traced.message,
+                ...(traced.unitName === undefined ? {} : { unitName: traced.unitName }),
+              });
             });
             readers.push(reader);
           }
           if (worker?.stderr !== null && worker?.stderr !== undefined) {
             const reader = createInterface({ input: worker.stderr });
             reader.on("line", (line) => {
-              if (line.trim() !== "") onLog({ level: levelOf(line), message: line });
+              if (line.trim() === "") return;
+              const traced = unitLine(line);
+              onLog({
+                level: levelOf(traced.message),
+                message: traced.message,
+                ...(traced.unitName === undefined ? {} : { unitName: traced.unitName }),
+              });
             });
             readers.push(reader);
           }

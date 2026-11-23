@@ -63,6 +63,17 @@ declaration drops pending instances with `timer-schema-changed` / `timer-declara
 Identity is project + timer name + key; the script id is retained as metadata for the transition
 to decision 0008's one-bundle projects.
 
+Projects with `ballast.ts` (or `package.json#ballast.entry`) run as one bundle and one
+worker through `ProjectRuntime`. File changes are planned with the `tsgo` gate, diffed by unit
+kind/name, and either applied straight away or held behind one project consent. A failed
+typecheck/bundle/plan keeps the previous worker and records the file/line; a successful cutover
+starts the new worker before the old one is closed after a 30s grace period.
+
+`CreateProject` scaffolds `ballast.ts`, `package.json`, `tsconfig.json` and `AGENTS.md`
+(never into a non-empty folder). The base directory is `BALLAST_PROJECTS_DIR`, defaulting to
+`<home>/ballast-projects`. `CheckProject` runs the typecheck/bundle/plan/diff gate without
+applying; the shipped service includes `tsgo`, `@types/node` and the Ballast/effect sources.
+
 The worker-facing RPCs are `RegisterTimer`, `ScheduleTimer` and `CancelTimer`. The public
 `AgentRpcs` surface adds `ListTimers`, `CancelTimer`, `ScriptManifest.timers` and the
 `timer-fired` service event. `ballast run` keeps timers in memory; the service is the durable

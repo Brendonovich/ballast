@@ -2,7 +2,7 @@
 //   main.mjs, plan-worker.mjs, web/, version.json, node_modules/ (runtime deps)
 // Run with `pnpm --filter @ballast/agent build:service`.
 import { createRequire } from "node:module";
-import { access, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rolldown } from "rolldown";
@@ -21,24 +21,22 @@ const exists = async (path) => {
   }
 };
 
+// Resolve the package directory from node_modules paths rather than
+// require.resolve(name): some packages (e.g. @typescript/native-preview) have
+// no "." export, so resolving the bare name throws ERR_PACKAGE_PATH_NOT_EXPORTED.
 const packageRootFor = async (request, name) => {
-  let current = dirname(request.resolve(name));
-  while (true) {
-    const pkgPath = join(current, "package.json");
+  const segments = name.split("/");
+  for (const base of request.resolve.paths(name) ?? []) {
+    const candidate = join(base, ...segments);
     try {
-      const pkg = JSON.parse(await readFile(pkgPath, "utf8"));
-      if (pkg.name === name) return current;
+      const pkg = JSON.parse(await readFile(join(candidate, "package.json"), "utf8"));
+      // Return the real .pnpm path; callers use its siblings (bindings, helpers).
+      if (pkg.name === name) return await realpath(candidate);
     } catch {
-      // keep walking up
+      // not installed at this level
     }
-    const parent = dirname(current);
-    if (parent === current) throw new Error(`Could not find package root for ${name}`);
-    current = parent;
   }
-};
-
-const packageRoot = async (name) => {
-  let current = dirname(requireFromAgent.resolve(name));
+  let current = dirname(request.resolve(name));
   while (true) {
     try {
       const pkg = JSON.parse(await readFile(join(current, "package.json"), "utf8"));
@@ -51,6 +49,8 @@ const packageRoot = async (name) => {
     current = parent;
   }
 };
+
+const packageRoot = (name) => packageRootFor(requireFromAgent, name);
 
 const skipPath = (source) => {
   const name = source.split("/").at(-1);
@@ -129,6 +129,24 @@ const workerBytes = await bundle(
 await copyPackage("effect");
 await copyPackage("ws");
 await copyPackage("rolldown");
+await copyPackage("@typescript/native-preview");
+{
+  const previewRoot = await packageRoot("@typescript/native-preview");
+  const platformName = `${process.platform}-${process.arch}`;
+  const platformPackage = `native-preview-${platformName}`;
+  const platformRoot = await packageRootFor(
+    createRequire(join(previewRoot, "package.json")),
+    `@typescript/${platformPackage}`,
+  );
+  await copyFrom(platformRoot, join("@typescript", platformPackage));
+}
+await copyPackage("@types/node");
+{
+  const source = join(repoRoot, "node_modules", ".bin", "tsgo");
+  const target = join(outDir, "node_modules", ".bin", "tsgo");
+  await mkdir(dirname(target), { recursive: true });
+  await cp(source, target);
+}
 {
   const rolldownRoot = await packageRoot("rolldown");
   const pnpmModules = dirname(rolldownRoot);

@@ -25,12 +25,16 @@ export interface LogInput {
   readonly message: string;
   readonly projectId?: string;
   readonly scriptId?: string;
+  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitName?: string;
   readonly fields?: unknown;
 }
 
 export interface LogFilter {
   readonly projectId?: string;
   readonly scriptId?: string;
+  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitName?: string;
   readonly levels?: ReadonlyArray<LogLevel>;
   readonly afterSeq?: number;
   readonly limit?: number;
@@ -100,6 +104,8 @@ export class Logs extends Context.Service<Logs, LogStoreService>()("ballast/serv
 const logMatches = (filter: LogFilter, entry: LogEntry): boolean =>
   (filter.projectId === undefined || entry.projectId === filter.projectId) &&
   (filter.scriptId === undefined || entry.scriptId === filter.scriptId) &&
+  (filter.unitKind === undefined || entry.unitKind === filter.unitKind) &&
+  (filter.unitName === undefined || entry.unitName === filter.unitName) &&
   (filter.levels === undefined || filter.levels.includes(entry.level));
 
 export const LogsLive = Layer.effect(
@@ -119,6 +125,8 @@ export const LogsLive = Layer.effect(
           message: input.message,
           ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
           ...(input.scriptId === undefined ? {} : { scriptId: input.scriptId }),
+          ...(input.unitKind === undefined ? {} : { unitKind: input.unitKind }),
+          ...(input.unitName === undefined ? {} : { unitName: input.unitName }),
           ...(input.fields === undefined ? {} : { fields: jsonValue(input.fields) }),
         };
         const entries = [...current.entries, entry].slice(-MAX_LOGS);
@@ -160,6 +168,8 @@ export interface EventInput {
   readonly connectionId?: string;
   readonly projectId?: string;
   readonly scriptId?: string;
+  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitName?: string;
   readonly payload: unknown;
   readonly stale?: boolean;
   readonly dropped?: boolean;
@@ -169,6 +179,8 @@ export interface EventInput {
 export interface EventFilter {
   readonly projectId?: string;
   readonly scriptId?: string;
+  readonly unitKind?: "topic" | "timer" | "workflow" | "param" | "run";
+  readonly unitName?: string;
   readonly integration?: string;
   readonly topic?: string;
   readonly afterSeq?: number;
@@ -194,6 +206,8 @@ export class EventLog extends Context.Service<EventLog, EventLogService>()(
 const eventMatches = (filter: EventFilter, entry: EventRecord): boolean =>
   (filter.projectId === undefined || entry.projectId === filter.projectId) &&
   (filter.scriptId === undefined || entry.scriptId === filter.scriptId) &&
+  (filter.unitKind === undefined || entry.unitKind === filter.unitKind) &&
+  (filter.unitName === undefined || entry.unitName === filter.unitName) &&
   (filter.integration === undefined || entry.integration === filter.integration) &&
   (filter.topic === undefined || entry.topic === filter.topic);
 
@@ -217,6 +231,8 @@ export const EventLogLive = Layer.effect(
           ...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
           ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
           ...(input.scriptId === undefined ? {} : { scriptId: input.scriptId }),
+          ...(input.unitKind === undefined ? {} : { unitKind: input.unitKind }),
+          ...(input.unitName === undefined ? {} : { unitName: input.unitName }),
           ...(input.stale === undefined ? {} : { stale: input.stale }),
           ...(input.dropped === undefined ? {} : { dropped: input.dropped }),
           ...(input.request === undefined ? {} : { request: input.request }),
@@ -262,6 +278,8 @@ interface SessionEntry {
   readonly session: RuntimeSession;
   readonly projectId: string;
   readonly scriptId: string;
+  /** Project-mode topic key -> declared unit name, for unit-filtered events. */
+  readonly unitNames?: ReadonlyMap<string, string>;
 }
 
 export interface InboundEvent {
@@ -352,8 +370,11 @@ export const EventRouterLive = Layer.effect(
     const recordDelivered = (
       entry: SessionEntry,
       input: InboundEvent,
-    ): Effect.Effect<void> =>
-      events.record({
+    ): Effect.Effect<void> => {
+      const unitName =
+        entry.unitNames?.get(`${input.integration}/${input.slot}/${input.topic}`) ??
+        entry.unitNames?.get(input.key ?? "");
+      return events.record({
         ...(input.eventId === undefined ? {} : { id: input.eventId }),
         direction: "inbound",
         integration: input.integration,
@@ -363,10 +384,12 @@ export const EventRouterLive = Layer.effect(
           : { connectionId: input.connectionId }),
         projectId: entry.projectId,
         scriptId: entry.scriptId,
+        ...(unitName === undefined ? {} : { unitKind: "topic" as const, unitName }),
         payload: input.payload,
         ...(input.stale === undefined ? {} : { stale: input.stale }),
         dropped: false,
       });
+    };
 
     const deliver = (
       entry: SessionEntry,

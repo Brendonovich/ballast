@@ -38,7 +38,11 @@ export const HealthStatus = Schema.Struct({
   uptimeMs: Schema.Number,
   projects: Schema.Struct({
     total: Schema.Number,
+    running: Schema.Number,
+    needsConsent: Schema.Number,
+    error: Schema.Number,
   }),
+  /** Legacy per-script counts kept during the project-bundle cutover. */
   scripts: Schema.Struct({
     total: Schema.Number,
     running: Schema.Number,

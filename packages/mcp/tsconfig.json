@@ -1,0 +1,49 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist/types",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src",
+    "test"
+  ],
+  "references": [
+    {
+      "path": "../agent-protocol"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../planner"
+    },
+    {
+      "path": "../integrations/fake"
+    },
+    {
+      "path": "../integrations/obs"
+    },
+    {
+      "path": "../integrations/twitch"
+    },
+    {
+      "path": "../integrations/vtube-studio"
+    },
+    {
+      "path": "../integrations/keyboard"
+    },
+    {
+      "path": "../integrations/midi"
+    },
+    {
+      "path": "../integrations/websocket"
+    },
+    {
+      "path": "../integrations/http"
+    }
+  ]
+}

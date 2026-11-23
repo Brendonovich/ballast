@@ -15,7 +15,8 @@
     "webhook-to-obs.ts",
     "ws-bridge.ts",
     "timer-cooldown.ts",
-    "redeem-takeover.ts"
+    "redeem-takeover.ts",
+    "stream"
   ],
   "references": [
     {

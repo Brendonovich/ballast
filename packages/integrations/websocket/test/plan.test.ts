@@ -10,7 +10,7 @@ describe("plan WebSocket scripts", () => {
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
-      expect(manifest.script).toEqual({ id: "ws-bridge" });
+      expect(manifest.project).toEqual({ id: "ws-bridge", entry: "ws-bridge.ts" });
       expect(manifest.connections).toEqual([
         { integration: "websocket", slot: "bridge", location: "local" },
         { integration: "websocket", slot: "upstream", location: "local" },

@@ -16,8 +16,12 @@ export class PlanError extends Data.TaggedError("PlanError")<{
 }> {}
 
 export interface PlanOptions {
-  /** Project-relative script id. Defaults to the path relative to cwd. */
+  /** Project-relative script id used for the display title fallback. */
   readonly scriptId?: string;
+  /** Stable project id (the service registry id). Defaults from the entry path. */
+  readonly projectId?: string;
+  /** Entry path relative to the project root. Defaults to the entry file name. */
+  readonly projectEntry?: string;
   /** Directory whose node_modules are the fallback for bare imports. */
   readonly resolveDir?: string;
   /** Project root used to make source links project-relative. */
@@ -45,6 +49,8 @@ const defaultScriptId = (absoluteEntry: string): string => {
       : relativePath;
   return path.split("\\").join("/").replace(/\.(?:[cm]?[jt]s)$/, "");
 };
+
+const toPosix = (value: string): string => value.split("\\").join("/");
 
 const titleFromId = (scriptId: string): string => {
   const file = scriptId.split("/").at(-1) ?? scriptId;
@@ -96,12 +102,23 @@ export const runPlanInfo = (
     }
 
     const scriptId = options.scriptId ?? defaultScriptId(absoluteEntry);
+    const projectRoot =
+      options.projectRoot ??
+      (basename(absoluteEntry) === "ballast.ts"
+        ? dirname(absoluteEntry)
+        : undefined);
+    const projectId = options.projectId ?? scriptId;
+    const projectEntry =
+      options.projectEntry ??
+      (projectRoot === undefined
+        ? basename(absoluteEntry)
+        : toPosix(relative(projectRoot, absoluteEntry)));
     const exportedTitle = moduleExports["title"];
     const title =
       typeof exportedTitle === "string" && exportedTitle.trim().length > 0
         ? exportedTitle
         : titleFromId(scriptId);
-    const ref = yield* Ref.make(emptyManifest(scriptId));
+    const ref = yield* Ref.make(emptyManifest(projectId, projectEntry));
     const recorder = makeManifestRecorder(ref);
 
     const exit = yield* providePlan(evaluateScript(Effect.asVoid(script), "plan"), recorder).pipe(
@@ -114,11 +131,6 @@ export const runPlanInfo = (
 
     const manifest = yield* Ref.get(ref);
     const normalized = normalizeManifest(manifest);
-    const projectRoot =
-      options.projectRoot ??
-      (basename(absoluteEntry) === "ballast.ts"
-        ? dirname(absoluteEntry)
-        : undefined);
     const mapped =
       projectRoot === undefined || bundle.sourceMap === undefined
         ? stripSources(normalized)

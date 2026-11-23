@@ -170,13 +170,16 @@ export const run = (
 /** The phase the current script is evaluated in. */
 export const phase: Effect.Effect<Phase> = currentPhase;
 
-/** Record the script id when a caller has one (the planner fills it from the path). */
-export const recordScriptId = (id: string): Effect.Effect<void> =>
+/** Record the project identity when a caller has one (the planner fills it in). */
+export const recordProject = (project: {
+  readonly id: string;
+  readonly entry: string;
+}): Effect.Effect<void> =>
   Effect.serviceOption(ManifestRecorder).pipe(
     Effect.flatMap(
       Option.match({
         onNone: () => Effect.void,
-        onSome: (recorder) => recorder.script(id),
+        onSome: (recorder) => recorder.project(project),
       }),
     ),
   );

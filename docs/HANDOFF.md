@@ -34,15 +34,21 @@ still open, and what to build next.
   and handle fires as events. The service persists one `<project>/.ballast/timers.json` per project
   (atomic 0600, per-project writes, corrupt-file quarantine), validates schedules against the
   applied manifest/fingerprint, applies the late policy, delivers once to the active generation,
-  and keeps pending entries through stop/restart. Timer identity is project + timer name + key;
-  the script id remains metadata so decision 0008's one-bundle project can reuse the store.
+  and keeps pending entries through stop/restart. Timer identity is project + timer name + key.
   `ballast run` keeps an in-memory timer store.
+- **Project bundles (0008 W4).** A `ballast.ts` project is planned as one bundle through the
+  `tsgo` gate, diffed by unit kind/name, and run as one worker. A new project starts stopped; a
+  project starts/stops/enables as a whole. File changes cut over to a new generation immediately
+  and close the old worker after a 30s grace period. A typecheck/bundle/plan failure keeps the old
+  worker and publishes `reload-failed` with the file/line. State is project-scoped:
+  `.ballast/settings.json` (`enabled`, `params`) and `.ballast/applied.json`. This is a clean
+  reset; old per-script state is not migrated.
 - **Cloud.** Cloudflare Worker/Alchemy app for OAuth, Twitch EventSub and webhook ingress, machine
   pairing/relay, and a per-machine RPC link. It typechecks and has protocol/unit tests; a deployed
   end-to-end run is still a next task.
-- **Verification.** `pnpm typecheck` and `pnpm test` pass across the workspace. The agent suite
-  passes 43/43 (including the timer restart/late/drop/corrupt/project-removal and generation-swap
-  cases). The desktop E2E
+- **Verification.** `pnpm typecheck` and `pnpm test` pass across the workspace. Project-bundle
+  planning is also exercised from the built `apps/agent/dist-service` against a temporary project
+  outside the repo. The desktop E2E
   (`pnpm --filter @ballast/desktop test:e2e`) passes on macOS against the real service and a
   throwaway LaunchAgent label. The black-box cloud suite (`packages/e2e`, run under fnm 24.22.2)
   passes Twitch cloud mode (pairing, signed EventSub delivery to a worker, relay buffering/replay,
@@ -60,7 +66,7 @@ still open, and what to build next.
 | 0005 | Generic webhooks through the cloud relay, plus local webhook transport, verification and limits | Implemented; real provider validation pending |
 | 0006 | Durable timers as declared, schema-typed events persisted per project; no resumable `sleep` | Core, planner and service integration implemented and tested; recurring/cron remains future work |
 | 0007 | Effect workflows with a durable engine | Deferred: service integration was canceled for the decision 0008 project-model redesign; the `packages/workflow` prototype stays with its own workstream |
-| 0008 | Project = one bundle with an explicit `ballast.ts` entry and named declarations | In progress by another workstream; timer identity is already project-scoped |
+| 0008 | Project = one bundle with an explicit `ballast.ts` entry and named declarations | W4 service runtime and the protocol half of W5 implemented; UI half remains |
 
 ## 3. Packages and apps
 
@@ -127,9 +133,21 @@ Timer protocol additions: `ScriptManifest.timers`, `TimerSummary`, `ListTimers`
 (`projectId, scriptId, timer, key` → `{ cancelled }`), and the `timer-fired` service event.
 The runtime RPCs `RegisterTimer`, `ScheduleTimer` and `CancelTimer` are internal to the worker.
 
+Project protocol additions: `CreateProject({ name, directory? })` (scaffolds a stopped
+project; base dir is `BALLAST_PROJECTS_DIR`, default `<home>/ballast-projects`),
+`CheckProject({ projectId })` (non-applying typecheck/bundle/plan/diff with diagnostics),
+`ProjectSummary`/`ProjectDetail` with `units`, `ProjectManifest`,
+`ListProjectFiles`, `ReadProjectFile`, `GetProjectSource`, `PlanProject`, `StartProject`,
+`StopProject`, `RestartProject`, `SetProjectParam`, `SetProjectEnabled`,
+`ListProjectConsents`, `ApproveProjectConsent`, `RejectProjectConsent`, plus unit filters on
+logs/events and the `project-changed`/`reload-failed` events. The older script RPCs remain while
+the UI cuts over.
+
 The desktop service build is `apps/agent/scripts/build-service.mjs`; the desktop helper runs
-`apps/web` build first. `BALLAST_SERVICE_BUILD_DIR` overrides the source and
-`BALLAST_SERVICE_SKIP_BUILD=1` reuses an existing `dist-service`.
+`apps/web` build first. It ships `tsgo`, `@types/node`, and the `@ballast/*`/`effect` sources
+so project planning/typechecking works from `dist-service` outside the repo.
+`BALLAST_SERVICE_BUILD_DIR` overrides the source and `BALLAST_SERVICE_SKIP_BUILD=1` reuses an
+existing `dist-service`.
 
 ## 5. Open questions
 
@@ -184,7 +202,10 @@ The desktop service build is `apps/agent/scripts/build-service.mjs`; the desktop
 
 ## 7. Next tasks
 
-1. **Real-world driver validation**: OBS scene switch, VTS hotkey + Allow dialog, Twitch local and
+1. **UI half of W5**: project header/units/source tree/unit logs against the new protocol; the
+   service and mock already emit `ProjectSummary`/`ProjectDetail`, units, file reads, project
+   params/consent, unit filters and `project-changed`/`reload-failed`.
+2. **Real-world driver validation**: OBS scene switch, VTS hotkey + Allow dialog, Twitch local and
    cloud, MIDI controller, keyboard Accessibility, local/cloud webhooks. Record results and fix
    protocol/edge cases.
 2. **Surface new states in the web UI**: Accessibility approval with a

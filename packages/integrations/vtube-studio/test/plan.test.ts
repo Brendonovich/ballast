@@ -12,7 +12,7 @@ describe("plan VTube Studio script", () => {
       const manifest = yield* plan(example);
 
       expect(manifest).toEqual({
-        script: { id: "vts-hotkey" },
+        project: { id: "vts-hotkey", entry: "vts-hotkey.ts" },
         params: [
           {
             key: "hotkey",

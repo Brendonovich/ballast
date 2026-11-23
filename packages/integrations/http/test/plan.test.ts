@@ -10,7 +10,7 @@ describe("plan HTTP scripts", () => {
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
-      expect(manifest.script).toEqual({ id: "webhook-to-obs" });
+      expect(manifest.project).toEqual({ id: "webhook-to-obs", entry: "webhook-to-obs.ts" });
       expect(manifest.connections).toEqual([
         { integration: "http", slot: "kofi", location: "either" },
         { integration: "http", slot: "kofi-api", location: "local" },
