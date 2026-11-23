@@ -422,6 +422,17 @@ no-referrer, no external navigation, no service cookie, token is project-local,
 and rotate/revoke invalidates the old URL. A first-message handshake is a
 possible hardening step, but OBS reload behavior makes a URL token simpler.
 
+**In-app view tokens:** `GetArtifactView` mints a short-lived, action-capable
+embed token for the app's own iframe (the user is in the app, so their buttons
+may call actions). The page keeps the token at `/a/<token>/index.html`;
+`RenewArtifactView({ token })` extends that same token in place so the UI can
+keep it alive without reloading the iframe and losing artifact UI state.
+Several in-app views of the same project/artifact hold independent embed
+tokens, each with its own expiry. Sockets stay connected while the token is
+renewed; when an embed token expires the gateway closes its sockets with
+`1008` and rejects new HTTP/WebSocket requests, so pages must renew before
+`expiresAt`.
+
 ### Routing
 
 ```text

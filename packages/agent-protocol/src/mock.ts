@@ -1546,11 +1546,17 @@ const handlers = Effect.gen(function* () {
             url: "",
             pageUrl: "mock-artifact.html?token=" + encodeURIComponent(token),
             token,
-            scope: "read" as const,
+            scope: "action" as const,
             expiresAt: Date.now() + mockArtifactTtl(),
           };
         }),
       ),
+
+    RenewArtifactView: ({ token }: { readonly token: string }) =>
+      Effect.succeed({
+        token,
+        expiresAt: Date.now() + mockArtifactTtl(),
+      }),
 
     CreateArtifactUrl: (request: {
       readonly projectId: string;

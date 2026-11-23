@@ -31,6 +31,7 @@ import {
   type ArtifactUrlSummary,
   type ArtifactView,
   type CreateArtifactUrlResult,
+  type RenewArtifactViewResponse,
   type EventRecord,
   type LogEntry,
   type ParamValue,
@@ -70,6 +71,9 @@ export interface ArtifactGatewayService {
   readonly url: string;
   readonly listArtifacts: (projectId: string) => Effect.Effect<ReadonlyArray<ArtifactSummary>, AgentError>;
   readonly getView: (projectId: string, artifact: string) => Effect.Effect<ArtifactView, AgentError>;
+  readonly renewView: (
+    token: string,
+  ) => Effect.Effect<RenewArtifactViewResponse, AgentError>;
   readonly createUrl: (input: {
     readonly projectId: string;
     readonly artifact: string;
@@ -274,7 +278,12 @@ export const ArtifactGatewayLive = Layer.effect(
     const context = yield* Effect.context<never>();
     const sockets = new Map<
       WebSocket,
-      { readonly projectId: string; readonly artifact: string; readonly tokenHash: string }
+      {
+        readonly projectId: string;
+        readonly artifact: string;
+        readonly tokenHash: string;
+        expiresAt?: number;
+      }
     >();
     const workerListeners = new Map<MessagePort, (message: unknown) => void>();
     const pendingWorker = new Map<
@@ -361,6 +370,20 @@ export const ArtifactGatewayLive = Layer.effect(
           scope: "action",
           expiresAt: minted.expiresAt,
         };
+      });
+
+    const renewView: ArtifactGatewayService["renewView"] = (token) =>
+      Effect.gen(function* () {
+        const renewed = yield* tokens.renewEmbed(token);
+        if (renewed === undefined) {
+          return yield* Effect.fail(
+            agentError(
+              "not-found",
+              "The artifact view token is invalid or already expired",
+            ),
+          );
+        }
+        return { token, expiresAt: renewed.expiresAt };
       });
 
     const createUrl: ArtifactGatewayService["createUrl"] = (input) =>
@@ -767,13 +790,20 @@ export const ArtifactGatewayLive = Layer.effect(
 
     const onConnection = (
       socket: WebSocket,
-      grant: { readonly projectId: string; readonly artifact: string; readonly scopes: ReadonlyArray<ArtifactScope>; readonly tokenHash: string },
+      grant: {
+        readonly projectId: string;
+        readonly artifact: string;
+        readonly scopes: ReadonlyArray<ArtifactScope>;
+        readonly tokenHash: string;
+        readonly expiresAt?: number;
+      },
       channel: "api" | "metadata",
     ): void => {
       sockets.set(socket, {
         projectId: grant.projectId,
         artifact: grant.artifact,
         tokenHash: grant.tokenHash,
+        ...(grant.expiresAt === undefined ? {} : { expiresAt: grant.expiresAt }),
       });
       const clientMap = new Map<
         string,
@@ -940,6 +970,31 @@ export const ArtifactGatewayLive = Layer.effect(
       Effect.forkScoped,
     );
 
+    yield* Stream.fromPubSub(tokens.renewals).pipe(
+      Stream.runForEach(({ tokenHash, expiresAt }) =>
+        Effect.sync(() => {
+          for (const target of sockets.values()) {
+            if (target.tokenHash === tokenHash) target.expiresAt = expiresAt;
+          }
+        }),
+      ),
+      Effect.forkScoped,
+    );
+
+    // Embed view tokens are in-memory and short-lived. Connected sockets keep
+    // working only while the token is renewed; expiry closes them like revoke.
+    yield* Effect.forever(
+      Effect.gen(function* () {
+        yield* Effect.sleep("1 second");
+        const now = Date.now();
+        for (const [socket, target] of sockets) {
+          if (target.expiresAt !== undefined && target.expiresAt <= now) {
+            socket.close(1008, "token expired");
+          }
+        }
+      }),
+    ).pipe(Effect.forkScoped);
+
     yield* Stream.fromPubSub(hub.changes).pipe(
       Stream.filter((event) => event._tag === "artifact-changed"),
       Stream.runForEach((event) =>
@@ -961,6 +1016,7 @@ export const ArtifactGatewayLive = Layer.effect(
       url,
       listArtifacts,
       getView,
+      renewView,
       createUrl,
       listUrls,
       revokeUrl,

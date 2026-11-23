@@ -381,6 +381,9 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         readonly artifact: string;
       }) => artifacts.getView(request.projectId, request.artifact),
 
+      RenewArtifactView: ({ token }: { readonly token: string }) =>
+        artifacts.renewView(token),
+
       CreateArtifactUrl: (request: {
         readonly projectId: string;
         readonly artifact: string;

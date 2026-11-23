@@ -34,7 +34,10 @@ export const ListArtifactsResponse = Schema.Struct({
 });
 export type ListArtifactsResponse = typeof ListArtifactsResponse.Type;
 
-/** A short-lived, read-only view token for the app's own iframe. */
+/**
+ * A short-lived, action-capable view token for the app's own iframe. The user
+ * is already in the app, so in-app buttons may call action procedures.
+ */
 export const GetArtifactViewRequest = Schema.Struct({
   projectId: Schema.String,
   artifact: Schema.String,
@@ -51,6 +54,19 @@ export const ArtifactView = Schema.Struct({
   expiresAt: Schema.Number,
 });
 export type ArtifactView = typeof ArtifactView.Type;
+
+/** Extend an open view's token in place; the page and socket token stay valid. */
+export const RenewArtifactViewRequest = Schema.Struct({
+  token: Schema.String,
+});
+export type RenewArtifactViewRequest = typeof RenewArtifactViewRequest.Type;
+
+export const RenewArtifactViewResponse = Schema.Struct({
+  /** The same token, with a later expiry. */
+  token: Schema.String,
+  expiresAt: Schema.Number,
+});
+export type RenewArtifactViewResponse = typeof RenewArtifactViewResponse.Type;
 
 /** A persistent URL. The plaintext token is returned only when it is created. */
 export const ArtifactUrlSummary = Schema.Struct({

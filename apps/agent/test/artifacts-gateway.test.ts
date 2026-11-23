@@ -84,7 +84,10 @@ interface Service {
   readonly stop: () => Effect.Effect<void>;
 }
 
-const startService = (root: string): Effect.Effect<Service, Error> =>
+const startService = (
+  root: string,
+  env: Readonly<Record<string, string>> = {},
+): Effect.Effect<Service, Error> =>
   Effect.gen(function* () {
     const child = spawn(
       process.execPath,
@@ -98,6 +101,7 @@ const startService = (root: string): Effect.Effect<Service, Error> =>
           BALLAST_DATA_DIR: join(root, "data"),
           BALLAST_LOG_DIR: join(root, "logs"),
           BALLAST_ARTIFACT_PORT: "0",
+          ...env,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -497,6 +501,101 @@ describe("artifact gateway", () => {
             }),
         );
         expect(revoked).toBe(true);
+      }),
+    120_000,
+  );
+  it.live(
+    "renews a view in place, keeps concurrent tokens and closes on expiry",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-artifacts-renew-")));
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+        );
+        const project = join(root, "project");
+        yield* Effect.promise(() => mkdir(join(project, "src"), { recursive: true }));
+        yield* Effect.promise(() => mkdir(join(project, "artifacts", "dashboard"), { recursive: true }));
+        yield* Effect.promise(() => writeFile(join(project, "ballast.ts"), projectSource, "utf8"));
+        yield* Effect.promise(() => writeFile(join(project, "src", "api.ts"), apiSource, "utf8"));
+        yield* Effect.promise(() =>
+          writeFile(join(project, "artifacts", "dashboard", "main.ts"), artifactSource, "utf8"),
+        );
+
+        const service = yield* startService(root, {
+          BALLAST_ARTIFACT_EMBED_TTL_MS: "1500",
+        });
+        yield* Effect.addFinalizer(() => service.stop());
+
+        const added = yield* call(root, (client) =>
+          client.AddProject({ path: project, name: "Renew" }),
+        );
+        if (added.summary.lastError !== undefined) {
+          return yield* Effect.fail(new Error(added.summary.lastError));
+        }
+        yield* startProject(root, added.summary.id);
+
+        const first = yield* call(root, (client) =>
+          client.GetArtifactView({ projectId: added.summary.id, artifact: "dashboard" }),
+        );
+        const second = yield* call(root, (client) =>
+          client.GetArtifactView({ projectId: added.summary.id, artifact: "dashboard" }),
+        );
+        expect(first.scope).toBe("action");
+        expect(first.token).not.toBe(second.token);
+        const [firstPage, secondPage] = yield* Effect.promise(() =>
+          Promise.all([fetch(first.pageUrl), fetch(second.pageUrl)]),
+        );
+        expect(firstPage.status).toBe(200);
+        expect(secondPage.status).toBe(200);
+
+        const socket = yield* openSocket(first.url, first.token, "/metadata");
+        socket.send(
+          JSON.stringify({ _tag: "Request", id: 1, tag: "Params", payload: null, headers: [] }),
+        );
+        yield* waitForMessage(
+          socket,
+          (value) => isRecord(value) && value["requestId"] === 1 && value["_tag"] === "Exit",
+        );
+
+        yield* Effect.sleep("600 millis");
+        const renewed = yield* call(root, (client) =>
+          client.RenewArtifactView({ token: first.token }),
+        );
+        expect(renewed.token).toBe(first.token);
+        expect(renewed.expiresAt).toBeGreaterThan(first.expiresAt);
+
+        socket.close();
+        const reconnected = yield* openSocket(first.url, first.token, "/metadata");
+        yield* Effect.addFinalizer(() => Effect.sync(() => reconnected.close()));
+
+        // Past the original expiry, before the renewed one.
+        yield* Effect.sleep("1100 millis");
+        expect(reconnected.readyState).toBe(WebSocket.OPEN);
+        reconnected.send(
+          JSON.stringify({ _tag: "Request", id: 2, tag: "Params", payload: null, headers: [] }),
+        );
+        const afterRenewal = yield* waitForMessage(
+          reconnected,
+          (value) => isRecord(value) && value["requestId"] === 2 && value["_tag"] === "Exit",
+        );
+        expect(isRecord(afterRenewal) && isRecord(afterRenewal["exit"]) ? afterRenewal["exit"]["_tag"] : undefined).toBe(
+          "Success",
+        );
+
+        let closeCode: number | undefined;
+        reconnected.once("close", (code) => {
+          closeCode = code;
+        });
+        yield* Effect.sleep("1500 millis");
+        expect(closeCode).toBe(1008);
+        expect(reconnected.readyState).toBe(WebSocket.CLOSED);
+
+        const expiredPage = yield* Effect.promise(() => fetch(first.pageUrl));
+        expect(expiredPage.status).toBe(401);
+        const renewExpired = yield* call(root, (client) =>
+          client.RenewArtifactView({ token: first.token }),
+        ).pipe(Effect.exit);
+        expect(renewExpired._tag).toBe("Failure");
       }),
     120_000,
   );

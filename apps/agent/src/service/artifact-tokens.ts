@@ -20,7 +20,15 @@ import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 
 const TOKENS_FILE = "artifact-tokens.json";
-const EMBED_TTL_MS = 5 * 60_000;
+const DEFAULT_EMBED_TTL_MS = 5 * 60_000;
+
+/** Tests shorten the TTL to exercise expiry and renewal. */
+const embedTtlMs = (): number => {
+  const raw = process.env["BALLAST_ARTIFACT_EMBED_TTL_MS"];
+  if (raw === undefined || raw === "") return DEFAULT_EMBED_TTL_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 250 ? value : DEFAULT_EMBED_TTL_MS;
+};
 
 interface StoredArtifactUrl {
   readonly id: string;
@@ -66,6 +74,10 @@ export interface ArtifactTokenService {
     artifact: string,
     scope: ArtifactScope,
   ) => Effect.Effect<{ readonly token: string; readonly expiresAt: number }, AgentError>;
+  /** Extend an existing embed token. Undefined when unknown or already expired. */
+  readonly renewEmbed: (
+    token: string,
+  ) => Effect.Effect<{ readonly expiresAt: number } | undefined, AgentError>;
   readonly createUrl: (
     input: CreateArtifactUrlInput,
   ) => Effect.Effect<CreateArtifactUrlResult, AgentError>;
@@ -95,6 +107,11 @@ export interface ArtifactTokenService {
   readonly rejectConfirmation: (id: string) => Effect.Effect<void, AgentError>;
   readonly resolve: (token: string) => Effect.Effect<ArtifactGrant | undefined>;
   readonly revocations: PubSub.PubSub<string>;
+  /** Emitted after a successful renewal so open gateway sockets reschedule. */
+  readonly renewals: PubSub.PubSub<{
+    readonly tokenHash: string;
+    readonly expiresAt: number;
+  }>;
 }
 
 export class ArtifactTokens extends Context.Service<ArtifactTokens, ArtifactTokenService>()(
@@ -206,6 +223,10 @@ export const ArtifactTokensLive = Layer.effect(
       effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const revocations = yield* PubSub.unbounded<string>();
+    const renewals = yield* PubSub.unbounded<{
+      readonly tokenHash: string;
+      readonly expiresAt: number;
+    }>();
     const embedded = yield* Ref.make<
       ReadonlyMap<
         string,
@@ -229,13 +250,13 @@ export const ArtifactTokensLive = Layer.effect(
         const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
         const token = Hex.encode(bytes);
         const hash = yield* hashToken(token);
-        const expiresAt = Date.now() + EMBED_TTL_MS;
+        const now = Date.now();
+        const expiresAt = now + embedTtlMs();
         yield* Ref.update(embedded, (current) => {
           const next = new Map(current);
+          // Concurrent views are independent; only prune tokens that expired.
           for (const [candidate, grant] of next) {
-            if (grant.projectId === project.id && grant.artifact === artifact) {
-              next.delete(candidate);
-            }
+            if (grant.expiresAt <= now) next.delete(candidate);
           }
           next.set(hash, {
             projectId: project.id,
@@ -248,6 +269,34 @@ export const ArtifactTokensLive = Layer.effect(
         });
         return { token, expiresAt };
       }));
+
+    const renewEmbed: ArtifactTokenService["renewEmbed"] = (token) =>
+      provide(
+        Effect.gen(function* () {
+          const hash = yield* hashToken(token);
+          const current = yield* Ref.get(embedded);
+          const grant = current.get(hash);
+          if (grant === undefined) return undefined;
+          const now = Date.now();
+          if (grant.expiresAt <= now) {
+            yield* Ref.update(embedded, (all) => {
+              const next = new Map(all);
+              next.delete(hash);
+              return next;
+            });
+            return undefined;
+          }
+          const expiresAt = now + embedTtlMs();
+          yield* Ref.update(embedded, (all) => {
+            const next = new Map(all);
+            const existing = next.get(hash);
+            if (existing !== undefined) next.set(hash, { ...existing, expiresAt });
+            return next;
+          });
+          yield* PubSub.publish(renewals, { tokenHash: hash, expiresAt });
+          return { expiresAt };
+        }),
+      );
 
     const createUrl: ArtifactTokenService["createUrl"] = (input) =>
       provide(Effect.gen(function* () {
@@ -451,6 +500,7 @@ export const ArtifactTokensLive = Layer.effect(
 
     return {
       mintEmbed,
+      renewEmbed,
       createUrl,
       listUrls,
       revokeUrl,
@@ -460,6 +510,7 @@ export const ArtifactTokensLive = Layer.effect(
       rejectConfirmation,
       resolve,
       revocations,
+      renewals,
     };
   }),
 );

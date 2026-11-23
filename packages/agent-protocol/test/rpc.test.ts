@@ -39,6 +39,27 @@ describe("@ballast/agent-protocol RPC group", () => {
     }),
   );
 
+  it.effect("mints independent action view tokens and renews one in place", () =>
+    Effect.gen(function* () {
+      const agent = yield* client;
+
+      const first = yield* agent.GetArtifactView({
+        projectId: main,
+        artifact: "dashboard",
+      });
+      const second = yield* agent.GetArtifactView({
+        projectId: main,
+        artifact: "dashboard",
+      });
+      expect(first.scope).toBe("action");
+      expect(first.token).not.toBe(second.token);
+
+      const renewed = yield* agent.RenewArtifactView({ token: first.token });
+      expect(renewed.token).toBe(first.token);
+      expect(renewed.expiresAt).toBeGreaterThanOrEqual(first.expiresAt);
+    }),
+  );
+
   it.effect("returns a project's detail", () =>
     Effect.gen(function* () {
       const agent = yield* client;

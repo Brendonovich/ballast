@@ -33,6 +33,8 @@ import {
   ListArtifactsRequest,
   ListArtifactsResponse,
   RejectArtifactUrlRequest,
+  RenewArtifactViewRequest,
+  RenewArtifactViewResponse,
   RevokeArtifactUrlRequest,
 } from "./artifacts.ts";
 import { AgentError, PermissionStatus } from "./common.ts";
@@ -373,10 +375,17 @@ export const ListArtifacts = Rpc.make("ListArtifacts", {
   error: AgentError,
 });
 
-/** Mint a short-lived read token for the app's own artifact iframe. */
+/** Mint a short-lived action-capable token for the app's own artifact iframe. */
 export const GetArtifactView = Rpc.make("GetArtifactView", {
   payload: GetArtifactViewRequest,
   success: ArtifactView,
+  error: AgentError,
+});
+
+/** Extend an open view token in place, keeping the page and sockets alive. */
+export const RenewArtifactView = Rpc.make("RenewArtifactView", {
+  payload: RenewArtifactViewRequest,
+  success: RenewArtifactViewResponse,
   error: AgentError,
 });
 
@@ -502,6 +511,7 @@ export const AgentRpcs = RpcGroup.make(
   UnpairCloud,
   ListArtifacts,
   GetArtifactView,
+  RenewArtifactView,
   CreateArtifactUrl,
   ListArtifactUrls,
   RevokeArtifactUrl,
