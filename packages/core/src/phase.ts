@@ -1,3 +1,4 @@
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -14,10 +15,15 @@ declare global {
 
 export type Phase = "plan" | "runtime";
 
-const defaultPhase = (): Phase =>
-  globalThis.__BALLAST_PHASE__ === "runtime" || process.env["BALLAST_PHASE"] === "runtime"
+const defaultPhase: Effect.Effect<Phase> = Effect.gen(function* () {
+  const configured = yield* Config.String("BALLAST_PHASE").pipe(
+    Config.option,
+    Effect.catch(() => Effect.succeed(Option.none())),
+  );
+  return globalThis.__BALLAST_PHASE__ === "runtime" || Option.contains(configured, "runtime")
     ? "runtime"
     : "plan";
+});
 
 /**
  * The phase the current script is evaluated in. The planner provides
@@ -27,5 +33,10 @@ const defaultPhase = (): Phase =>
 export class ScriptPhase extends Context.Service<ScriptPhase, Phase>()("Ballast/ScriptPhase") {}
 
 export const currentPhase: Effect.Effect<Phase> = Effect.serviceOption(ScriptPhase).pipe(
-  Effect.map(Option.getOrElse(defaultPhase)),
+  Effect.flatMap(
+    Option.match({
+      onNone: () => defaultPhase,
+      onSome: (phase) => Effect.succeed(phase),
+    }),
+  ),
 );

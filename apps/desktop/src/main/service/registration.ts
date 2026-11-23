@@ -97,8 +97,8 @@ export async function discoverRegistration(config: DesktopConfig): Promise<Regis
 
 function parseHealth(value: unknown): HealthSnapshot | undefined {
   if (!isRecord(value) || value["ok"] !== true) return undefined;
-  const scripts = isRecord(value["scripts"]) ? value["scripts"] : undefined;
-  const pending = scripts ? numberValue(scripts["needsConsent"]) : undefined;
+  const projects = isRecord(value["projects"]) ? value["projects"] : undefined;
+  const pending = projects ? numberValue(projects["needsConsent"]) : undefined;
   return {
     ok: true,
     apiVersion: numberValue(value["apiVersion"]) ?? null,

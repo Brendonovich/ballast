@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { OAuth } from "@ballast/module-twitch";
+import { DEFAULT_TWITCH_CALLBACK_PORT } from "@ballast/agent-protocol";
 import type { ConnectionOptions } from "../connection-config.ts";
 import { ensureDir, readJson, writeJsonAtomic } from "../service/fs.ts";
 
@@ -263,16 +264,18 @@ export const resolveTwitchAppConfig = (
 
   const callbackPortValue = envString(env, "BALLAST_TWITCH_CALLBACK_PORT");
   const callbackPort =
-    callbackPortValue === undefined ? undefined : Number(callbackPortValue);
-  if (callbackPort !== undefined && (!Number.isInteger(callbackPort) || callbackPort < 0)) {
-    throw new Error("BALLAST_TWITCH_CALLBACK_PORT must be a non-negative integer");
+    callbackPortValue === undefined
+      ? DEFAULT_TWITCH_CALLBACK_PORT
+      : Number(callbackPortValue);
+  if (!Number.isInteger(callbackPort) || callbackPort <= 0) {
+    throw new Error("BALLAST_TWITCH_CALLBACK_PORT must be a positive integer");
   }
 
   return {
     slot,
     clientId,
     ...(clientSecret === undefined ? {} : { clientSecret }),
-    ...(callbackPort === undefined ? {} : { callbackPort }),
+    callbackPort,
     authorizationUrl:
       envString(env, "BALLAST_TWITCH_AUTHORIZATION_URL") ??
       OAuth.DEFAULT_AUTHORIZATION_URL,

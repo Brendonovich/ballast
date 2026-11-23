@@ -64,12 +64,15 @@ splitter uses `row-resize`, which is a resize cursor, not a pointer.
   disable Start.
 - **Connections** — service-level instances grouped by integration. Each row shows its label,
   status, account login/avatar, project slots that use it, and Manage/Delete. A bound instance
-  cannot be deleted and explains that it must be unbound first. **Add connection** picks an
-  integration, label and field set, then connects and starts auth where needed. Twitch own-app
-  mode shows the client id/secret fields, the generated redirect URL and the sign-in link. The
-  dialog also edits, connects/disconnects, re-authorizes and keeps the approval/permission states
-  keyed by instance. Keyboard dialogs hide the redundant editable macOS permission field; the
-  accessibility status line plus **Open System Settings** is the only control.
+  cannot be deleted and explains that it must be unbound first. **Add connection** is driven by
+  `ListIntegrations`: integration, description, allowed modes, auth requirement and field set,
+  then label, connect and auth where needed. Twitch own-app mode shows the client id/secret and
+  the fixed `redirectUrl` with a copy action; without one it explains that
+  `BALLAST_TWITCH_CALLBACK_PORT` is required and that the service would otherwise use a temporary
+  random-port callback. The dialog also edits, connects/disconnects, re-authorizes and keeps the
+  approval/permission states keyed by instance. Keyboard dialogs hide the redundant editable
+  macOS permission field; the accessibility status line plus **Open System Settings** is the
+  only control.
 - **Projects** also show **Needs connections** when an explicit binding or sole-instance proposal
   is missing; Review opens the project's connection picker.
 - **Settings** — service/desktop state, stop (restart in the desktop app), cloud pair/unpair and
@@ -223,17 +226,14 @@ screenshots/approvals-accessibility-light.png
 ```
 
 Bundle before the redesign: **408.98 kB JS / 48.57 kB CSS** (118.54 / 8.68 kB gzip).
-Bundle now: **379.14 kB JS / 30.88 kB CSS** (118.97 / 6.72 kB gzip).
+Bundle now: **366.76 kB JS / 30.84 kB CSS** (116.86 / 6.72 kB gzip).
 
 ## Known protocol gaps / notes
 
-1. There is no integration-catalog RPC, so `src/lib/connections.ts` mirrors the field lists the
-   service accepts in `apps/agent/src/service/connections.ts`. Keep them in sync until the catalog
-   is on the wire.
-2. Dynamic `optionsSource` values are only present in `ParamView.options` when the project slot
+1. Dynamic `optionsSource` values are only present in `ParamView.options` when the project slot
    is bound. A `strings` param shows its current selection until the service returns options.
-3. Browser WebSockets cannot send a bearer header; the service accepts `?token=` or the session
+2. Browser WebSockets cannot send a bearer header; the service accepts `?token=` or the session
    cookie.
-4. The source pane refetches on `project-file-changed`; because project planning also publishes
+3. The source pane refetches on `project-file-changed`; because project planning also publishes
    project changes, it treats those as a cue to refresh the current file as well.
-5. Removing a project is not exposed in the UI after project management moved out of Settings.
+4. Removing a project is not exposed in the UI after project management moved out of Settings.

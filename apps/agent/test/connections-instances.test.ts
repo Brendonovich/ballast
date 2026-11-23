@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
+import { DEFAULT_TWITCH_CALLBACK_PORT, type ProjectDetail } from "@ballast/agent-protocol";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
@@ -143,6 +144,27 @@ const paramsSource = [
   "",
 ].join("\n");
 
+const waitForProject = (
+  root: string,
+  projectId: string,
+  predicate: (detail: ProjectDetail) => boolean,
+) =>
+  Effect.gen(function* () {
+    const deadline = Date.now() + 20_000;
+    let latest: ProjectDetail | undefined;
+    while (Date.now() < deadline) {
+      latest = yield* call(root, (client) => client.GetProject({ projectId }));
+      if (predicate(latest)) return latest;
+      yield* Effect.sleep("100 millis");
+    }
+    return yield* Effect.fail(
+      new Error(
+        "Timed out waiting for project state; last=" +
+          JSON.stringify(latest?.summary ?? null),
+      ),
+    );
+  });
+
 const approve = (client: LiveAgentClient, projectId: string) =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -203,9 +225,11 @@ describe("connection instances", () => {
       expect(
         integrations.find((entry) => entry.integration === "obs")?.fields.map((field) => field.key),
       ).toEqual(["url", "password"]);
-      expect(
-        integrations.find((entry) => entry.integration === "twitch")?.modes,
-      ).toContain("cloud");
+      const twitch = integrations.find((entry) => entry.integration === "twitch");
+      expect(twitch?.modes).toContain("cloud");
+      expect(twitch?.redirectUrl).toBe(
+        `http://127.0.0.1:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
+      );
 
       const projectA = yield* makeProject(root, "project-a");
       const addedA = yield* call(root, (client) => client.AddProject({ path: projectA, name: "A" }));
@@ -213,12 +237,21 @@ describe("connection instances", () => {
       expect(addedA.requirements[0]?.proposedInstanceId).toBeUndefined();
       const blocked = yield* call(root, (client) => client.StartProject({ projectId: addedA.summary.id })).pipe(Effect.exit);
       expect(blocked._tag).toBe("Failure");
-      const blockedDetail = yield* call(root, (client) => client.GetProject({ projectId: addedA.summary.id }));
+      const blockedDetail = yield* waitForProject(
+        root,
+        addedA.summary.id,
+        (detail) => detail.summary.lastError?.includes("unbound connections") === true,
+      );
       expect(blockedDetail.summary.lastError).toContain("unbound connections");
       const checked = yield* call(root, (client) => client.CheckProject({ projectId: addedA.summary.id }));
       expect(checked.missingConnections).toHaveLength(1);
       expect(checked.availableConnections).toHaveLength(2);
-      expect(checked.summary.lastError).toContain("unbound connections");
+      const checkedDetail = yield* waitForProject(
+        root,
+        addedA.summary.id,
+        (detail) => detail.summary.lastError?.includes("unbound connections") === true,
+      );
+      expect(checkedDetail.summary.lastError).toContain("unbound connections");
 
       const boundA = yield* call(root, (client) =>
         client.SetProjectBinding({

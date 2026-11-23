@@ -16,6 +16,7 @@ import {
   type CancelTimerRequest,
   type ListTimersRequest,
   type ManifestConnection,
+  type ManifestDiff,
   type ParamValue,
   type ParamView,
   type ProjectCheckResult,
@@ -42,8 +43,6 @@ import type { ActiveScript } from "./connections.ts";
 import { contentHash, readJson, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
-import { ScriptManager } from "./scripts.ts";
-import { toWireDiff } from "./scripts.ts";
 import { EventRouter, Logs, ServiceHub } from "./telemetry.ts";
 import { makeTimerManager } from "./timers.ts";
 
@@ -288,7 +287,6 @@ export const ProjectRuntimeLive = Layer.effect(
   ProjectRuntime,
   Effect.gen(function* () {
     const projects = yield* ProjectManager;
-    const scripts = yield* ScriptManager;
     const connections = yield* ConnectionManager;
     const logs = yield* Logs;
     const router = yield* EventRouter;
@@ -478,6 +476,79 @@ export const ProjectRuntimeLive = Layer.effect(
       unresolved: manifest.unresolved.map((entry) => ({ path: entry.path, reason: entry.reason })),
     });
 
+    const wireDiff = (
+      changes: ReturnType<typeof diffProject>["units"],
+      options: ReadonlyMap<string, ReadonlyArray<string>>,
+      bound: ReadonlyMap<string, Binding>,
+      params: Readonly<Record<string, ParamValue>>,
+    ): ManifestDiff => ({
+      requiresConsent: changes.requiresConsent,
+      added: {
+        connections: changes.connections.added.map((connection) => {
+          const binding = bound.get(connection.integration + "/" + connection.slot);
+          return {
+            integration: connection.integration,
+            slot: connection.slot,
+            location: connection.location,
+            ...(binding === undefined
+              ? {}
+              : { connectionId: binding.id, connectionStatus: binding.status }),
+          };
+        }),
+        topics: changes.topics.added.map((topic) => ({
+          integration: topic.integration,
+          slot: topic.slot,
+          topic: topic.topic,
+          scopes: [...topic.scopes],
+          onStale: topic.onStale,
+          maxAgeMs: topic.maxAgeMs,
+          ...(topic.condition === undefined ? {} : { condition: topic.condition }),
+        })),
+        requests: changes.requests.added.map((request) => ({
+          integration: request.integration,
+          slot: request.slot,
+          request: request.request,
+          scopes: [...request.scopes],
+        })),
+        scopes: [...changes.scopes.added],
+        params: changes.params.added.map((param) =>
+          paramView(param, params, options.get(param.key)),
+        ),
+      },
+      removed: {
+        connections: changes.connections.removed.map((connection) => {
+          const binding = bound.get(connection.integration + "/" + connection.slot);
+          return {
+            integration: connection.integration,
+            slot: connection.slot,
+            location: connection.location,
+            ...(binding === undefined
+              ? {}
+              : { connectionId: binding.id, connectionStatus: binding.status }),
+          };
+        }),
+        topics: changes.topics.removed.map((topic) => ({
+          integration: topic.integration,
+          slot: topic.slot,
+          topic: topic.topic,
+          scopes: [...topic.scopes],
+          onStale: topic.onStale,
+          maxAgeMs: topic.maxAgeMs,
+          ...(topic.condition === undefined ? {} : { condition: topic.condition }),
+        })),
+        requests: changes.requests.removed.map((request) => ({
+          integration: request.integration,
+          slot: request.slot,
+          request: request.request,
+          scopes: [...request.scopes],
+        })),
+        scopes: [...changes.scopes.removed],
+        params: changes.params.removed.map((param) =>
+          paramView(param, params, options.get(param.key)),
+        ),
+      },
+    });
+
     const units = (record: ProjectRuntimeRecord, timerRows: ReadonlyArray<TimerSummary>): ReadonlyArray<UnitSummary> => {
       const manifest = record.manifest;
       if (manifest === undefined) return [];
@@ -551,7 +622,6 @@ export const ProjectRuntimeLive = Layer.effect(
           manifest: wireManifest(manifest, record.params, options, bound),
           requirements,
           units: units(record, timerRows),
-          scripts: [],
           ...(record.appliedAt === undefined ? {} : { appliedAt: record.appliedAt }),
           ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
           ...(record.lastErrorSource === undefined ? {} : { lastErrorSource: record.lastErrorSource }),
@@ -670,7 +740,7 @@ export const ProjectRuntimeLive = Layer.effect(
           createdAt: Date.now(),
           reason: scopeChanges.length > 0 ? "scopes" : "connections",
           summary: scopeChanges.length > 0 ? "Adds scopes: " + scopeChanges.join(", ") : "Adds connection slots",
-          diff: toWireDiff(changes.units, options, bound, record.params),
+          diff: wireDiff(changes.units, options, bound, record.params),
           bindings,
         };
       });
@@ -681,6 +751,9 @@ export const ProjectRuntimeLive = Layer.effect(
         const fingerprint = yield* provide(projectFingerprint(record.project.root));
         if (!force && record.fingerprint === fingerprint && record.manifest !== undefined) {
           if (record.status !== "error") return record;
+          // Runtime errors belong to a start/restart attempt, not to a stale
+          // plan. A file sync must not clear them without another start.
+          if (record.lastErrorKind === "runtime") return record;
           const recovered = yield* setRecord({
             ...record,
             status: record.session === undefined ? "stopped" : "running",
@@ -785,12 +858,12 @@ export const ProjectRuntimeLive = Layer.effect(
           const manifest = record.appliedManifest ?? record.manifest;
           return !record.enabled || manifest === undefined ? [] : [{ projectId: record.project.id, scriptId: record.entry ?? "", manifest, enabled: record.enabled }];
         });
-        running.push(...(yield* scripts.running()));
+
         const known: Array<ActiveScript> = all.flatMap((record) => {
           const manifest = record.manifest ?? record.appliedManifest;
           return manifest === undefined ? [] : [{ projectId: record.project.id, scriptId: record.entry ?? "", manifest, enabled: record.enabled }];
         });
-        known.push(...(yield* scripts.known()));
+
         const bindings = new Map<string, ReadonlyMap<string, string>>();
         for (const record of all) {
           bindings.set(record.project.id, new Map(Object.entries(record.bindings)));

@@ -2,6 +2,7 @@ import type {
   CloudPairingSession,
   CloudStatus,
   ConnectionAuth,
+  ConnectionIntegration,
   ConnectionMode,
   ConnectionSummary,
   HealthStatus,
@@ -49,6 +50,8 @@ export interface AgentStore {
   readonly projectConsent: (projectId: string) => ProjectConsentRequest | undefined;
   readonly projectRevision: (projectId: string) => number;
   readonly projectFileRevision: (projectId: string) => number;
+  readonly integrations: Accessor<ReadonlyArray<ConnectionIntegration>>;
+  readonly loadIntegrations: () => Promise<void>;
   readonly connections: () => ReadonlyArray<ConnectionSummary>;
   readonly connection: (connectionId: string) => ConnectionSummary | undefined;
   readonly cloud: () => CloudStatus | undefined;
@@ -175,6 +178,7 @@ export const createAgentStore = (
   options: CreateAgentStoreOptions = {},
 ): AgentStore => {
   const [snapshot, setSnapshot] = createSignal<ServiceSnapshot>();
+  const [integrations, setIntegrations] = createSignal<ReadonlyArray<ConnectionIntegration>>([]);
   const [watchStatus, setWatchStatus] = createSignal<StreamStatus>("connecting");
   const [logStatus, setLogStatus] = createSignal<StreamStatus>("connecting");
   const [lastActionError, setLastActionError] = createSignal<string>();
@@ -494,6 +498,14 @@ export const createAgentStore = (
     await runtime.dispose();
   };
 
+  const loadIntegrations = async (): Promise<void> => {
+    const outcome = await execute(
+      "integrations:list",
+      runtime.client.ListIntegrations(),
+    );
+    if (outcome.ok) setIntegrations(outcome.value.integrations);
+  };
+
   const refresh = async (): Promise<boolean> => {
     const outcome = await execute(
       "service:refresh",
@@ -501,16 +513,26 @@ export const createAgentStore = (
         const info = yield* runtime.client.GetServiceInfo();
         const health = yield* runtime.client.GetHealth();
         const projectList = yield* runtime.client.ListProjects();
+        const integrationList = yield* runtime.client.ListIntegrations();
         const projectConsentList =
           runtime.transport.kind === "mock"
             ? { consents: [] }
             : yield* runtime.client.ListProjectConsents({});
         const connectionList = yield* runtime.client.ListConnections();
         const cloudStatus = yield* runtime.client.GetCloudStatus();
-        return { info, health, projectList, projectConsentList, connectionList, cloudStatus };
+        return {
+          info,
+          health,
+          projectList,
+          integrationList,
+          projectConsentList,
+          connectionList,
+          cloudStatus,
+        };
       }),
     );
     if (!outcome.ok) return false;
+    setIntegrations(outcome.value.integrationList.integrations);
     const consents: Record<string, ProjectConsentRequest> = {};
     for (const consent of outcome.value.projectConsentList.consents) {
       consents[consent.projectId] = consent;
@@ -520,10 +542,8 @@ export const createAgentStore = (
       info: outcome.value.info,
       health: outcome.value.health,
       projects: outcome.value.projectList.projects,
-      scripts: [],
       connections: outcome.value.connectionList.connections,
       cloud: outcome.value.cloudStatus,
-      consents: [],
     };
     setSnapshot(next);
     setWatchStatus("live");
@@ -913,6 +933,8 @@ export const createAgentStore = (
     projectConsent,
     projectRevision,
     projectFileRevision,
+    integrations,
+    loadIntegrations,
     connections,
     connection,
     cloud,

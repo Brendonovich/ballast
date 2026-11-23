@@ -71,7 +71,7 @@ export interface ServiceStatus {
   readonly pid: number | null;
   readonly url: string | null;
   readonly startedAt: number | null;
-  /** From `/health.scripts.needsConsent`; null when the service is not reachable. */
+  /** From `/health.projects.needsConsent`; null when the service is not reachable. */
   readonly pendingConsents: number | null;
   /** A service of another version is running; `start` replaces it with the shipped build. */
   readonly updateAvailable: boolean;

@@ -8,7 +8,6 @@ import {
   ManifestDiff,
   ManifestRequest,
   ParamView,
-  ScriptSummary,
   UnresolvedEntry,
 } from "./scripts.ts";
 
@@ -155,8 +154,6 @@ export const ProjectSummary = Schema.Struct({
   enabled: Schema.Boolean,
   status: ProjectStatus,
   unitCount: Schema.Number,
-  /** Legacy per-script count, kept for the desktop/UI cutover. */
-  scriptCount: Schema.optionalKey(Schema.Number),
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
   lastError: Schema.optionalKey(Schema.String),
@@ -171,8 +168,6 @@ export const ProjectDetail = Schema.Struct({
   appliedAt: Schema.optionalKey(Schema.Number),
   pendingConsent: Schema.optionalKey(ProjectConsentRequest),
   lastErrorSource: Schema.optionalKey(SourceLocation),
-  /** Legacy script rows for the script-oriented cutover UI. */
-  scripts: Schema.Array(ScriptSummary),
   appliedManifest: Schema.optionalKey(ProjectManifest),
 });
 export type ProjectDetail = typeof ProjectDetail.Type;

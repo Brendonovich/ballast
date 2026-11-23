@@ -162,7 +162,11 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
 
   // Add a service-level connection, then delete it while unbound.
   await page.getByTestId("add-connection").click();
-  await page.getByTestId("connection-integration").selectOption("fake");
+  const addDialog = page.getByRole("dialog");
+  await addDialog.getByTestId("connection-integration").selectOption("twitch");
+  await expect(addDialog).toContainText("No callback port is configured");
+  await expect(addDialog).toContainText("BALLAST_TWITCH_CALLBACK_PORT");
+  await addDialog.getByTestId("connection-integration").selectOption("fake");
   await page.getByTestId("connection-label").fill("Test Fake");
   await page.getByTestId("create-connection-submit").click();
   const addedDialog = page.getByRole("dialog");

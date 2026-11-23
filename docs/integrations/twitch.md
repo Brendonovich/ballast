@@ -117,9 +117,11 @@ ballast auth twitch broadcaster \
 
 - With a client secret, the command uses the authorization-code flow with a
   localhost callback. Register the exact redirect URI in the Twitch developer
-  console: `http://127.0.0.1:<port>/callback`. The port is random by default;
-  pass `--callback-port <port>` or set `BALLAST_TWITCH_CALLBACK_PORT` to make
-  it stable.
+  console. The stable default is
+  `http://127.0.0.1:17345/callback`; pass `--callback-port <port>` or set
+  `BALLAST_TWITCH_CALLBACK_PORT` to use another fixed port. Twitch requires an
+  exact match. If the fixed port is busy, authorization fails with a clear
+  "port is already in use" error instead of silently changing ports.
 - Without a client secret (a public client), or with `--device`, it uses the
   device-code flow: open the printed URL and enter the code.
 - `--entry` plans the script and requests the scopes of that slot's topics and
@@ -171,7 +173,7 @@ slot with the stored token's scopes. When scopes are missing:
 | Client secret | `--connection-secret twitch/<slot>=<secret>`, `BALLAST_TWITCH_<SLOT>_CLIENT_SECRET`, `BALLAST_TWITCH_CLIENT_SECRET` |
 | Mode | `--twitch-mode local`, `BALLAST_TWITCH_MODE`, `BALLAST_TWITCH_<SLOT>_MODE` |
 | Data dir | `BALLAST_DATA_DIR` |
-| Callback port | `--callback-port`, `BALLAST_TWITCH_CALLBACK_PORT` |
+| Callback port | `--callback-port`, `BALLAST_TWITCH_CALLBACK_PORT` (default 17345) |
 | OAuth endpoints | `BALLAST_TWITCH_AUTHORIZATION_URL`, `BALLAST_TWITCH_TOKEN_URL`, `BALLAST_TWITCH_VALIDATE_URL`, `BALLAST_TWITCH_DEVICE_URL`, `BALLAST_TWITCH_REVOKE_URL` |
 | Helix base | `BALLAST_TWITCH_HELIX_URL` |
 | EventSub WebSocket | `BALLAST_TWITCH_EVENTSUB_URL` |

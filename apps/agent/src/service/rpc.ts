@@ -10,9 +10,7 @@ import {
   type ServiceEvent,
   type ServiceInfo,
   type ServiceSnapshot,
-  type ScriptSummary,
   type ProjectSummary,
-  type TimerSummary,
   type HealthStatus,
   type CloudStatus,
 } from "@ballast/agent-protocol";
@@ -25,7 +23,6 @@ import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ProjectRuntime } from "./project-runtime.ts";
 import { ensureProjectTypes, scaffoldProject } from "./scaffold.ts";
-import { ScriptManager } from "./scripts.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
 
 export interface AgentRpcOptions {
@@ -39,7 +36,6 @@ export interface AgentRpcOptions {
 export const AgentRpcsLive = (options: AgentRpcOptions) => {
   const handlers = Effect.gen(function* () {
     const projects = yield* ProjectManager;
-    const scripts = yield* ScriptManager;
     const runtime = yield* ProjectRuntime;
     const connections = yield* ConnectionManager;
     const cloud = yield* CloudLink;
@@ -68,7 +64,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         nodeVersion: process.version,
         capabilities: [
           "projects",
-          "scripts",
           "connections",
           "cloud",
           "logs",
@@ -79,7 +74,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
     });
 
     const health = Effect.gen(function* () {
-      const counts = yield* scripts.counts;
       const projectCounts = yield* runtime.counts;
       const connectionList = yield* connections.summaries();
       const cloudStatus = yield* cloud.status;
@@ -99,7 +93,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
           needsConsent: projectCounts.needsConsent,
           error: projectCounts.error,
         },
-        scripts: counts,
         connections: {
           total: connectionList.length,
           connected: connectionList.filter(
@@ -115,71 +108,22 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       } satisfies HealthStatus;
     });
 
-    const projectScripts = (projectId: string) => scripts.summaries(projectId);
-
-    const legacyProjectSummary = (
-      project: ProjectRecord,
-      projectScriptSummaries: ReadonlyArray<ScriptSummary>,
-    ): ProjectSummary => {
-      const status: ProjectSummary["status"] = projectScriptSummaries.some(
-        (script) => script.status === "running",
-      )
-        ? "running"
-        : projectScriptSummaries.some((script) => script.status === "needs-consent")
-          ? "needs-consent"
-          : projectScriptSummaries.some((script) => script.status === "error")
-            ? "error"
-            : "stopped";
-      const lastError = projectScriptSummaries.find(
-        (script) => script.lastError !== undefined,
-      )?.lastError;
-      return {
-        id: project.id,
-        name: project.name,
-        root: project.root,
-        entry: projectScriptSummaries[0]?.entry ?? "ballast.ts",
-        enabled: projectScriptSummaries.some((script) => script.enabled),
-        status,
-        unitCount: 0,
-        scriptCount: projectScriptSummaries.length,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-        ...(lastError === undefined ? {} : { lastError }),
-      };
-    };
+    const fallbackSummary = (project: ProjectRecord): ProjectSummary => ({
+      id: project.id,
+      name: project.name,
+      root: project.root,
+      entry: "ballast.ts",
+      enabled: false,
+      status: "stopped",
+      unitCount: 0,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    });
 
     const projectSummary = (project: ProjectRecord) =>
-      Effect.gen(function* () {
-        const current = yield* runtime.summary(project.id);
-        if (current !== undefined) return current;
-        const projectScriptSummaries = yield* projectScripts(project.id);
-        return legacyProjectSummary(project, projectScriptSummaries);
-      });
+      Effect.map(runtime.summary(project.id), (summary) => summary ?? fallbackSummary(project));
 
-    const projectDetail = (project: ProjectRecord) =>
-      Effect.gen(function* () {
-        const current = yield* runtime.summary(project.id);
-        if (current !== undefined) return yield* runtime.detail(project.id);
-        const projectScriptSummaries = yield* projectScripts(project.id);
-        const summary = legacyProjectSummary(project, projectScriptSummaries);
-        return {
-          summary,
-          manifest: {
-            project: { id: project.id, entry: summary.entry ?? "ballast.ts" },
-            params: [],
-            connections: [],
-            topics: [],
-            requests: [],
-            timers: [],
-            workflows: [],
-            runs: [],
-            unresolved: [],
-          },
-          requirements: [],
-          units: [],
-          scripts: projectScriptSummaries,
-        };
-      });
+    const projectDetail = (project: ProjectRecord) => runtime.detail(project.id);
 
     const publishHealth = health.pipe(
       Effect.flatMap((value) => hub.publish({ _tag: "health", health: value })),
@@ -187,10 +131,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
 
     const snapshot = Effect.gen(function* () {
       const projectList = yield* projects.projects;
-      const scriptList = yield* scripts.summaries();
       const connectionList = yield* connections.summaries();
       const cloudStatus = yield* cloud.status;
-      const consentList = yield* scripts.consents();
       const serviceInfo = yield* info;
       const serviceHealth = yield* health;
       const summaries = yield* Effect.forEach(projectList, (project) =>
@@ -200,10 +142,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         info: serviceInfo,
         health: serviceHealth,
         projects: summaries,
-        scripts: scriptList,
         connections: connectionList,
         cloud: cloudStatus,
-        consents: consentList,
       } satisfies ServiceSnapshot;
     });
 
@@ -273,7 +213,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
             path: scaffolded.root,
             name: scaffolded.name,
           });
-          yield* scripts.syncProject(project.id);
           yield* runtime.syncProject(project.id);
           yield* hub.publish({ _tag: "project", project: yield* projectSummary(project) });
           yield* publishHealth;
@@ -286,7 +225,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
             path: request.path,
             ...(request.name === undefined ? {} : { name: request.name }),
           });
-          yield* scripts.syncProject(project.id);
           yield* runtime.syncProject(project.id);
           const summary = yield* projectSummary(project);
           yield* hub.publish({ _tag: "project", project: summary });
@@ -297,7 +235,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       RemoveProject: ({ projectId }: { readonly projectId: string }) =>
         Effect.gen(function* () {
           yield* requireProject(projectId);
-          yield* scripts.removeProject(projectId);
           yield* runtime.removeProject(projectId);
           yield* projects.remove(projectId);
           yield* hub.publish({ _tag: "project-removed", projectId });
@@ -336,54 +273,11 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       RejectProjectConsent: (request: { readonly consentId: string; readonly reason?: string }) =>
         runtime.reject(request.consentId, request.reason),
 
-      ListScripts: (request: { readonly projectId?: string }) =>
-        Effect.map(scripts.summaries(request.projectId), (list) => ({ scripts: list })),
-
-      GetScript: ({ projectId, scriptId }: { readonly projectId: string; readonly scriptId: string }) =>
-        scripts.detail(projectId, scriptId),
-
-      GetScriptSource: ({ projectId, scriptId }: { readonly projectId: string; readonly scriptId: string }) =>
-        scripts.source(projectId, scriptId),
-
-      PlanScript: ({ projectId, scriptId }: { readonly projectId: string; readonly scriptId: string }) =>
-        scripts.planScript(projectId, scriptId).pipe(Effect.flatMap(() => scripts.detail(projectId, scriptId))),
-
-      StartScript: ({ projectId, scriptId }: { readonly projectId: string; readonly scriptId: string }) =>
-        scripts.startScript(projectId, scriptId),
-
-      StopScript: ({ projectId, scriptId }: { readonly projectId: string; readonly scriptId: string }) =>
-        scripts.stopScript(projectId, scriptId),
-
-      RestartScript: ({ projectId, scriptId }: { readonly projectId: string; readonly scriptId: string }) =>
-        scripts.restartScript(projectId, scriptId),
-
-      SetScriptParam: (request: {
-        readonly projectId: string;
-        readonly scriptId: string;
-        readonly key: string;
-        readonly value: string | number | boolean | ReadonlyArray<string>;
-      }) => scripts.setParam(request.projectId, request.scriptId, request.key, request.value),
-
-      SetScriptEnabled: (request: {
-        readonly projectId: string;
-        readonly scriptId: string;
-        readonly enabled: boolean;
-      }) => scripts.setEnabled(request.projectId, request.scriptId, request.enabled),
-
       ListTimers: (request: {
         readonly projectId?: string;
         readonly scriptId?: string;
         readonly includeFinished?: boolean;
-      }) =>
-        Effect.gen(function* () {
-          const legacy = yield* scripts.listTimers(request);
-          const project = yield* runtime.listTimers(request);
-          const merged = new Map<string, TimerSummary>();
-          for (const timer of [...legacy, ...project]) {
-            merged.set(timer.projectId + "\u0000" + timer.timer + "\u0000" + timer.key, timer);
-          }
-          return { timers: [...merged.values()] };
-        }),
+      }) => Effect.map(runtime.listTimers(request), (timers) => ({ timers })),
 
       CancelTimer: (request: {
         readonly projectId: string;
@@ -391,20 +285,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         readonly timer: string;
         readonly key: string;
       }) =>
-        Effect.gen(function* () {
-          const cancelled = yield* runtime.cancelTimer(request);
-          if (cancelled) return { cancelled };
-          return { cancelled: yield* scripts.cancelTimer(request) };
-        }),
-
-      ListConsents: (request: { readonly projectId?: string }) =>
-        Effect.map(scripts.consents(request.projectId), (consents) => ({ consents })),
-
-      ApproveConsent: ({ consentId }: { readonly consentId: string }) =>
-        scripts.approve(consentId),
-
-      RejectConsent: (request: { readonly consentId: string; readonly reason?: string }) =>
-        scripts.reject(request.consentId, request.reason),
+        Effect.map(runtime.cancelTimer(request), (cancelled) => ({ cancelled })),
 
       ListIntegrations: () =>
         Effect.succeed({ integrations: connections.integrations() }),

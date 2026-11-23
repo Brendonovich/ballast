@@ -170,6 +170,16 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     await appReady(page);
     await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 
+    // ListIntegrations drives the catalog; the fixed callback port supplies Twitch's redirect URL.
+    await page.getByTestId("nav-connections").click();
+    await page.getByTestId("add-connection").click();
+    const catalogDialog = page.getByRole("dialog");
+    await expect(catalogDialog.getByTestId("connection-integration")).toContainText("OBS Studio");
+    await catalogDialog.getByTestId("connection-integration").selectOption("twitch");
+    await expect(catalogDialog).toContainText("http://127.0.0.1:43123/callback");
+    await expect(catalogDialog.getByTestId("connection-redirect-copy")).toBeVisible();
+    await catalogDialog.getByRole("button", { name: "Close" }).click();
+
     // A service-level OBS instance exists before any project.
     await fillObsForm(page, "Studio OBS", obs.url);
     const studioId = await submitObsForm(page, "Studio OBS");

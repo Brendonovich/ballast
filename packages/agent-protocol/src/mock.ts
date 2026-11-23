@@ -32,7 +32,6 @@ import type {
   ScriptManifest,
   ScriptSummary,
 } from "./scripts.ts";
-import { mockScriptSources } from "./mock-sources.ts";
 import { scriptView } from "./scripts.ts";
 import type { HealthStatus, ServiceInfo } from "./service.ts";
 import { AGENT_API_VERSION } from "./service.ts";
@@ -107,7 +106,6 @@ const mainProject: ProjectSummary = {
   unitCount: 4,
   createdAt: base - 30 * 24 * HOUR,
   updatedAt: base + 2 * HOUR,
-  scriptCount: 2,
 };
 
 const altProject: ProjectSummary = {
@@ -120,7 +118,6 @@ const altProject: ProjectSummary = {
   unitCount: 4,
   createdAt: base - 12 * 24 * HOUR,
   updatedAt: base + 55 * MINUTE,
-  scriptCount: 2,
 };
 
 const param = (input: ParamView): ParamView => input;
@@ -791,10 +788,6 @@ const initialState = (): MockState => ({
 });
 
 const healthOf = (state: MockState): HealthStatus => {
-  const scripts = state.scriptOrder.flatMap((id) => {
-    const detail = state.scripts.get(id);
-    return detail === undefined ? [] : [detail.summary];
-  });
   const connections = state.connectionOrder.flatMap((id) => {
     const connection = state.connections.get(id);
     return connection === undefined ? [] : [connection];
@@ -807,12 +800,6 @@ const healthOf = (state: MockState): HealthStatus => {
       running: 1,
       needsConsent: 0,
       error: 0,
-    },
-    scripts: {
-      total: scripts.length,
-      running: scripts.filter((script) => script.status === "running").length,
-      needsConsent: scripts.filter((script) => script.status === "needs-consent").length,
-      error: scripts.filter((script) => script.status === "error").length,
     },
     connections: {
       total: connections.length,
@@ -832,41 +819,17 @@ const snapshotOf = (state: MockState): ServiceSnapshot => ({
     const project = state.projects.get(id);
     return project === undefined ? [] : [project];
   }),
-  scripts: state.scriptOrder.flatMap((id) => {
-    const detail = state.scripts.get(id);
-    return detail === undefined ? [] : [detail.summary];
-  }),
   connections: state.connectionOrder.flatMap((id) => {
     const connection = state.connections.get(id);
     return connection === undefined ? [] : [connection];
   }),
   cloud: state.cloud,
-  consents: state.consentOrder.flatMap((id) => {
-    const consent = state.consents.get(id);
-    return consent === undefined ? [] : [consent];
-  }),
-});
-
-const clearLastError = (script: ScriptSummary): ScriptSummary => ({
-  projectId: script.projectId,
-  id: script.id,
-  name: script.name,
-  entry: script.entry,
-  status: script.status,
-  enabled: script.enabled,
-  generation: script.generation,
-  updatedAt: script.updatedAt,
 });
 
 const publish = (store: MockStoreService, events: ReadonlyArray<ServiceEvent>) =>
   Effect.forEach(events, (event) => PubSub.publish(store.changes, event), {
     discard: true,
   });
-
-const setScripts = (
-  state: MockState,
-  scripts: ReadonlyMap<string, ScriptDetail>,
-): MockState => ({ ...state, scripts });
 
 const appendLog = (
   store: MockStoreService,
@@ -899,49 +862,7 @@ const appendLog = (
     yield* PubSub.publish(store.logEntries, entry);
   });
 
-const validParamValue = (
-  declared: ParamView,
-  value: ParamValue,
-): boolean => {
-  switch (declared.type) {
-    case "string":
-      return typeof value === "string";
-    case "number":
-      return typeof value === "number" && Number.isFinite(value);
-    case "boolean":
-      return typeof value === "boolean";
-    case "enum":
-      return (
-        typeof value === "string" &&
-        (declared.options === undefined || declared.options.includes(value))
-      );
-    case "strings":
-      return (
-        Array.isArray(value) &&
-        value.every((entry) => typeof entry === "string") &&
-        (declared.options === undefined ||
-          value.every((entry) => declared.options?.includes(entry) === true))
-      );
-  }
-};
-
 const fail = (error: AgentError): Effect.Effect<never, AgentError> => Effect.fail(error);
-
-const requireScript = (
-  state: MockState,
-  projectId: string,
-  scriptId: string,
-): Effect.Effect<ScriptDetail, AgentError> => {
-  const detail = state.scripts.get(scriptKey(projectId, scriptId));
-  return detail === undefined
-    ? fail(
-        agentError(
-          "not-found",
-          `No script "${scriptId}" in project "${projectId}"`,
-        ),
-      )
-    : Effect.succeed(detail);
-};
 
 const projectScripts = (
   state: MockState,
@@ -1026,12 +947,6 @@ export const MockAgentStoreLive = Layer.effect(
 const handlers = Effect.gen(function* () {
   const store = yield* MockStore;
 
-  const allScripts = (state: MockState): ReadonlyArray<ScriptDetail> =>
-    state.scriptOrder.flatMap((key) => {
-      const detail = state.scripts.get(key);
-      return detail === undefined ? [] : [detail];
-    });
-
   const allProjects = (state: MockState): ReadonlyArray<ProjectSummary> =>
     state.projectOrder.flatMap((id) => {
       const project = state.projects.get(id);
@@ -1072,7 +987,6 @@ const handlers = Effect.gen(function* () {
     manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
     requirements: requirementsOf(state, project.id),
     units: unitsOf(state, project.id),
-    scripts: projectScripts(state, project.id).map((detail) => detail.summary),
   });
 
   const unitsOf = (
@@ -1121,14 +1035,12 @@ const handlers = Effect.gen(function* () {
       Effect.gen(function* () {
         const state = yield* Ref.get(store.state);
         const project = yield* requireProject(state, projectId);
-        const scripts = projectScripts(state, projectId).map((detail) => detail.summary);
         const entry = project.entry ?? "ballast.ts";
         return {
           summary: project,
           manifest: emptyProjectManifest(projectId, entry),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
-          scripts,
         };
       }),
 
@@ -1141,7 +1053,6 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
         }),
       ),
@@ -1159,7 +1070,6 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
         }),
       ),
@@ -1177,7 +1087,6 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
         }),
       ),
@@ -1191,7 +1100,6 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, projectId).map((detail) => detail.summary),
           };
         }),
       ),
@@ -1205,7 +1113,6 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(request.projectId, project.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, request.projectId).map((detail) => detail.summary),
           };
         }),
       ),
@@ -1227,7 +1134,6 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(request.projectId, next.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, request.projectId).map((detail) => detail.summary),
           };
         }),
       ),
@@ -1301,8 +1207,7 @@ const handlers = Effect.gen(function* () {
           manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
-          scripts: projectScripts(state, project.id).map((detail) => detail.summary),
-        };
+              };
       }),
 
     RejectProjectConsent: (request: { readonly consentId: string; readonly reason?: string }) =>
@@ -1318,8 +1223,7 @@ const handlers = Effect.gen(function* () {
             manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
-            scripts: projectScripts(state, project.id).map((detail) => detail.summary),
-          };
+                  };
         }),
       ),
 
@@ -1343,7 +1247,6 @@ const handlers = Effect.gen(function* () {
           unitCount: 0,
           createdAt: now,
           updatedAt: now,
-          scriptCount: 0,
         };
         const projects = new Map(state.projects);
         projects.set(id, project);
@@ -1358,7 +1261,6 @@ const handlers = Effect.gen(function* () {
           manifest: emptyProjectManifest(id, "ballast.ts"),
           requirements: [],
           units: [],
-          scripts: [],
         };
       }),
 
@@ -1417,7 +1319,6 @@ const handlers = Effect.gen(function* () {
           unitCount: 0,
           createdAt: now,
           updatedAt: now,
-          scriptCount: 0,
         };
         const projects = new Map(state.projects);
         projects.set(project.id, project);
@@ -1447,7 +1348,6 @@ const handlers = Effect.gen(function* () {
           manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
-          scripts: [],
         };
       }),
 
@@ -1500,462 +1400,13 @@ const handlers = Effect.gen(function* () {
         });
         yield* publish(store, [
           { _tag: "project-removed", projectId },
-          ...removed.map(
-            (detail): ServiceEvent => ({
-              _tag: "script-removed",
-              projectId: detail.summary.projectId,
-              scriptId: detail.summary.id,
-            }),
-          ),
           { _tag: "health", health: healthOf(nextState) },
         ]);
         return undefined;
       }),
 
-    ListScripts: (request: { readonly projectId?: string }) =>
-      Effect.map(Ref.get(store.state), (state) => ({
-        scripts: allScripts(state)
-          .filter(
-            (detail) =>
-              request.projectId === undefined ||
-              detail.summary.projectId === request.projectId,
-          )
-          .map((detail) => detail.summary),
-      })),
-
-    GetScript: ({
-      projectId,
-      scriptId,
-    }: {
-      readonly projectId: string;
-      readonly scriptId: string;
-    }) =>
-      Effect.flatMap(Ref.get(store.state), (state) =>
-        requireScript(state, projectId, scriptId),
-      ),
-
-    GetScriptSource: ({
-      projectId,
-      scriptId,
-    }: {
-      readonly projectId: string;
-      readonly scriptId: string;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, projectId, scriptId);
-        const source = mockScriptSources.get(scriptId);
-        if (source === undefined) {
-          return yield* fail(
-            agentError(
-              "not-found",
-              `No source is available for "${scriptId}" in project "${projectId}"`,
-            ),
-          );
-        }
-        const sha256 = yield* sourceSha256(source);
-        return {
-          path: detail.summary.entry,
-          content: source,
-          sha256,
-          updatedAt: detail.summary.updatedAt,
-          language: "typescript" as const,
-        };
-      }),
-
-    PlanScript: ({
-      projectId,
-      scriptId,
-    }: {
-      readonly projectId: string;
-      readonly scriptId: string;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, projectId, scriptId);
-        const next: ScriptDetail = {
-          ...detail,
-          summary: { ...detail.summary, updatedAt: Date.now() },
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(projectId, scriptId), next);
-        yield* Ref.set(store.state, setScripts(state, scripts));
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId,
-          scriptId,
-          message: "plan completed",
-        });
-        yield* publish(store, [{ _tag: "script", script: next.summary }]);
-        return next;
-      }),
-
-    StartScript: ({
-      projectId,
-      scriptId,
-    }: {
-      readonly projectId: string;
-      readonly scriptId: string;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, projectId, scriptId);
-        if (detail.pendingConsent !== undefined) {
-          return yield* fail(
-            agentError(
-              "conflict",
-              `"${detail.summary.name}" needs consent before it can start: ${detail.pendingConsent.summary}`,
-            ),
-          );
-        }
-        const now = Date.now();
-        const next: ScriptDetail = {
-          ...detail,
-          summary: {
-            ...clearLastError(detail.summary),
-            status: "running",
-            enabled: true,
-            generation: detail.summary.generation + 1,
-            updatedAt: now,
-          },
-          appliedManifest: detail.manifest,
-          appliedAt: now,
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(projectId, scriptId), next);
-        yield* Ref.set(store.state, setScripts(state, scripts));
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId,
-          scriptId,
-          message: `started generation ${next.summary.generation}; will resume after restart`,
-        });
-        yield* publish(store, [
-          { _tag: "script", script: next.summary },
-          { _tag: "health", health: healthOf(yield* Ref.get(store.state)) },
-        ]);
-        return next;
-      }),
-
-    StopScript: ({
-      projectId,
-      scriptId,
-    }: {
-      readonly projectId: string;
-      readonly scriptId: string;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, projectId, scriptId);
-        const next: ScriptDetail = {
-          ...detail,
-          summary: {
-            ...clearLastError(detail.summary),
-            status: "stopped",
-            enabled: false,
-            updatedAt: Date.now(),
-          },
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(projectId, scriptId), next);
-        yield* Ref.set(store.state, setScripts(state, scripts));
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId,
-          scriptId,
-          message: `stopped generation ${detail.summary.generation}; it will not resume`,
-        });
-        yield* publish(store, [
-          { _tag: "script", script: next.summary },
-          { _tag: "health", health: healthOf(yield* Ref.get(store.state)) },
-        ]);
-        return next;
-      }),
-
-    RestartScript: ({
-      projectId,
-      scriptId,
-    }: {
-      readonly projectId: string;
-      readonly scriptId: string;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, projectId, scriptId);
-        if (detail.pendingConsent !== undefined) {
-          return yield* fail(
-            agentError("conflict", `"${detail.summary.name}" needs consent before it can start`),
-          );
-        }
-        const now = Date.now();
-        const next: ScriptDetail = {
-          ...detail,
-          summary: {
-            ...clearLastError(detail.summary),
-            status: "running",
-            enabled: true,
-            generation: detail.summary.generation + 1,
-            updatedAt: now,
-          },
-          appliedManifest: detail.manifest,
-          appliedAt: now,
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(projectId, scriptId), next);
-        yield* Ref.set(store.state, setScripts(state, scripts));
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId,
-          scriptId,
-          message: `restarted as generation ${next.summary.generation}`,
-        });
-        yield* publish(store, [
-          { _tag: "script", script: next.summary },
-          { _tag: "health", health: healthOf(yield* Ref.get(store.state)) },
-        ]);
-        return next;
-      }),
-
     ListTimers: () => Effect.succeed({ timers: [] }),
     CancelTimer: () => Effect.succeed({ cancelled: false }),
-
-    SetScriptParam: (request: {
-      readonly projectId: string;
-      readonly scriptId: string;
-      readonly key: string;
-      readonly value: ParamValue;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, request.projectId, request.scriptId);
-        const declared = detail.manifest.params.find((entry) => entry.key === request.key);
-        if (declared === undefined) {
-          return yield* fail(
-            agentError(
-              "not-found",
-              `Script ${request.scriptId} has no param "${request.key}"`,
-            ),
-          );
-        }
-        if (!validParamValue(declared, request.value)) {
-          return yield* fail(
-            agentError(
-              "invalid",
-              `Param "${request.key}" expects ${declared.type}${
-                declared.options === undefined ? "" : ` (${declared.options.join(", ")})`
-              }`,
-            ),
-          );
-        }
-        const params = detail.manifest.params.map((entry) =>
-          entry.key === request.key ? { ...entry, value: request.value } : entry,
-        );
-        const running = detail.summary.status === "running";
-        const now = Date.now();
-        const next: ScriptDetail = {
-          ...detail,
-          summary: {
-            ...detail.summary,
-            updatedAt: now,
-            ...(running ? { generation: detail.summary.generation + 1 } : {}),
-          },
-          manifest: { ...detail.manifest, params },
-          ...(running && detail.appliedManifest !== undefined
-            ? {
-                appliedManifest: { ...detail.appliedManifest, params },
-                appliedAt: now,
-              }
-            : {}),
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(request.projectId, request.scriptId), next);
-        yield* Ref.set(store.state, setScripts(state, scripts));
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId: request.projectId,
-          scriptId: request.scriptId,
-          message: `param "${request.key}" set`,
-          fields: { value: request.value },
-        });
-        yield* publish(store, [{ _tag: "script", script: next.summary }]);
-        return next;
-      }),
-
-    SetScriptEnabled: (request: {
-      readonly projectId: string;
-      readonly scriptId: string;
-      readonly enabled: boolean;
-    }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const detail = yield* requireScript(state, request.projectId, request.scriptId);
-        if (request.enabled && detail.pendingConsent !== undefined) {
-          return yield* fail(
-            agentError("conflict", `"${detail.summary.name}" needs consent before it can start`),
-          );
-        }
-        const now = Date.now();
-        const next: ScriptDetail = {
-          ...detail,
-          summary: request.enabled
-            ? {
-                ...clearLastError(detail.summary),
-                status: "running",
-                enabled: true,
-                generation: detail.summary.generation + 1,
-                updatedAt: now,
-              }
-            : {
-                ...clearLastError(detail.summary),
-                status: "stopped",
-                enabled: false,
-                updatedAt: now,
-              },
-          ...(request.enabled
-            ? { appliedManifest: detail.manifest, appliedAt: now }
-            : {}),
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(request.projectId, request.scriptId), next);
-        yield* Ref.set(store.state, setScripts(state, scripts));
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId: request.projectId,
-          scriptId: request.scriptId,
-          message: request.enabled
-            ? "enabled; it will resume after a service restart"
-            : "disabled; it will not resume after a service restart",
-        });
-        yield* publish(store, [
-          { _tag: "script", script: next.summary },
-          { _tag: "health", health: healthOf(yield* Ref.get(store.state)) },
-        ]);
-        return next;
-      }),
-
-    ListConsents: (request: { readonly projectId?: string }) =>
-      Effect.map(Ref.get(store.state), (state) => ({
-        consents: state.consentOrder.flatMap((id) => {
-          const consent = state.consents.get(id);
-          return consent === undefined ||
-            (request.projectId !== undefined && consent.projectId !== request.projectId)
-            ? []
-            : [consent];
-        }),
-      })),
-
-    ApproveConsent: ({ consentId }: { readonly consentId: string }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const consent = state.consents.get(consentId);
-        if (consent === undefined) {
-          return yield* fail(agentError("not-found", `No pending consent "${consentId}"`));
-        }
-        const detail = yield* requireScript(state, consent.projectId, consent.scriptId);
-        const now = Date.now();
-        const next: ScriptDetail = {
-          summary: {
-            ...clearLastError(detail.summary),
-            status: "running",
-            enabled: true,
-            generation: detail.summary.generation + 1,
-            updatedAt: now,
-          },
-          manifest: detail.manifest,
-          appliedManifest: detail.manifest,
-          appliedAt: now,
-          view: detail.view,
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(consent.projectId, consent.scriptId), next);
-        const consents = new Map(state.consents);
-        consents.delete(consentId);
-        yield* Ref.set(store.state, {
-          ...setScripts(state, scripts),
-          consents,
-          consentOrder: state.consentOrder.filter((id) => id !== consentId),
-        });
-        yield* appendLog(store, {
-          level: "info",
-          source: "agent",
-          projectId: consent.projectId,
-          scriptId: consent.scriptId,
-          message: `consent approved: ${consent.summary}`,
-        });
-        yield* publish(store, [
-          { _tag: "script", script: next.summary },
-          {
-            _tag: "consent-resolved",
-            projectId: consent.projectId,
-            scriptId: consent.scriptId,
-            consentId,
-            approved: true,
-            script: next.summary,
-          },
-          { _tag: "health", health: healthOf(yield* Ref.get(store.state)) },
-        ]);
-        return next;
-      }),
-
-    RejectConsent: (request: { readonly consentId: string }) =>
-      Effect.gen(function* () {
-        const state = yield* Ref.get(store.state);
-        const consent = state.consents.get(request.consentId);
-        if (consent === undefined) {
-          return yield* fail(
-            agentError("not-found", `No pending consent "${request.consentId}"`),
-          );
-        }
-        const detail = yield* requireScript(state, consent.projectId, consent.scriptId);
-        const next: ScriptDetail = {
-          summary: {
-            ...detail.summary,
-            status: "stopped",
-            enabled: false,
-            updatedAt: Date.now(),
-          },
-          manifest: detail.manifest,
-          ...(detail.appliedManifest === undefined
-            ? {}
-            : { appliedManifest: detail.appliedManifest }),
-          ...(detail.appliedAt === undefined ? {} : { appliedAt: detail.appliedAt }),
-          view: detail.view,
-        };
-        const scripts = new Map(state.scripts);
-        scripts.set(scriptKey(consent.projectId, consent.scriptId), next);
-        const consents = new Map(state.consents);
-        consents.delete(request.consentId);
-        yield* Ref.set(store.state, {
-          ...setScripts(state, scripts),
-          consents,
-          consentOrder: state.consentOrder.filter((id) => id !== request.consentId),
-        });
-        yield* appendLog(store, {
-          level: "warn",
-          source: "agent",
-          projectId: consent.projectId,
-          scriptId: consent.scriptId,
-          message: "consent rejected; the previous generation was kept",
-        });
-        yield* publish(store, [
-          { _tag: "script", script: next.summary },
-          {
-            _tag: "consent-resolved",
-            projectId: consent.projectId,
-            scriptId: consent.scriptId,
-            consentId: request.consentId,
-            approved: false,
-            script: next.summary,
-          },
-        ]);
-        return next;
-      }),
 
     ListIntegrations: () =>
       Effect.succeed({ integrations: connectionIntegrations }),

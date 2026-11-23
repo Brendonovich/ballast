@@ -159,6 +159,7 @@ export default async function globalSetup(): Promise<void> {
           BALLAST_STATE_DIR: stateDir,
           BALLAST_DATA_DIR: dataDir,
           BALLAST_PROJECTS_DIR: projectsDir,
+          BALLAST_TWITCH_CALLBACK_PORT: "43123",
           BALLAST_WEB_DIR: distDir,
         },
         stdio: ["ignore", log, log],

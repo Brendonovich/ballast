@@ -65,14 +65,9 @@ const usage = `Usage:
   ballast mcp [--state-dir <dir>] [--data-dir <dir>] [--url <url> --token <token>]
   ballast status
   ballast projects list|get <id>|add <path> [--name <name>]|remove <id>
-  ballast scripts list|get <project>/<script>|start|stop|restart
-      logs|events [--project <id>] [--script <id>]
-  ballast start <project>/<script>
-  ballast stop <project>/<script>
   ballast connections list|get <id>|configure <id> key=value...
       |connect <id>|disconnect <id>|auth <id>
   ballast cloud status|begin|pair <code>|unpair [--machine-name <name>]
-  ballast consent list|approve <id>|reject <id> [--project <id>]
   ballast service start|stop|restart|status
   ballast plan <entry.ts> [--diff <previous-manifest.json>]
   ballast run <entry.ts> [--param key=value]...
@@ -664,15 +659,6 @@ const positional = (
   return result;
 };
 
-const parseScriptRef = (value: string | undefined): { projectId: string; scriptId: string } => {
-  if (value === undefined) throw new Error("Expected <project>/<script>");
-  const index = value.indexOf("/");
-  if (index <= 0 || index === value.length - 1) {
-    throw new Error(`Invalid script reference "${value}"; expected <project>/<script>`);
-  }
-  return { projectId: value.slice(0, index), scriptId: value.slice(index + 1) };
-};
-
 const serveCommand = (
   args: ReadonlyArray<string>,
 ): Effect.Effect<number, Error, CliServices> =>
@@ -692,7 +678,7 @@ const statusCommand = (): Effect.Effect<void, Error, CliServices> =>
         `Ballast ${info.version} (api ${info.apiVersion}) pid ${info.pid} at ${info.stateDir}`,
       );
       console.log(
-        `healthy: ${health.ok} · projects ${health.projects.total} · scripts ${health.scripts.running}/${health.scripts.total} running, ${health.scripts.needsConsent} need consent, ${health.scripts.error} error · connections ${health.connections.connected}/${health.connections.total} · cloud ${health.cloud}`,
+        `healthy: ${health.ok} · projects ${health.projects.total} (${health.projects.running} running, ${health.projects.needsConsent} need consent, ${health.projects.error} error) · connections ${health.connections.connected}/${health.connections.total} · cloud ${health.cloud}`,
       );
       yield* printJson({ info, health });
     }),
@@ -772,81 +758,6 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
     throw new Error(`Unknown projects command "${sub}"`);
   });
 
-const scriptsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
-  Effect.gen(function* () {
-    const [sub, ...rest] = args;
-    const projectId = flagValue(rest, "--project");
-    if (sub === "list" || sub === undefined) {
-      yield* printJson(
-        yield* service((client) =>
-          client.ListScripts(projectId === undefined ? {} : { projectId }),
-        ),
-      );
-      return;
-    }
-    if (sub === "logs") {
-      const scriptId = flagValue(rest, "--script");
-      yield* service((client) =>
-        client
-          .StreamLogs({
-            ...(projectId === undefined ? {} : { projectId }),
-            ...(scriptId === undefined ? {} : { scriptId }),
-          })
-          .pipe(
-            Stream.runForEach((entry) =>
-              Effect.sync(() => {
-                const scope = [entry.projectId, entry.scriptId].filter(Boolean).join("/");
-                console.log(
-                  `${new Date(entry.at).toISOString()} ${entry.level.toUpperCase()} ${entry.source}${scope === "" ? "" : ` ${scope}`} ${entry.message}`,
-                );
-              }),
-            ),
-          ),
-      );
-      return;
-    }
-    if (sub === "events") {
-      const scriptId = flagValue(rest, "--script");
-      yield* service((client) =>
-        client
-          .StreamEvents({
-            ...(projectId === undefined ? {} : { projectId }),
-            ...(scriptId === undefined ? {} : { scriptId }),
-          })
-          .pipe(
-            Stream.runForEach((entry) =>
-              Effect.sync(() => {
-                console.log(
-                  `${new Date(entry.at).toISOString()} ${entry.direction} ${entry.topic}${entry.projectId === undefined ? "" : ` ${entry.projectId}/${entry.scriptId ?? ""}`}`,
-                );
-              }),
-            ),
-          ),
-      );
-      return;
-    }
-    const commands = ["get", "start", "stop", "restart"] as const;
-    if ((commands as ReadonlyArray<string>).includes(sub ?? "")) {
-      const values = positional(rest, ["--project", "--script"]);
-      const ref = parseScriptRef(values[0]);
-      const run = (client: import("./service/client.ts").LiveAgentClient) => {
-        switch (sub) {
-          case "get":
-            return client.GetScript(ref);
-          case "start":
-            return client.StartScript(ref);
-          case "stop":
-            return client.StopScript(ref);
-          default:
-            return client.RestartScript(ref);
-        }
-      };
-      yield* printJson(yield* service(run));
-      return;
-    }
-    throw new Error(`Unknown scripts command "${sub}"`);
-  });
-
 const connectionCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
   Effect.gen(function* () {
     const [sub, ...rest] = args;
@@ -913,49 +824,6 @@ const cloudCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, C
       return;
     }
     throw new Error(`Unknown cloud command "${sub}"`);
-  });
-
-const simpleScriptCommand = (
-  verb: "start" | "stop" | "restart",
-  args: ReadonlyArray<string>,
-): Effect.Effect<void, Error, CliServices> =>
-  Effect.gen(function* () {
-    const ref = parseScriptRef(positional(args, [])[0]);
-    yield* printJson(
-      yield* service((client) =>
-        verb === "start"
-          ? client.StartScript(ref)
-          : verb === "stop"
-            ? client.StopScript(ref)
-            : client.RestartScript(ref),
-      ),
-    );
-  });
-
-
-const consentCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
-  Effect.gen(function* () {
-    const [sub, ...rest] = args;
-    if (sub === "list" || sub === undefined) {
-      const projectId = flagValue(rest, "--project");
-      yield* printJson(
-        yield* service((client) =>
-          client.ListConsents(projectId === undefined ? {} : { projectId }),
-        ),
-      );
-      return;
-    }
-    const id = positional(rest, [])[0];
-    if (id === undefined) throw new Error(`consent ${sub} requires a consent id`);
-    if (sub === "approve") {
-      yield* printJson(yield* service((client) => client.ApproveConsent({ consentId: id })));
-      return;
-    }
-    if (sub === "reject") {
-      yield* printJson(yield* service((client) => client.RejectConsent({ consentId: id })));
-      return;
-    }
-    throw new Error(`Unknown consent command "${sub}"`);
   });
 
 const serviceCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
@@ -1036,11 +904,6 @@ const program: Effect.Effect<number, Error, CliServices> = Effect.gen(function* 
     return 0;
   }
 
-  if (command === "scripts") {
-    yield* scriptsCommand(rest);
-    return 0;
-  }
-
   if (command === "connections") {
     yield* connectionCommand(rest);
     return 0;
@@ -1051,18 +914,8 @@ const program: Effect.Effect<number, Error, CliServices> = Effect.gen(function* 
     return 0;
   }
 
-  if (command === "consent") {
-    yield* consentCommand(rest);
-    return 0;
-  }
-
   if (command === "service") {
     yield* serviceCommand(rest);
-    return 0;
-  }
-
-  if (command === "start" || command === "stop" || command === "restart") {
-    yield* simpleScriptCommand(command, rest);
     return 0;
   }
 

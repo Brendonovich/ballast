@@ -50,17 +50,6 @@ const requireCloud = (
   return cloud;
 };
 
-const projectWithScripts = async (
-  scripts: Readonly<Record<string, string>>,
-): Promise<string> => {
-  const root = await mkdtemp(join(tmpdir(), "ballast-e2e-project-"));
-  await mkdir(join(root, "scripts"), { recursive: true });
-  for (const [name, source] of Object.entries(scripts)) {
-    await writeFile(join(root, "scripts", name), source, "utf8");
-  }
-  return root;
-};
-
 const projectWithSource = async (
   root: string,
   name: string,
@@ -129,46 +118,6 @@ const pair = (client: Client, cloudUrl: string) =>
       yield* Effect.sleep("100 millis");
     }
     return yield* Effect.fail(new Error("cloud pairing did not connect the relay"));
-  });
-
-const startAndApprove = (client: Client, projectId: string, scriptId: string) =>
-  Effect.gen(function* () {
-    let startError: string | undefined;
-    yield* client.StartScript({ projectId, scriptId }).pipe(
-      Effect.catch((error) =>
-        Effect.sync(() => {
-          startError = error.message;
-        }),
-      ),
-    );
-    let lastStatus: string | undefined;
-    for (let attempt = 0; attempt < 150; attempt++) {
-      const detail = yield* client
-        .GetScript({ projectId, scriptId })
-        .pipe(Effect.catch(() => Effect.succeed(undefined)));
-      lastStatus = detail === undefined
-        ? "missing"
-        : detail.summary.status + (detail.summary.lastError === undefined ? "" : ": " + detail.summary.lastError);
-      if (detail?.summary.status === "running") return detail;
-      const consents = yield* client
-        .ListConsents({ projectId })
-        .pipe(Effect.catch(() => Effect.succeed({ consents: [] })));
-      const consent = consents.consents.find((item) => item.scriptId === scriptId);
-      if (consent !== undefined)
-        yield* client.ApproveConsent({ consentId: consent.id }).pipe(Effect.catch(() => Effect.void));
-      yield* Effect.sleep("100 millis");
-    }
-    return yield* Effect.fail(
-      new Error(
-        "Script did not start: " +
-          scriptId +
-          " (startError=" +
-          (startError ?? "none") +
-          ", lastStatus=" +
-          (lastStatus ?? "unknown") +
-          ")",
-      ),
-    );
   });
 
 interface LogCollector {
@@ -517,36 +466,53 @@ describe("real cloud + real desktop service", () => {
       if (process === undefined) return;
       const hookId = "kofi_" + randomBytes(18).toString("base64url");
       const secret = "e2e-webhook-secret";
-      const root = await projectWithScripts({ "kofi.ts": kofiScript });
+      const root = await mkdtemp(join(tmpdir(), "ballast-e2e-webhook-"));
+      const project = await projectWithSource(root, "project", kofiScript);
       const service = await startService({ root: join(root, "service"), cloudUrl: process.url });
       try {
         const webhook = await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
             yield* pair(client, process.url);
-            const detail = yield* client.AddProject({ path: root, name: "E2E Webhook" });
-            yield* client.ConfigureConnection({
-              connectionId: "http/kofi",
-              values: [
-                { key: "webhookTransport", value: "cloud" },
-                { key: "webhookHookId", value: hookId },
-                { key: "webhookVerification", value: "hmac-sha256" },
-                { key: "webhookHeader", value: "x-kofi-signature" },
-                { key: "webhookSecret", value: secret },
-                { key: "webhookResponseStatus", value: "200" },
-                { key: "webhookResponseBody", value: "ok" },
-              ],
+            const detail = yield* client.AddProject({ path: project, name: "E2E Webhook" });
+            const connection = yield* client.CreateConnection({
+              integration: "http",
+              label: "Ko-fi",
+              config: {
+                webhookTransport: "cloud",
+                webhookHookId: hookId,
+                webhookVerification: "hmac-sha256",
+                webhookHeader: "x-kofi-signature",
+                webhookSecret: secret,
+                webhookResponseStatus: "200",
+                webhookResponseBody: "ok",
+              },
             });
-            yield* startAndApprove(client, detail.summary.id, "scripts/kofi.ts");
-            yield* waitForWorkerReady(client, detail.summary.id, "scripts/kofi.ts");
+            yield* client.SetProjectBinding({
+              projectId: detail.summary.id,
+              integration: "http",
+              slot: "kofi",
+              instanceId: connection.id,
+            });
+            yield* startProjectAndApprove(client, detail.summary.id);
+            let last: { readonly status: string; readonly detail?: string; readonly error?: string } | undefined;
             for (let attempt = 0; attempt < 300; attempt++) {
-              const connection = yield* client
-                .GetConnection({ connectionId: "http/kofi" })
+              const current = yield* client
+                .GetConnection({ connectionId: connection.id })
                 .pipe(Effect.catch(() => Effect.succeed(undefined)));
-              if (connection?.status === "connected" && connection.detail?.startsWith("http"))
-                return { projectId: detail.summary.id, url: connection.detail };
+              last = current === undefined
+                ? undefined
+                : {
+                    status: current.status,
+                    ...(current.detail === undefined ? {} : { detail: current.detail }),
+                    ...(current.lastError === undefined ? {} : { error: current.lastError }),
+                  };
+              if (current?.status === "connected" && current.detail?.startsWith("http"))
+                return { projectId: detail.summary.id, url: current.detail };
               yield* Effect.sleep("100 millis");
             }
-            return yield* Effect.fail(new Error("Cloud webhook was not registered"));
+            return yield* Effect.fail(
+              new Error("Cloud webhook was not registered: " + JSON.stringify(last ?? null)),
+            );
           }),
         );
 
@@ -554,7 +520,7 @@ describe("real cloud + real desktop service", () => {
         const signature = createHmac("sha256", secret).update(body).digest("hex");
         await withAgentClient(service.registration, (client) =>
           Effect.gen(function* () {
-            const collector = yield* collectLogs(client, webhook.projectId, "scripts/kofi.ts");
+            const collector = yield* collectLogs(client, webhook.projectId);
             yield* Effect.sleep("300 millis");
             const response = yield* Effect.promise(() =>
               fetch(webhook.url, {
@@ -587,7 +553,7 @@ describe("real cloud + real desktop service", () => {
         );
 
         await withAgentClient(service.registration, (client) =>
-          client.StopScript({ projectId: webhook.projectId, scriptId: "scripts/kofi.ts" }).pipe(
+          client.StopProject({ projectId: webhook.projectId }).pipe(
             Effect.catch(() => Effect.void),
           ),
         );

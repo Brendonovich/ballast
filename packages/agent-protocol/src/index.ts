@@ -7,7 +7,6 @@ export * from "./mock-sources.ts";
 export * from "./mock.ts";
 export * from "./project.ts";
 export * from "./projects.ts";
-export * from "./requests.ts";
 export * from "./rpc.ts";
 export * from "./scripts.ts";
 export * from "./service.ts";

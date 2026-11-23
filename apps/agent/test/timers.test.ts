@@ -28,13 +28,14 @@ const timerScript = (options: {
     'import * as Ballast from "@ballast/core";',
     'import { Effect, Schema } from "effect";',
     "",
-    "const Payload = Schema.Struct({ n: Schema." +
-      (options.payloadType === "string" ? "String" : "Number") +
+    "const Payload = Schema.Struct({ n: Schema.Number" +
+      (options.payloadType === "string" ? ", note: Schema.optional(Schema.String)" : "") +
       " });",
     "",
     "export default Effect.gen(function* () {",
     '  const n = yield* Ballast.Param.number("n", { default: 1 });',
     '  const schedule = yield* Ballast.Param.boolean("schedule", { default: true });',
+    "  void schedule;",
     "  const timer = yield* Ballast.Timer.subscribe(",
     '    "cooldown",',
     "    Payload,",
@@ -57,7 +58,7 @@ const makeProject = (source: string) =>
   Effect.promise(async () => {
     const root = await mkdtemp(join(tmpdir(), "ballast-timer-test-"));
     const project = join(root, "project");
-    await mkdir(join(project, "scripts"), { recursive: true });
+    await mkdir(project, { recursive: true });
     await mkdir(join(project, "node_modules", "@ballast"), { recursive: true });
     await symlink(
       join(agentNodeModules, "@ballast", "core"),
@@ -69,7 +70,7 @@ const makeProject = (source: string) =>
       join(project, "node_modules", "effect"),
       "dir",
     );
-    await writeFile(join(project, "scripts", "timer.ts"), source, "utf8");
+    await writeFile(join(project, "ballast.ts"), source, "utf8");
     return root;
   });
 
@@ -181,11 +182,10 @@ const call = <A, E>(
 const waitForLog = (
   root: string,
   projectId: string,
-  scriptId: string,
   predicate: (message: string) => boolean,
 ): Effect.Effect<string, Error> =>
   call(root, (client) =>
-    client.StreamLogs({ projectId, scriptId }).pipe(
+    client.StreamLogs({ projectId }).pipe(
       Stream.filter((entry) => predicate(entry.message)),
       Stream.take(1),
       Stream.runCollect,
@@ -202,9 +202,8 @@ const addAndStart = (root: string, project: string) =>
   call(root, (client) =>
     Effect.gen(function* () {
       const detail = yield* client.AddProject({ path: project, name: "Timers" });
-      const scriptId = "scripts/timer.ts";
-      yield* client.StartScript({ projectId: detail.summary.id, scriptId });
-      return { projectId: detail.summary.id, scriptId };
+      const started = yield* client.StartProject({ projectId: detail.summary.id });
+      return { projectId: started.summary.id };
     }),
   );
 
@@ -219,15 +218,15 @@ describe("durable timers through the service", () => {
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
+      yield* waitForLog(root, started.projectId, (message) =>
         message.includes("TIMER_SCHEDULED"),
       );
       yield* call(root, (client) =>
-        client.SetScriptParam({ ...started, key: "schedule", value: false }),
+        client.SetProjectParam({ ...started, key: "schedule", value: false }),
       );
       yield* Effect.sleep("500 millis");
 
-      const detail = yield* call(root, (client) => client.GetScript(started));
+      const detail = yield* call(root, (client) => client.GetProject(started));
       expect(detail.manifest.timers.map((timer) => timer.name)).toEqual(["cooldown"]);
       const pending = yield* call(root, (client) => client.ListTimers({ projectId: started.projectId }));
       expect(pending.timers).toHaveLength(1);
@@ -237,7 +236,7 @@ describe("durable timers through the service", () => {
       yield* Effect.sleep("1 second");
       const restarted = yield* startService(root);
       yield* Effect.addFinalizer(() => restarted.stop());
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
+      yield* waitForLog(root, started.projectId, (message) =>
         message.includes("TIMER_FIRED one"),
       );
       yield* Effect.sleep("1 second");
@@ -247,7 +246,7 @@ describe("durable timers through the service", () => {
       expect(finished.timers).toHaveLength(1);
       expect(finished.timers[0]?.state).toBe("fired");
       const duplicate = yield* call(root, (client) =>
-        client.StreamLogs({ projectId: started.projectId, scriptId: started.scriptId }).pipe(
+        client.StreamLogs({ projectId: started.projectId }).pipe(
           Stream.filter((entry) => entry.message.includes("TIMER_FIRED one")),
           Stream.take(2),
           Stream.runCollect,
@@ -271,19 +270,19 @@ describe("durable timers through the service", () => {
           Effect.map((result) => result.timers.find((timer) => timer.state === "pending")),
         ),
       );
-      yield* call(root, (client) => client.StopScript(started));
+      yield* call(root, (client) => client.StopProject(started));
       // Keep the restarted worker from scheduling the same key again, so the
       // overdue entry loaded from disk is what fires.
       yield* call(root, (client) =>
-        client.SetScriptParam({ ...started, key: "schedule", value: false }),
+        client.SetProjectParam({ ...started, key: "schedule", value: false }),
       );
       yield* Effect.sleep("6.5 seconds");
       yield* service.stop();
 
       const restarted = yield* startService(root);
       yield* Effect.addFinalizer(() => restarted.stop());
-      yield* call(root, (client) => client.StartScript(started));
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
+      yield* call(root, (client) => client.StartProject(started));
+      yield* waitForLog(root, started.projectId, (message) =>
         message.includes("TIMER_FIRED one"),
       );
     }),
@@ -300,17 +299,17 @@ describe("durable timers through the service", () => {
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
+      yield* waitForLog(root, started.projectId, (message) =>
         message.includes("TIMER_SCHEDULED"),
       );
       yield* call(root, (client) =>
-        client.SetScriptParam({ ...started, key: "schedule", value: false }),
+        client.SetProjectParam({ ...started, key: "schedule", value: false }),
       );
       yield* Effect.sleep("500 millis");
-      yield* call(root, (client) => client.StopScript(started));
+      yield* call(root, (client) => client.StopProject(started));
       yield* Effect.sleep("2.5 seconds");
 
-      yield* call(root, (client) => client.StartScript(started));
+      yield* call(root, (client) => client.StartProject(started));
       yield* waitFor("the stale timer to drop", () =>
         call(root, (client) =>
           client.ListTimers({ projectId: started.projectId, includeFinished: true }),
@@ -332,17 +331,17 @@ describe("durable timers through the service", () => {
       const service = yield* startService(root);
       yield* Effect.addFinalizer(() => service.stop());
       const started = yield* addAndStart(root, project);
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
+      yield* waitForLog(root, started.projectId, (message) =>
         message.includes("TIMER_SCHEDULED"),
       );
 
       yield* call(root, (client) =>
-        client.SetScriptParam({ ...started, key: "schedule", value: false }),
+        client.SetProjectParam({ ...started, key: "schedule", value: false }),
       );
       yield* Effect.sleep("1 second");
       yield* Effect.promise(() =>
         writeFile(
-          join(project, "scripts", "timer.ts"),
+          join(project, "ballast.ts"),
           timerScript({ delay: "60 seconds", onStale: "deliver", maxAgeMs: 60_000, gated: true, payloadType: "string" }),
           "utf8",
         ),
@@ -410,7 +409,7 @@ describe("durable timers through the service", () => {
       );
       yield* Effect.sleep("1.5 seconds");
       yield* call(root, (client) =>
-        client.SetScriptParam({ ...started, key: "n", value: 2 }),
+        client.SetProjectParam({ ...started, key: "n", value: 2 }),
       );
       yield* waitFor("the restarted timer with n=2", () =>
         call(root, (client) => client.ListTimers({ projectId: started.projectId })).pipe(
@@ -421,12 +420,12 @@ describe("durable timers through the service", () => {
           ),
         ),
       );
-      yield* waitForLog(root, started.projectId, started.scriptId, (message) =>
+      yield* waitForLog(root, started.projectId, (message) =>
         message.includes("TIMER_FIRED one 2"),
       );
       yield* Effect.sleep("1 second");
       const duplicate = yield* call(root, (client) =>
-        client.StreamLogs({ projectId: started.projectId, scriptId: started.scriptId }).pipe(
+        client.StreamLogs({ projectId: started.projectId }).pipe(
           Stream.filter((entry) => entry.message.includes("TIMER_FIRED one")),
           Stream.take(2),
           Stream.runCollect,

@@ -22,6 +22,7 @@ import { Socket } from "effect/socket";
 import {
   agentError,
   connectionIntegrations,
+  DEFAULT_TWITCH_CALLBACK_PORT,
   type AgentError,
   type ConnectionApproval,
   type ConnectionAuth,
@@ -101,14 +102,13 @@ export interface ReconcileInput {
   readonly bindings?: ReadonlyMap<string, ReadonlyMap<string, string>>;
 }
 
-const bindingFor = (
+const boundIdFor = (
   input: ReconcileInput,
   entry: ActiveScript,
   integration: string,
   slot: string,
-): string =>
-  input.bindings?.get(entry.projectId)?.get(integration + "/" + slot) ??
-  integration + "/" + slot;
+): string | undefined =>
+  input.bindings?.get(entry.projectId)?.get(integration + "/" + slot);
 
 const slotsFor = (
   input: ReconcileInput,
@@ -119,7 +119,7 @@ const slotsFor = (
     .filter(
       (connection) =>
         connection.integration === record.integration &&
-        bindingFor(input, entry, connection.integration, connection.slot) === record.id,
+        boundIdFor(input, entry, connection.integration, connection.slot) === record.id,
     )
     .map((connection) => connection.slot);
 
@@ -599,7 +599,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 .filter(
                   (topic) =>
                     topic.integration === record.integration &&
-                    bindingFor(input, entry, topic.integration, topic.slot) === record.id,
+                    boundIdFor(input, entry, topic.integration, topic.slot) === record.id,
                 )
                 .flatMap((topic) => topic.scopes)
                 .concat(
@@ -607,7 +607,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                     .filter(
                       (request) =>
                         request.integration === record.integration &&
-                        bindingFor(input, entry, request.integration, request.slot) ===
+                        boundIdFor(input, entry, request.integration, request.slot) ===
                           record.id,
                     )
                     .flatMap((request) => request.scopes),
@@ -718,18 +718,17 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const callbackPortEnv = yield* readEnvironment(["BALLAST_TWITCH_CALLBACK_PORT"]);
       const integrations = (): ReadonlyArray<ConnectionIntegration> => {
         const configured = callbackPortEnv["BALLAST_TWITCH_CALLBACK_PORT"];
-        const port =
+        const parsed =
           configured === undefined || configured.trim() === ""
-            ? undefined
+            ? DEFAULT_TWITCH_CALLBACK_PORT
             : Number(configured);
-        const redirectUrl =
-          port !== undefined && Number.isInteger(port) && port > 0 && port <= 65_535
-            ? "http://127.0.0.1:" + port + "/callback"
-            : undefined;
+        const port =
+          Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535
+            ? parsed
+            : DEFAULT_TWITCH_CALLBACK_PORT;
+        const redirectUrl = "http://127.0.0.1:" + port + "/callback";
         return connectionIntegrations.map((entry) =>
-          entry.integration === "twitch" && redirectUrl !== undefined
-            ? { ...entry, redirectUrl }
-            : entry,
+          entry.integration === "twitch" ? { ...entry, redirectUrl } : entry,
         );
       };
 
@@ -1921,8 +1920,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               (topic) => topic.integration === "http" && topic.topic === "http/webhook",
             );
             for (const topic of topics) {
-              if (definitions.has(topic.slot)) continue;
-              const record = yield* ensureRecord(`http/${topic.slot}`);
+              const instanceId = boundIdFor(input, entry, topic.integration, topic.slot);
+              if (instanceId === undefined) continue;
+              const record = yield* getRecord(instanceId);
+              if (record === undefined) continue;
+              const definitionKey = record.id + ":" + topic.slot;
+              if (definitions.has(definitionKey)) continue;
               const values = record.values;
               const transport = values["webhookTransport"] === "cloud" ? "cloud" : "local";
               const verificationType = values["webhookVerification"];
@@ -1956,10 +1959,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                         ? {}
                         : { body: values["webhookResponseBody"] }),
                     };
-              const hookId = values["webhookHookId"] ?? (yield* stableHookId(topic.slot));
+              const hookId =
+                values["webhookHookId"] ??
+                (yield* stableHookId(record.id + ":" + topic.slot));
               const maxAgeMs = numberOf(values["webhookMaxAgeMs"]) ?? topic.maxAgeMs;
-              definitions.set(topic.slot, {
-                slot: topic.slot,
+              definitions.set(definitionKey, {
+                slot: record.id,
                 hookId,
                 transport,
                 ...(verification === undefined ? {} : { verification }),
@@ -1970,6 +1975,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                         host: values["webhookHost"] ?? "127.0.0.1",
                         port: numberOf(values["webhookPort"]) ?? 8787,
                         path: values["webhookPath"] ?? `/hooks/${topic.slot}`,
+                        // Definition slot is the instance id for status/routing;
+                        // keep the user-facing path on the project slot.
                       },
                     }
                   : {
@@ -2017,7 +2024,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               message: `http webhooks failed: ${reason}`,
             });
             for (const definition of definitions) {
-              yield* updateRecord(`http/${definition.slot}`, (record) => ({
+              yield* updateRecord(definition.slot, (record) => ({
                 ...record,
                 status: "error",
                 lastError: reason,
@@ -2034,12 +2041,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               slot: delivery.hook,
               topic: "http/webhook",
               payload: delivery,
-              connectionId: `http/${delivery.hook}`,
+              connectionId: delivery.hook,
             }),
           ).pipe(Effect.forkIn(scope));
           const statuses = yield* runtime.statuses;
           for (const status of statuses) {
-            yield* updateRecord(`http/${status.slot}`, (record) => ({
+            yield* updateRecord(status.slot, (record) => ({
               ...record,
               status:
                 status.status === "error"
@@ -2368,17 +2375,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             for (const record of yield* records()) ids.add(record.id);
             for (const entry of [...input.known, ...input.running]) {
               const projectBindings = input.bindings?.get(entry.projectId);
+              if (projectBindings === undefined) continue;
               for (const connection of entry.manifest.connections) {
-                if (projectBindings !== undefined) {
-                  const bound = projectBindings.get(
-                    connection.integration + "/" + connection.slot,
-                  );
-                  if (bound !== undefined) ids.add(bound);
-                } else {
-                  ids.add(
-                    bindingFor(input, entry, connection.integration, connection.slot),
-                  );
-                }
+                const bound = projectBindings.get(
+                  connection.integration + "/" + connection.slot,
+                );
+                if (bound !== undefined) ids.add(bound);
               }
             }
             for (const id of ids) yield* ensureRecord(id);

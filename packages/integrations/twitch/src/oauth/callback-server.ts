@@ -133,7 +133,9 @@ export const makeCallbackServer = (
           resume(
             Effect.fail(
               new OAuthCallbackError({
-                reason: "Could not start the Twitch callback server: " + cause.message,
+                reason: cause.message.includes("EADDRINUSE")
+                  ? `Twitch callback port ${port} is already in use. Stop the process using it, or set BALLAST_TWITCH_CALLBACK_PORT to a free port and register that redirect URL in the Twitch developer console.`
+                  : "Could not start the Twitch callback server: " + cause.message,
               }),
             ),
           );

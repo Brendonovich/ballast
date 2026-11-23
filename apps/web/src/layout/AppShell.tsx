@@ -51,7 +51,10 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
 
   onMount(() => {
     store.start();
-    void store.whenReady().then(() => store.refreshProjectConsents());
+    void store.whenReady().then(() => {
+      void store.loadIntegrations();
+      void store.refreshProjectConsents();
+    });
   });
 
   const reconnecting = (): boolean => store.watchStatus() === "reconnecting";

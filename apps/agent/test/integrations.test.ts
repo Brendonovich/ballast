@@ -39,8 +39,7 @@ export default Effect.gen(function* () {
 });
 `;
 
-const wsServerScript = `import * as Ballast from "@ballast/core";
-import * as WebSocket from "@ballast/module-websocket";
+const wsServerScript = `import * as WebSocket from "@ballast/module-websocket";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
@@ -51,8 +50,7 @@ export default Effect.gen(function* () {
 });
 `;
 
-const wsClientScript = `import * as Ballast from "@ballast/core";
-import * as WebSocket from "@ballast/module-websocket";
+const wsClientScript = `import * as WebSocket from "@ballast/module-websocket";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
@@ -79,8 +77,7 @@ export default Effect.gen(function* () {
 });
 `;
 
-const httpWebhookScript = `import * as Ballast from "@ballast/core";
-import * as Http from "@ballast/module-http";
+const httpWebhookScript = `import * as Http from "@ballast/module-http";
 import { Effect, Schema } from "effect";
 
 const Donation = Schema.Struct({ from: Schema.String, amount: Schema.Number });
@@ -93,8 +90,7 @@ export default Effect.gen(function* () {
 });
 `;
 
-const keyboardScript = `import * as Ballast from "@ballast/core";
-import * as Keyboard from "@ballast/module-keyboard";
+const keyboardScript = `import * as Keyboard from "@ballast/module-keyboard";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
@@ -103,8 +99,7 @@ export default Effect.gen(function* () {
 });
 `;
 
-const midiScript = `import * as Ballast from "@ballast/core";
-import * as Midi from "@ballast/module-midi";
+const midiScript = `import * as Midi from "@ballast/module-midi";
 import { Effect } from "effect";
 
 export default Effect.gen(function* () {
@@ -197,9 +192,18 @@ const makeProject = (root: string, scripts: Readonly<Record<string, string>>) =>
     yield* Effect.promise(() =>
       symlink(join(agentNodeModules, "effect"), join(root, "node_modules", "effect"), "dir"),
     );
+    const names = Object.keys(scripts);
     for (const [name, source] of Object.entries(scripts)) {
       yield* Effect.promise(() => writeFile(join(root, "scripts", name), source, "utf8"));
     }
+    const entry = [
+      'import { Effect } from "effect";',
+      ...names.map((name, index) => `import script${index} from "./scripts/${name}";`),
+      "",
+      `export default Effect.all([${names.map((_name, index) => `script${index}`).join(", ")}], { discard: true });`,
+      "",
+    ].join("\n");
+    yield* Effect.promise(() => writeFile(join(root, "ballast.ts"), entry, "utf8"));
   });
 
 const vtsHandler = (request: MockVtsRequest): MockVtsReply => {
@@ -329,10 +333,10 @@ describe("integration drivers through the service", () => {
         const detail = yield* call((client) => client.AddProject({ path: project, name: "Drivers" }));
         const projectId = detail.summary.id;
 
-        yield* call((client) =>
+        const vtsConnection = yield* call((client) =>
           client.ConfigureConnection({ connectionId: "vts/main", values: [{ key: "url", value: vts.url }] }),
         );
-        yield* call((client) =>
+        const bridgeConnection = yield* call((client) =>
           client.ConfigureConnection({
             connectionId: "websocket/bridge",
             values: [
@@ -342,7 +346,7 @@ describe("integration drivers through the service", () => {
             ],
           }),
         );
-        yield* call((client) =>
+        const upstreamConnection = yield* call((client) =>
           client.ConfigureConnection({
             connectionId: "websocket/upstream",
             values: [
@@ -351,13 +355,13 @@ describe("integration drivers through the service", () => {
             ],
           }),
         );
-        yield* call((client) =>
+        const apiConnection = yield* call((client) =>
           client.ConfigureConnection({
             connectionId: "http/api",
             values: [{ key: "baseUrl", value: httpServer.url }],
           }),
         );
-        yield* call((client) =>
+        const kofiConnection = yield* call((client) =>
           client.ConfigureConnection({
             connectionId: "http/kofi",
             values: [
@@ -369,22 +373,31 @@ describe("integration drivers through the service", () => {
             ],
           }),
         );
-
-        const vtsDetail = yield* call((client) => client.GetScript({ projectId, scriptId: "scripts/vts.ts" }));
-        const hotkeyOptions = vtsDetail.manifest.params.find((param) => param.key === "hotkey")?.options;
-        expect(hotkeyOptions).toEqual(["Wave"]);
-
-        for (const scriptId of ["scripts/vts.ts", "scripts/ws-server.ts", "scripts/ws-client.ts", "scripts/http-client.ts", "scripts/http-webhook.ts"]) {
-          yield* call((client) => client.StartScript({ projectId, scriptId })).pipe(Effect.exit);
+        for (const [integration, slot, instanceId] of [
+          ["vts", "main", vtsConnection.id],
+          ["websocket", "bridge", bridgeConnection.id],
+          ["websocket", "upstream", upstreamConnection.id],
+          ["http", "api", apiConnection.id],
+          ["http", "kofi", kofiConnection.id],
+        ] as const) {
+          yield* call((client) =>
+            client.SetProjectBinding({ projectId, integration, slot, instanceId }),
+          );
         }
-        for (let round = 0; round < 5; round++) {
-          const consents = yield* call((client) => client.ListConsents({ projectId }));
-          if (consents.consents.length === 0) break;
+
+        for (let round = 0; round < 30; round++) {
+          yield* call((client) => client.StartProject({ projectId })).pipe(Effect.catch(() => Effect.void));
+          const current = yield* call((client) => client.GetProject({ projectId }));
+          if (current.summary.status === "running") break;
+          const consents = yield* call((client) => client.ListProjectConsents({ projectId }));
           for (const consent of consents.consents) {
-            yield* call((client) => client.ApproveConsent({ consentId: consent.id }));
+            yield* call((client) => client.ApproveProjectConsent({ consentId: consent.id }));
           }
           yield* sleep(200);
         }
+        const vtsDetail = yield* call((client) => client.GetProject({ projectId }));
+        const hotkeyOptions = vtsDetail.manifest.params.find((param) => param.key === "hotkey")?.options;
+        expect(hotkeyOptions).toEqual(["Wave"]);
 
         yield* call((client) =>
           client.StreamLogs({ projectId }).pipe(
@@ -627,7 +640,21 @@ describe("integration drivers through the service", () => {
         yield* call((client) =>
           client.ReportShellPermission({ permission: "accessibility", status: "denied" }),
         );
+        const keyboardConnection = yield* call((client) =>
+          client.ConfigureConnection({
+            connectionId: "keyboard/main",
+            values: [{ key: "permission", value: "denied" }],
+          }),
+        );
         yield* call((client) =>
+          client.SetProjectBinding({
+            projectId,
+            integration: "keyboard",
+            slot: "main",
+            instanceId: keyboardConnection.id,
+          }),
+        );
+        const midiConnection = yield* call((client) =>
           client.ConfigureConnection({
             connectionId: "midi/controller",
             values: [
@@ -636,17 +663,25 @@ describe("integration drivers through the service", () => {
             ],
           }),
         );
-        for (const scriptId of ["scripts/keyboard.ts", "scripts/midi.ts"]) {
-          yield* call((client) => client.StartScript({ projectId, scriptId })).pipe(Effect.exit);
-        }
-        for (let round = 0; round < 5; round++) {
-          const consents = yield* call((client) => client.ListConsents({ projectId }));
-          if (consents.consents.length === 0) break;
+        yield* call((client) =>
+          client.SetProjectBinding({
+            projectId,
+            integration: "midi",
+            slot: "controller",
+            instanceId: midiConnection.id,
+          }),
+        );
+        for (let round = 0; round < 30; round++) {
+          yield* call((client) => client.StartProject({ projectId })).pipe(Effect.catch(() => Effect.void));
+          const current = yield* call((client) => client.GetProject({ projectId }));
+          if (current.summary.status === "running") break;
+          const consents = yield* call((client) => client.ListProjectConsents({ projectId }));
           for (const consent of consents.consents) {
-            yield* call((client) => client.ApproveConsent({ consentId: consent.id }));
+            yield* call((client) => client.ApproveProjectConsent({ consentId: consent.id }));
           }
           yield* sleep(200);
         }
+        yield* sleep(500);
         yield* call((client) =>
           client.StreamLogs({ projectId }).pipe(
             Stream.filter((entry) => entry.message.includes("keydown F1")),

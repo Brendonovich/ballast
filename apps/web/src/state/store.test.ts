@@ -59,6 +59,17 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.health()?.projects.total).toBe(2);
   });
 
+  it("loads the integration catalog", async () => {
+    const { store } = await setup();
+
+    await store.loadIntegrations();
+    const obs = store.integrations().find((entry) => entry.integration === "obs");
+    expect(obs?.title).toBe("OBS Studio");
+    expect(obs?.modes).toEqual(["local-app"]);
+    expect(obs?.fields.some((field) => field.key === "url")).toBe(true);
+    expect(store.integrations().some((entry) => entry.integration === "twitch")).toBe(true);
+  });
+
   it("creates, adds and removes projects", async () => {
     const { store } = await setup();
 

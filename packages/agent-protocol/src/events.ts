@@ -4,7 +4,6 @@ import { CloudStatus } from "./cloud.ts";
 import { ConnectionSummary } from "./connections.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
 import { ProjectConsentRequest, ProjectSummary, SourceLocation } from "./project.ts";
-import { ConsentRequest, ScriptSummary } from "./scripts.ts";
 import { TimerSummary } from "./timers.ts";
 
 /**
@@ -16,10 +15,8 @@ export const ServiceSnapshot = Schema.Struct({
   info: ServiceInfo,
   health: HealthStatus,
   projects: Schema.Array(ProjectSummary),
-  scripts: Schema.Array(ScriptSummary),
   connections: Schema.Array(ConnectionSummary),
   cloud: CloudStatus,
-  consents: Schema.Array(ConsentRequest),
 });
 export type ServiceSnapshot = typeof ServiceSnapshot.Type;
 
@@ -68,39 +65,11 @@ export const ServiceEvent = Schema.Union([
   Schema.TaggedStruct("project-removed", {
     projectId: Schema.String,
   }),
-  Schema.TaggedStruct("script", {
-    script: ScriptSummary,
-  }),
-  Schema.TaggedStruct("script-removed", {
-    projectId: Schema.String,
-    scriptId: Schema.String,
-  }),
-  /**
-   * The entry file changed on disk. Open source viewers refetch
-   * `GetScriptSource`; clients that do not show source can ignore it.
-   */
-  Schema.TaggedStruct("script-source-changed", {
-    projectId: Schema.String,
-    scriptId: Schema.String,
-    sha256: Schema.String,
-    updatedAt: Schema.Number,
-  }),
   Schema.TaggedStruct("connection", {
     connection: ConnectionSummary,
   }),
   Schema.TaggedStruct("cloud", {
     cloud: CloudStatus,
-  }),
-  Schema.TaggedStruct("consent", {
-    consent: ConsentRequest,
-  }),
-  Schema.TaggedStruct("consent-resolved", {
-    projectId: Schema.String,
-    scriptId: Schema.String,
-    consentId: Schema.String,
-    approved: Schema.Boolean,
-    /** The script's state after the decision. */
-    script: ScriptSummary,
   }),
   Schema.TaggedStruct("health", {
     health: HealthStatus,

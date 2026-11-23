@@ -331,6 +331,13 @@ export const fakeFields: ReadonlyArray<ConnectionField> = [
   },
 ];
 
+/**
+ * The port Ballast tells users to register in the Twitch developer console.
+ * Twitch requires an exact redirect URI match, so this must stay stable unless
+ * BALLAST_TWITCH_CALLBACK_PORT overrides it.
+ */
+export const DEFAULT_TWITCH_CALLBACK_PORT = 17345;
+
 /** The source of truth for connection form fields and supported modes. */
 export const connectionIntegrations: ReadonlyArray<ConnectionIntegration> = [
   {
@@ -352,6 +359,7 @@ export const connectionIntegrations: ReadonlyArray<ConnectionIntegration> = [
     fields: twitchFields,
     description:
       "A Twitch account through the Ballast cloud relay or your own Twitch application.",
+    redirectUrl: `http://127.0.0.1:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
   },
   {
     integration: "fake",

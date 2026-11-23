@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import type {
   ConnectionAuth,
@@ -11,19 +11,16 @@ import { valueOf } from "@ballast/agent-protocol";
 
 import { useAgent } from "../../state/context.tsx";
 import {
-  connectionIntegration,
-  connectionIntegrations,
-} from "../../lib/connections.ts";
-import {
   connectionStatusLabel,
   connectionStatusTone,
   integrationName,
 } from "../../lib/format.ts";
-import { ExternalLinkIcon } from "../../ui/icons.tsx";
+import { CopyIcon, ExternalLinkIcon } from "../../ui/icons.tsx";
 import {
   Button,
   Dialog,
   Field,
+  IconButton,
   SelectInput,
   Status,
   TextInput,
@@ -40,11 +37,11 @@ const asDevice = (auth: ConnectionAuth | undefined): DeviceAuth | undefined =>
 const asNone = (auth: ConnectionAuth | undefined): NoneAuth | undefined =>
   auth !== undefined && auth._tag === "none" ? auth : undefined;
 
-const modeOptions: ReadonlyArray<{ readonly value: ConnectionMode; readonly label: string }> = [
-  { value: "auto", label: "Auto" },
-  { value: "cloud", label: "Cloud" },
-  { value: "local-app", label: "Own app" },
-];
+const modeLabels: Record<ConnectionMode, string> = {
+  auto: "Auto",
+  cloud: "Cloud",
+  "local-app": "Own app",
+};
 
 const parseMode = (value: string): ConnectionMode =>
   value === "cloud" || value === "local-app" ? value : "auto";
@@ -73,10 +70,7 @@ export const ConnectionDialog = (props: {
   const store = useAgent();
   const [createdId, setCreatedId] = createSignal<string>();
   const [integration, setIntegration] = createSignal(
-    props.connection?.integration ??
-      props.initialIntegration ??
-      connectionIntegrations[0]?.integration ??
-      "obs",
+    props.connection?.integration ?? props.initialIntegration ?? "",
   );
   const [label, setLabel] = createSignal(props.connection?.label ?? "");
   const [mode, setMode] = createSignal<ConnectionMode>(props.connection?.mode ?? "auto");
@@ -93,8 +87,14 @@ export const ConnectionDialog = (props: {
   };
   const isNew = (): boolean => active() === undefined;
   const activeIntegration = (): string => active()?.integration ?? integration();
-  const definition = (): ReturnType<typeof connectionIntegration> =>
-    connectionIntegration(activeIntegration());
+  const definition = () =>
+    store.integrations().find((entry) => entry.integration === activeIntegration());
+  const allowedModes = (): ReadonlyArray<ConnectionMode> => {
+    const modes = definition()?.modes ?? [];
+    if (modes.length > 0) return modes;
+    const current = active();
+    return current === undefined ? ["auto"] : [current.mode];
+  };
 
   const visibleFields = (): ReadonlyArray<ConnectionField> => {
     const current = active();
@@ -127,10 +127,23 @@ export const ConnectionDialog = (props: {
     setError(undefined);
   });
 
+  onMount(() => {
+    if (store.integrations().length === 0) void store.loadIntegrations();
+  });
+
   createEffect(() => {
     if (active() !== undefined) return;
+    const loaded = store.integrations();
+    if (loaded.length === 0) return;
+    const current = definition();
+    if (current === undefined) {
+      setIntegration(loaded[0]?.integration ?? "");
+      return;
+    }
     fillDrafts(undefined);
     setAuth(undefined);
+    const first = current.modes[0];
+    if (first !== undefined) setMode(first);
   });
 
   const saving = (): boolean => {
@@ -146,14 +159,6 @@ export const ConnectionDialog = (props: {
   const isFieldStored = (field: ConnectionField): boolean => {
     const current = active();
     return current !== undefined && fieldIsSet(current, field);
-  };
-
-  const fieldHint = (field: ConnectionField): string | undefined => {
-    if (field.kind === "secret" && isFieldStored(field)) return "stored · leave blank to keep";
-    if (field.description?.includes("OS keychain")) {
-      return "Stored in the service data directory with restricted permissions.";
-    }
-    return field.description;
   };
 
   const activeTitle = (): string => {
@@ -322,17 +327,6 @@ export const ConnectionDialog = (props: {
     await connect(current);
   };
 
-  const redirectUri = createMemo(() => {
-    const result = auth();
-    const browser = asBrowser(result);
-    if (browser === undefined) return undefined;
-    try {
-      return new URL(browser.url).searchParams.get("redirect_uri") ?? undefined;
-    } catch {
-      return undefined;
-    }
-  });
-
   const statusLabel = (): string => {
     const current = active();
     if (current === undefined) return "";
@@ -451,13 +445,20 @@ export const ConnectionDialog = (props: {
         </Show>
 
         <Show when={isNew()}>
-          <Field label="Integration">
+          <Field
+            label="Integration"
+            hint={definition()?.description}
+          >
             <SelectInput
               data-testid="connection-integration"
               value={integration()}
+              disabled={store.integrations().length === 0}
               onChange={(event) => setIntegration(event.currentTarget.value)}
             >
-              <For each={connectionIntegrations}>
+              <Show when={store.integrations().length === 0}>
+                <option value="">Loading integrations…</option>
+              </Show>
+              <For each={store.integrations()}>
                 {(entry) => (
                   <option value={entry.integration} selected={entry.integration === integration()}>
                     {entry.title}
@@ -477,17 +478,17 @@ export const ConnectionDialog = (props: {
           />
         </Field>
 
-        <Show when={activeIntegration() === "twitch"}>
+        <Show when={allowedModes().length > 1}>
           <Field label="Mode">
             <SelectInput
               data-testid="connection-mode"
               value={mode()}
               onChange={(event) => setMode(parseMode(event.currentTarget.value))}
             >
-              <For each={modeOptions}>
+              <For each={allowedModes()}>
                 {(option) => (
-                  <option value={option.value} selected={option.value === mode()}>
-                    {option.label}
+                  <option value={option} selected={option === mode()}>
+                    {modeLabels[option]}
                   </option>
                 )}
               </For>
@@ -495,11 +496,50 @@ export const ConnectionDialog = (props: {
           </Field>
         </Show>
 
+        <Show when={activeIntegration() === "twitch" && mode() !== "cloud"}>
+          <Show
+            when={definition()?.redirectUrl}
+            fallback={
+              <div class="rounded-md border border-edge bg-layer-2 px-2.5 py-2 text-[11px] text-muted">
+                No callback port is configured, so there is no stable redirect URL to register.
+                The service uses a temporary localhost callback on a random port, or Twitch's
+                device flow when no client secret is set. Set{" "}
+                <span class="font-mono text-body">BALLAST_TWITCH_CALLBACK_PORT</span> for own-app
+                sign-in with a fixed redirect URL.
+              </div>
+            }
+          >
+            {(url) => (
+              <div class="rounded-md border border-edge bg-layer-2 px-2.5 py-2">
+                <div class="flex items-center gap-2">
+                  <div class="min-w-0 flex-1">
+                    <p class="text-[10px] text-faint">Redirect URL</p>
+                    <p class="break-all font-mono text-[11px] text-body">{url()}</p>
+                  </div>
+                  <IconButton
+                    label="Copy redirect URL"
+                    testId="connection-redirect-copy"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(url()).catch(() => undefined);
+                    }}
+                  >
+                    <CopyIcon size={12} />
+                  </IconButton>
+                </div>
+              </div>
+            )}
+          </Show>
+        </Show>
+
         <For each={visibleFields()}>
           {(field) => (
             <Field
               label={field.required ? `${field.label} *` : field.label}
-              hint={fieldHint(field)}
+              hint={
+                field.kind === "secret" && isFieldStored(field)
+                  ? "stored · leave blank to keep"
+                  : field.description
+              }
             >
               <Show
                 when={field.kind === "select" && field.options !== undefined}
@@ -596,14 +636,6 @@ export const ConnectionDialog = (props: {
                         Open page <ExternalLinkIcon size={11} />
                       </a>
                     </div>
-                    <Show when={redirectUri()}>
-                      {(uri) => (
-                        <div>
-                          <p class="text-[10px] text-faint">Redirect URL</p>
-                          <p class="break-all font-mono text-[10px] text-body">{uri()}</p>
-                        </div>
-                      )}
-                    </Show>
                   </>
                 )}
               </Show>

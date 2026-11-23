@@ -11,6 +11,7 @@ import { ChildProcess } from "effect/process";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Twitch from "@ballast/module-twitch";
 import { makeCallbackServer } from "@ballast/module-twitch/oauth/callback-server";
+import { DEFAULT_TWITCH_CALLBACK_PORT } from "@ballast/agent-protocol";
 
 import {
   oauthConfigOf,
@@ -208,7 +209,10 @@ export const startTwitchAuth = (
     }
 
     const state = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-    const port = options.callbackPort ?? options.config.callbackPort;
+    const port =
+      options.callbackPort ??
+      options.config.callbackPort ??
+      DEFAULT_TWITCH_CALLBACK_PORT;
     const server = yield* makeCallbackServer({
       state,
       ...(port === undefined ? {} : { port }),

@@ -45,7 +45,7 @@ async function registryServer(apiVersion: number, needsConsent: number): Promise
           apiVersion,
           version: "1.2.3",
           pid: process.pid,
-          scripts: { needsConsent },
+          projects: { needsConsent },
         }),
       );
       return;

@@ -96,7 +96,7 @@ describe("stub service (serve contract used by the launcher)", () => {
       apiVersion: 1,
       version: "9.9.9-test",
       pid: stub.pid,
-      scripts: { needsConsent: 1 },
+      projects: { needsConsent: 1 },
     });
 
     const exchange = await fetch(stub.url + "/?token=" + encodeURIComponent(stub.token), { redirect: "manual" });

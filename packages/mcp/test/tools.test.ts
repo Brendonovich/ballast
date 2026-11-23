@@ -38,7 +38,6 @@ const detail = (overrides: Partial<ProjectDetail> = {}): ProjectDetail => ({
   manifest: emptyProjectManifest("proj_test", "ballast.ts"),
   requirements: [],
   units: [],
-  scripts: [],
   ...overrides,
 });
 
@@ -46,7 +45,6 @@ const health: HealthStatus = {
   ok: true,
   uptimeMs: 1,
   projects: { total: 1, running: 0, needsConsent: 0, error: 0 },
-  scripts: { total: 0, running: 0, needsConsent: 0, error: 0 },
   connections: { total: 0, connected: 0, error: 0 },
   cloud: "unlinked",
   lastLogSeq: 0,

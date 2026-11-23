@@ -42,13 +42,6 @@ import {
   SetProjectEnabledRequest,
   SetProjectParamRequest,
 } from "./project.ts";
-import {
-  RejectConsentRequest,
-  ScriptIdRequest,
-  SetScriptEnabledRequest,
-  SetScriptParamRequest,
-} from "./requests.ts";
-import { ConsentRequest, ScriptDetail, ScriptSource, ScriptSummary } from "./scripts.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
 import {
   CancelTimerRequest,
@@ -129,84 +122,6 @@ export const AddProject = Rpc.make("AddProject", {
 export const RemoveProject = Rpc.make("RemoveProject", {
   payload: RemoveProjectRequest,
   success: Schema.Void,
-  error: AgentError,
-});
-
-/**
- * Scripts. A script is identified by `(projectId, scriptId)`; mutations return
- * the new detail so the UI does not have to re-read the script.
- */
-export const ListScripts = Rpc.make("ListScripts", {
-  payload: Schema.Struct({
-    projectId: Schema.optionalKey(Schema.String),
-  }),
-  success: Schema.Struct({
-    scripts: Schema.Array(ScriptSummary),
-  }),
-  error: AgentError,
-});
-
-export const GetScript = Rpc.make("GetScript", {
-  payload: ScriptIdRequest,
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-/**
- * Read the script's entry file for the read-only source viewer. Editing is out
- * of scope in v1; this never writes.
- */
-export const GetScriptSource = Rpc.make("GetScriptSource", {
-  payload: ScriptIdRequest,
-  success: ScriptSource,
-  error: AgentError,
-});
-
-/** Re-plan the script and return the manifest/diff, without starting it. */
-export const PlanScript = Rpc.make("PlanScript", {
-  payload: ScriptIdRequest,
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-/**
- * Start a script and mark it enabled, so it resumes after a service restart.
- * A new script has `enabled: false` until this (or `SetScriptEnabled`) is
- * called; consent is still required first when the plan adds permissions.
- */
-export const StartScript = Rpc.make("StartScript", {
-  payload: ScriptIdRequest,
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-/** Stop a script and mark it disabled, so it does not resume. */
-export const StopScript = Rpc.make("StopScript", {
-  payload: ScriptIdRequest,
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-export const RestartScript = Rpc.make("RestartScript", {
-  payload: ScriptIdRequest,
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-export const SetScriptParam = Rpc.make("SetScriptParam", {
-  payload: SetScriptParamRequest,
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-/**
- * Change whether a script resumes when the service starts. Enabling starts it
- * after consent; disabling stops it. This is separate from Start/Stop only so
- * the UI can express "start at login" without an immediate side effect.
- */
-export const SetScriptEnabled = Rpc.make("SetScriptEnabled", {
-  payload: SetScriptEnabledRequest,
-  success: ScriptDetail,
   error: AgentError,
 });
 
@@ -320,28 +235,6 @@ export const ListTimers = Rpc.make("ListTimers", {
 export const CancelTimer = Rpc.make("CancelTimer", {
   payload: CancelTimerRequest,
   success: CancelTimerResponse,
-  error: AgentError,
-});
-
-export const ListConsents = Rpc.make("ListConsents", {
-  payload: Schema.Struct({
-    projectId: Schema.optionalKey(Schema.String),
-  }),
-  success: Schema.Struct({
-    consents: Schema.Array(ConsentRequest),
-  }),
-  error: AgentError,
-});
-
-export const ApproveConsent = Rpc.make("ApproveConsent", {
-  payload: Schema.Struct({ consentId: Schema.String }),
-  success: ScriptDetail,
-  error: AgentError,
-});
-
-export const RejectConsent = Rpc.make("RejectConsent", {
-  payload: RejectConsentRequest,
-  success: ScriptDetail,
   error: AgentError,
 });
 
@@ -474,15 +367,6 @@ export const AgentRpcs = RpcGroup.make(
   GetProject,
   AddProject,
   RemoveProject,
-  ListScripts,
-  GetScript,
-  GetScriptSource,
-  PlanScript,
-  StartScript,
-  StopScript,
-  RestartScript,
-  SetScriptParam,
-  SetScriptEnabled,
   CreateProject,
   CheckProject,
   PlanProject,
@@ -500,9 +384,6 @@ export const AgentRpcs = RpcGroup.make(
   RejectProjectConsent,
   ListTimers,
   CancelTimer,
-  ListConsents,
-  ApproveConsent,
-  RejectConsent,
   ListIntegrations,
   ListConnections,
   CreateConnection,

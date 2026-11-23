@@ -207,7 +207,7 @@ ListIntegrations(): {
     requiresAuth: boolean;
     fields: ConnectionField[];
     description?: string;
-    redirectUrl?: string; // Twitch when BALLAST_TWITCH_CALLBACK_PORT is set
+    redirectUrl?: string; // Twitch; always present, default port 17345
   }>;
 }
 
@@ -270,6 +270,27 @@ interface ProjectBinding {
 `ProjectDetail.requirements` and `ProjectConsentRequest.bindings` are the two
 views the UI needs: the first is live state, the second is the exact set the
 user approves.
+
+## Legacy script surface removed
+
+Project bundles fully replace the per-script service surface. The service no
+longer exposes `ListScripts`, `GetScript`, `GetScriptSource`, `PlanScript`,
+`StartScript`, `StopScript`, `RestartScript`, `SetScriptParam`,
+`SetScriptEnabled`, `ListConsents`, `ApproveConsent` or `RejectConsent`.
+`ScriptManager` and `apps/agent/src/service/scripts.ts` are gone, as are the
+legacy `ProjectSummary.scriptCount` and `ProjectDetail.scripts` fields,
+`ServiceSnapshot.scripts`/`consents`, and `HealthStatus.scripts`. Timers are
+listed and cancelled through project units; integration tests now start project
+bundles instead of individual scripts.
+
+HTTP webhook definitions now resolve the project's bound instance, register the
+hook on that instance, publish inbound deliveries with its `connectionId`, and
+write status back to the instance record.
+
+The CLI keeps `ballast plan <path>` and `ballast run <path>` for a project
+directory. Single-file `ballast plan file.ts` / `ballast run file.ts` remain as
+a convenience for examples and one-off scripts; they do not create service-side
+script state and are not a second project model.
 
 ## Migration and reset
 
