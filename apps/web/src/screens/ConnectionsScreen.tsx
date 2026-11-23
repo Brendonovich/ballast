@@ -1,14 +1,16 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import type {
   ConnectionAuth,
   ConnectionField,
   ConnectionMode,
   ConnectionSummary,
+  PermissionStatus,
 } from "@ballast/agent-protocol";
 import { valueOf } from "@ballast/agent-protocol";
 
 import { useAgent } from "../state/context.tsx";
+import { getDesktopBridge } from "../bridge.ts";
 import {
   connectionNeedsAttention,
   connectionStatusLabel,
@@ -27,6 +29,7 @@ import {
   StatusDot,
   TextInput,
 } from "../ui/primitives.tsx";
+import { toast } from "../ui/toast.tsx";
 
 const subtitle = (connection: ConnectionSummary): string => {
   const integration = integrationName(connection.integration);
@@ -45,13 +48,42 @@ const subtitle = (connection: ConnectionSummary): string => {
   return parts.join(" · ");
 };
 
-/*
- * HOOK(connection-needs-action): VTube Studio is gaining a distinct "waiting
- * for the user to allow the plugin" state (and keyboard capture gains an
- * Accessibility permission). When ConnectionSummary exposes that shape, drive
- * the row label and render exactly one needs-action banner + action button in
- * the dialog from it. Until then, authorization/scopes are the fallback.
- */
+interface ApprovalView {
+  readonly kind: "vtuber-studio" | "accessibility";
+  readonly message: string;
+  readonly status?: PermissionStatus;
+  readonly label: string;
+}
+
+const approvalFor = (
+  connection: ConnectionSummary,
+  hasBridge: boolean,
+  permission: PermissionStatus | undefined,
+): ApprovalView | undefined => {
+  const approval = connection.approval;
+  if (approval === undefined) return undefined;
+  if (approval.kind === "accessibility") {
+    // A plain browser cannot grant a shell permission; keep the row normal.
+    if (!hasBridge) return undefined;
+    const status = permission ?? approval.status ?? "unknown";
+    return {
+      kind: "accessibility",
+      message:
+        approval.message ??
+        "macOS requires Accessibility permission for the process running the Ballast service.",
+      status,
+      label: status === "granted" ? "Check again" : "Open System Settings",
+    };
+  }
+  return {
+    kind: "vtuber-studio",
+    message:
+      approval.message ??
+      'Allow "Ballast" in VTube Studio (the plugin request is waiting for you).',
+    label: "Check again",
+  };
+};
+
 const connectionNeedsAction = (connection: ConnectionSummary): boolean =>
   connection.requiresAuth ||
   connection.status === "reauth-required" ||
@@ -91,7 +123,54 @@ const modeOptions: ReadonlyArray<{ readonly value: ConnectionMode; readonly labe
 
 export const ConnectionsScreen = (): JSX.Element => {
   const store = useAgent();
+  const bridge = getDesktopBridge();
+  const [permission, setPermission] = createSignal<PermissionStatus>();
+  const [requestingPermission, setRequestingPermission] = createSignal(false);
   const [activeId, setActiveId] = createSignal<string>();
+
+  onMount(() => {
+    if (bridge === undefined) return;
+    let active = true;
+    void bridge.permissions
+      .status()
+      .then(async (status) => {
+        if (!active) return;
+        setPermission(status.accessibility);
+        // apps/desktop reports the result of an actual request itself. Only
+        // sync an initial non-granted state when no keyboard connection exists
+        // to reconcile; otherwise the shell owns that update.
+        const hasKeyboard = store
+          .connections()
+          .some((connection) => connection.integration === "keyboard");
+        if (status.accessibility !== "granted" && !hasKeyboard) {
+          await store.reportShellPermission("accessibility", status.accessibility);
+        }
+      })
+      .catch(() => {
+        // Permission status is optional; the connection row still works.
+      });
+    onCleanup(() => {
+      active = false;
+    });
+  });
+
+  const requestAccessibility = async (): Promise<void> => {
+    if (bridge === undefined) return;
+    setRequestingPermission(true);
+    try {
+      const status = await bridge.permissions.requestAccessibility();
+      setPermission(status.accessibility);
+      // apps/desktop's requestAccessibility already reports the result through
+      // ReportShellPermission; do not duplicate that reconcile here.
+    } catch (error) {
+      toast.error(
+        "Accessibility request failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setRequestingPermission(false);
+    }
+  };
   const active = createMemo(() => {
     const id = activeId();
     return id === undefined ? undefined : store.connection(id);
@@ -112,44 +191,62 @@ export const ConnectionsScreen = (): JSX.Element => {
       >
         <div class="mt-6 border-t border-edge">
           <For each={store.connections()}>
-            {(connection) => (
-              <div
-                data-testid="connection-row"
-                data-connection-id={connection.id}
-                class="flex min-h-14 items-center gap-3 border-b border-edge py-2"
-              >
-                <StatusDot
-                  tone={connectionStatusTone(connection.status)}
-                  pulse={connection.status === "connecting"}
-                  class="ml-1"
-                />
-                <div class="min-w-0 flex-1">
-                  <p class="flex items-baseline gap-2 text-[13px] font-medium text-strong">
-                    <span class="truncate">{integrationName(connection.integration)}</span>
-                    <span class="text-[11px] font-normal text-faint">·</span>
-                    <span class="font-mono text-[11px] font-normal text-faint">
-                      {connection.slot}
-                    </span>
-                  </p>
-                  <p class="truncate text-[11px] text-muted">
-                    {subtitle(connection)}
-                    <Show when={connection.lastError}>
-                      <span class="ml-2 text-danger">{connection.lastError}</span>
-                    </Show>
-                  </p>
-                </div>
-                <Status tone={connectionStatusTone(connection.status)}>
-                  {connectionStatusLabel(connection.status)}
-                </Status>
-                <Button
-                  size="small"
-                  variant={connectionNeedsAttention(connection) ? "neutral" : "outline"}
-                  onClick={() => setActiveId(connection.id)}
+            {(connection) => {
+              const approval = (): ApprovalView | undefined =>
+                approvalFor(connection, bridge !== undefined, permission());
+              const detail = (): string => {
+                if (approval() !== undefined) return approval()?.message ?? "";
+                if (
+                  connection.integration === "keyboard" &&
+                  connection.approval?.kind === "accessibility" &&
+                  bridge === undefined
+                ) {
+                  // A plain browser cannot grant shell permissions; do not
+                  // leave a dead-end accessibility warning in the row.
+                  return connection.label !== connection.slot ? connection.label : "";
+                }
+                return subtitle(connection);
+              };
+              return (
+                <div
+                  data-testid="connection-row"
+                  data-connection-id={connection.id}
+                  data-approval={approval()?.kind}
+                  class="flex min-h-14 items-center gap-3 border-b border-edge py-2"
                 >
-                  {actionLabel(connection)}
-                </Button>
-              </div>
-            )}
+                  <StatusDot
+                    tone={connectionStatusTone(connection.status)}
+                    pulse={connection.status === "connecting"}
+                    class="ml-1"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="flex items-baseline gap-2 text-[13px] font-medium text-strong">
+                      <span class="truncate">{integrationName(connection.integration)}</span>
+                      <span class="text-[11px] font-normal text-faint">·</span>
+                      <span class="font-mono text-[11px] font-normal text-faint">
+                        {connection.slot}
+                      </span>
+                    </p>
+                    <p class="truncate text-[11px] text-muted">
+                      {detail()}
+                      <Show when={connection.lastError && approval() === undefined && detail() !== ""}>
+                        <span class="ml-2 text-danger">{connection.lastError}</span>
+                      </Show>
+                    </p>
+                  </div>
+                  <Status tone={connectionStatusTone(connection.status)}>
+                    {connectionStatusLabel(connection.status)}
+                  </Status>
+                  <Button
+                    size="small"
+                    variant={connectionNeedsAttention(connection) ? "neutral" : "outline"}
+                    onClick={() => setActiveId(connection.id)}
+                  >
+                    {approval() === undefined ? actionLabel(connection) : "Review"}
+                  </Button>
+                </div>
+              );
+            }}
           </For>
         </div>
       </Show>
@@ -158,6 +255,14 @@ export const ConnectionsScreen = (): JSX.Element => {
         {(connection) => (
           <ConnectionDialog
             connection={connection()}
+            approval={approvalFor(connection(), bridge !== undefined, permission())}
+            keyboardPermission={
+              bridge !== undefined && connection().integration === "keyboard"
+                ? permission()
+                : undefined
+            }
+            requestingPermission={requestingPermission()}
+            onRequestAccessibility={() => void requestAccessibility()}
             onClose={() => setActiveId(undefined)}
           />
         )}
@@ -168,6 +273,10 @@ export const ConnectionsScreen = (): JSX.Element => {
 
 const ConnectionDialog = (props: {
   readonly connection: ConnectionSummary;
+  readonly approval: ApprovalView | undefined;
+  readonly keyboardPermission: PermissionStatus | undefined;
+  readonly requestingPermission: boolean;
+  readonly onRequestAccessibility: () => void;
   readonly onClose: () => void;
 }): JSX.Element => {
   const store = useAgent();
@@ -240,6 +349,18 @@ const ConnectionDialog = (props: {
   };
 
   const isConnected = (): boolean => props.connection.status === "connected";
+  const hasApproval = (): boolean => props.approval !== undefined;
+
+  const runApproval = async (): Promise<void> => {
+    const approval = props.approval;
+    if (approval === undefined) return;
+    if (approval.kind === "accessibility") {
+      props.onRequestAccessibility();
+      return;
+    }
+    await store.connectConnection(props.connection.id);
+  };
+
   return (
     <Dialog
       title={`${integrationName(props.connection.integration)} · ${props.connection.slot}`}
@@ -250,46 +371,58 @@ const ConnectionDialog = (props: {
       footer={
         <>
           <Show when={isConnected()}>
-            <Button size="normal" variant="ghost" loading={store.isPending(`connection:${props.connection.id}:disconnect`)} onClick={() => void disconnect()}>
+            <Button
+              size="normal"
+              variant="ghost"
+              loading={store.isPending(`connection:${props.connection.id}:disconnect`)}
+              onClick={() => void disconnect()}
+            >
               Disconnect
             </Button>
           </Show>
-          <Show when={dirty() && !isConnected()}>
-            <Button
-              size="normal"
-              variant="outline"
-              loading={store.isPending(`connection:${props.connection.id}:configure`)}
-              onClick={() => void save()}
-            >
-              Save
-            </Button>
-          </Show>
-          <Show when={props.connection.integration === "twitch"}>
-            <Button
-              size="normal"
-              variant={isConnected() ? "ghost" : "outline"}
-              data-testid="connection-auth"
-              loading={store.isPending(`connection:${props.connection.id}:auth`)}
-              onClick={() => void startAuth()}
-            >
-              {props.connection.scopes.missing.length > 0 ? "Re-authorize" : "Sign in"}
-            </Button>
-          </Show>
-          <Show
-            when={isConnected()}
-            fallback={
+          <Show when={!hasApproval()}>
+            <Show when={dirty() && !isConnected()}>
               <Button
                 size="normal"
-                variant="primary"
-                data-testid="connection-connect"
-                disabled={!requiredSatisfied()}
-                loading={store.isPending(`connection:${props.connection.id}:connect`)}
-                onClick={() => void connect()}
+                variant="outline"
+                loading={store.isPending(`connection:${props.connection.id}:configure`)}
+                onClick={() => void save()}
               >
-                Connect
+                Save
               </Button>
-            }
-          >
+            </Show>
+            <Show when={props.connection.integration === "twitch"}>
+              <Button
+                size="normal"
+                variant={isConnected() ? "ghost" : "outline"}
+                data-testid="connection-auth"
+                loading={store.isPending(`connection:${props.connection.id}:auth`)}
+                onClick={() => void startAuth()}
+              >
+                {props.connection.scopes.missing.length > 0 ? "Re-authorize" : "Sign in"}
+              </Button>
+            </Show>
+            <Show
+              when={isConnected()}
+              fallback={
+                <Button
+                  size="normal"
+                  variant="primary"
+                  data-testid="connection-connect"
+                  disabled={!requiredSatisfied()}
+                  loading={store.isPending(`connection:${props.connection.id}:connect`)}
+                  onClick={() => void connect()}
+                >
+                  Connect
+                </Button>
+              }
+            >
+              <Button size="normal" variant="neutral" onClick={props.onClose}>
+                Done
+              </Button>
+            </Show>
+          </Show>
+          <Show when={hasApproval()}>
             <Button size="normal" variant="neutral" onClick={props.onClose}>
               Done
             </Button>
@@ -307,10 +440,56 @@ const ConnectionDialog = (props: {
           </Show>
         </div>
 
-        <Show when={props.connection.lastError}>
+        <Show when={props.connection.lastError && props.approval === undefined}>
           <p class="rounded bg-[var(--v2-state-bg-danger)] px-2 py-1.5 text-[11px] text-danger">
             {props.connection.lastError}
           </p>
+        </Show>
+
+        <Show when={props.approval}>
+          {(approval) => (
+            <div class="rounded-md border border-edge bg-layer-2 px-2.5 py-2">
+              <p class="text-[12px] text-body">{approval().message}</p>
+              <Show when={approval().kind === "accessibility"}>
+                <p class="mt-0.5 text-[11px] text-muted">
+                  Accessibility permission: {approval().status ?? "unknown"}
+                </p>
+              </Show>
+              <Button
+                size="small"
+                variant="primary"
+                class="mt-2"
+                data-testid="connection-approval-action"
+                loading={
+                  props.requestingPermission ||
+                  store.isPending(`connection:${props.connection.id}:connect`)
+                }
+                onClick={() => void runApproval()}
+              >
+                {approval().label}
+              </Button>
+            </div>
+          )}
+        </Show>
+
+        <Show when={props.approval === undefined && props.keyboardPermission !== undefined}>
+          <div class="rounded-md border border-edge bg-layer-2 px-2.5 py-2">
+            <p class="text-[11px] text-muted">
+              Accessibility permission: {props.keyboardPermission}
+            </p>
+            <Show when={props.keyboardPermission !== "granted"}>
+              <Button
+                size="small"
+                variant="primary"
+                class="mt-2"
+                data-testid="connection-permission-action"
+                loading={props.requestingPermission}
+                onClick={props.onRequestAccessibility}
+              >
+                Open System Settings
+              </Button>
+            </Show>
+          </div>
         </Show>
 
         <Show when={props.connection.integration === "twitch"}>

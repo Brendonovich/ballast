@@ -17,6 +17,20 @@ const waitForExit = async (pid: number, timeout = 5_000): Promise<void> => {
   try {
     process.kill(pid, "SIGTERM");
   } catch {
+    return;
+  }
+  const termStarted = Date.now();
+  while (Date.now() - termStarted < 2_000) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await sleep(100);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
     // Already gone.
   }
 };
@@ -33,6 +47,11 @@ export default async function globalTeardown(): Promise<void> {
     // Fall through to signalling the pid.
   }
   await waitForExit(info.pid);
+  try {
+    process.kill(info.vtsPid, "SIGTERM");
+  } catch {
+    // Fixture already stopped.
+  }
   await rm(info.projectPath, { recursive: true, force: true });
   await rm(info.tempRoot, { recursive: true, force: true });
   await rm(realServiceInfoPath, { force: true });

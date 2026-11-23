@@ -30,9 +30,6 @@ const boot = async (): Promise<void> => {
       onError: (message) => toast.error("Request failed", message),
     });
     store.start();
-    window.addEventListener("beforeunload", () => {
-      void store.dispose();
-    });
     mount(() => <App store={store} />);
   } catch (error) {
     mount(() => <BootError transport={transport} message={errorMessage(error)} />);

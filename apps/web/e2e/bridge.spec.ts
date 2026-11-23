@@ -57,6 +57,13 @@ const installBridge = async (page: Page, installed: boolean): Promise<void> => {
         stop: () => action("stop"),
         restart: () => action("restart"),
       },
+      permissions: {
+        status: async () => ({ accessibility: "denied" }),
+        requestAccessibility: async () => {
+          localStorage.setItem("ballast.bridge.action", "accessibility");
+          return { accessibility: "granted" };
+        },
+      },
       update: {
         status: async () => ({ phase: "idle", version: null, message: null }),
         install: async () => ({

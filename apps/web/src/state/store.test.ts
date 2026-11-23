@@ -258,6 +258,11 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.lastActionError()).toContain("No script");
   });
 
+  it("reports a shell permission to the service", async () => {
+    const { store } = await setup();
+    expect(await store.reportShellPermission("accessibility", "denied")).toBe(true);
+  });
+
   it("calls service lifecycle RPCs and refreshes all state", async () => {
     const { store } = await setup();
 

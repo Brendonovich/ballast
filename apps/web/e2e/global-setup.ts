@@ -35,6 +35,62 @@ const waitForHealth = async (url: string, timeout = 20_000): Promise<void> => {
   throw new Error("Timed out waiting for the service /health");
 };
 
+interface VtsFixtureProcess {
+  readonly pid: number;
+  readonly url: string;
+}
+
+const startVtsFixture = (): Promise<VtsFixtureProcess> =>
+  new Promise((resolveFixture, rejectFixture) => {
+    const child = spawn(
+      process.execPath,
+      ["--experimental-strip-types", join(webRoot, "e2e/vts-fixture-server.ts")],
+      {
+        cwd: webRoot,
+        env: process.env,
+        stdio: ["ignore", "pipe", "inherit"],
+      },
+    );
+    let buffer = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      rejectFixture(new Error("Timed out starting the VTube Studio fixture"));
+    }, 10_000);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      const line = buffer.slice(0, newline);
+      try {
+        const value: unknown = JSON.parse(line);
+        if (
+          typeof value === "object" &&
+          value !== null &&
+          "url" in value &&
+          typeof value.url === "string" &&
+          child.pid !== undefined
+        ) {
+          clearTimeout(timer);
+          resolveFixture({ pid: child.pid, url: value.url });
+          return;
+        }
+      } catch {
+        // Wait for the complete JSON line.
+      }
+      clearTimeout(timer);
+      child.kill("SIGTERM");
+      rejectFixture(new Error("VTube Studio fixture printed an unexpected line: " + line));
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      rejectFixture(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      rejectFixture(new Error("VTube Studio fixture exited with " + String(code)));
+    });
+  });
+
 interface CliResult {
   readonly code: number | null;
   readonly output: string;
@@ -58,6 +114,77 @@ const runCli = (args: ReadonlyArray<string>, env: NodeJS.ProcessEnv): Promise<Cl
     child.on("exit", (code) => resolveRun({ code, output }));
   });
 
+const connectionExists = async (
+  id: string,
+  env: NodeJS.ProcessEnv,
+  timeout = 15_000,
+): Promise<boolean> => {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const listed = await runCli(["connections", "list"], env);
+    if (listed.code === 0) {
+      try {
+        const value: unknown = JSON.parse(listed.output.slice(listed.output.indexOf("{")));
+        if (typeof value === "object" && value !== null && "connections" in value && Array.isArray(value.connections)) {
+          if (
+            value.connections.some(
+              (entry: unknown) =>
+                typeof entry === "object" &&
+                entry !== null &&
+                "id" in entry &&
+                entry.id === id,
+            )
+          ) {
+            return true;
+          }
+        }
+      } catch {
+        // Service still starting.
+      }
+    }
+    await sleep(200);
+  }
+  return false;
+};
+
+const connectionApprovalKind = async (
+  id: string,
+  kind: "vtuber-studio" | "accessibility",
+  env: NodeJS.ProcessEnv,
+  timeout = 15_000,
+): Promise<boolean> => {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const listed = await runCli(["connections", "list"], env);
+    if (listed.code === 0) {
+      try {
+        const value: unknown = JSON.parse(listed.output.slice(listed.output.indexOf("{")));
+        if (typeof value === "object" && value !== null && "connections" in value && Array.isArray(value.connections)) {
+          const connection = value.connections.find(
+            (entry: unknown) =>
+              typeof entry === "object" && entry !== null && "id" in entry && entry.id === id,
+          );
+          if (
+            typeof connection === "object" &&
+            connection !== null &&
+            "approval" in connection &&
+            typeof connection.approval === "object" &&
+            connection.approval !== null &&
+            "kind" in connection.approval &&
+            connection.approval.kind === kind
+          ) {
+            return true;
+          }
+        }
+      } catch {
+        // Keep polling.
+      }
+    }
+    await sleep(200);
+  }
+  return false;
+};
+
 const stopProcess = async (child: ChildProcess): Promise<void> => {
   if (child.pid === undefined || child.exitCode !== null) return;
   child.kill("SIGTERM");
@@ -73,6 +200,7 @@ export default async function globalSetup(): Promise<void> {
   }
 
   let service: ChildProcess | undefined;
+  let vtsFixture: VtsFixtureProcess | undefined;
   let tempRoot: string | undefined;
   let projectPath: string | undefined;
   try {
@@ -84,8 +212,11 @@ export default async function globalSetup(): Promise<void> {
     await mkdir(join(projectPath, "scripts"), { recursive: true });
     await copyFile(join(repoRoot, "examples/tick-echo.ts"), join(projectPath, "scripts/tick-echo.ts"));
     await copyFile(join(repoRoot, "examples/obs-scene.ts"), join(projectPath, "scripts/obs-scene.ts"));
+    await copyFile(join(repoRoot, "examples/vts-hotkey.ts"), join(projectPath, "scripts/vts-hotkey.ts"));
+    await copyFile(join(repoRoot, "examples/keyboard-hotkey.ts"), join(projectPath, "scripts/keyboard-hotkey.ts"));
     await copyFile(join(repoRoot, "examples/package.json"), join(projectPath, "package.json"));
 
+    vtsFixture = await startVtsFixture();
     const log = openSync(logPath, "w");
     service = spawn(
       process.execPath,
@@ -139,6 +270,34 @@ export default async function globalSetup(): Promise<void> {
       throw new Error("projects add returned no project id");
     }
 
+    if (vtsFixture === undefined) throw new Error("VTube Studio fixture did not start");
+    const cliEnv = { BALLAST_SERVICE_URL: url, BALLAST_SERVICE_TOKEN: token };
+    let vtuberStudio = false;
+    let accessibility = false;
+
+    if (await connectionExists("vts/main", cliEnv)) {
+      await runCli(
+        ["connections", "configure", "vts/main", `url=${vtsFixture.url}`, "pluginName=Ballast"],
+        cliEnv,
+      );
+      await runCli(["connections", "connect", "vts/main"], cliEnv);
+      vtuberStudio = await connectionApprovalKind("vts/main", "vtuber-studio", cliEnv);
+    }
+    if (await connectionExists("keyboard/main", cliEnv)) {
+      await runCli(
+        ["connections", "configure", "keyboard/main", "permission=denied"],
+        cliEnv,
+      );
+      await runCli(["connections", "connect", "keyboard/main"], cliEnv);
+      accessibility = await connectionApprovalKind("keyboard/main", "accessibility", cliEnv);
+    }
+    if (!vtuberStudio) {
+      console.warn("[real-service e2e] VTube Studio approval fixture was not observed.");
+    }
+    if (!accessibility) {
+      console.warn("[real-service e2e] keyboard accessibility approval was not observed.");
+    }
+
     const info: RealServiceInfo = {
       url,
       token,
@@ -146,6 +305,8 @@ export default async function globalSetup(): Promise<void> {
       projectId: summary.id,
       projectPath,
       tempRoot,
+      vtsPid: vtsFixture.pid,
+      approvals: { vtuberStudio, accessibility },
     };
     await mkdir(join(webRoot, "test-results"), { recursive: true });
     await writeFile(realServiceInfoPath, JSON.stringify(info));
@@ -157,6 +318,13 @@ export default async function globalSetup(): Promise<void> {
     );
     if (tempRoot !== undefined) console.warn(`[real-service e2e] service log: ${join(tempRoot, "service.log")}`);
     if (service !== undefined) await stopProcess(service);
+    if (vtsFixture !== undefined) {
+      try {
+        process.kill(vtsFixture.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
     if (tempRoot !== undefined) await rm(tempRoot, { recursive: true, force: true });
     if (projectPath !== undefined) await rm(projectPath, { recursive: true, force: true });
   }

@@ -8,6 +8,7 @@ import type {
   HealthStatus,
   LogEntry,
   ParamValue,
+  PermissionStatus,
   ProjectDetail,
   ProjectSummary,
   ScriptDetail,
@@ -128,6 +129,10 @@ export interface AgentStore {
   ) => Promise<CloudPairingSession | undefined>;
   readonly pairCloud: (code: string, machineName: string) => Promise<CloudStatus | undefined>;
   readonly unpairCloud: () => Promise<CloudStatus | undefined>;
+  readonly reportShellPermission: (
+    permission: "accessibility",
+    status: PermissionStatus,
+  ) => Promise<boolean>;
   readonly restartService: (reason?: string) => Promise<boolean>;
   readonly shutdownService: (force?: boolean) => Promise<boolean>;
 }
@@ -923,6 +928,17 @@ export const createAgentStore = (
     return outcome.value;
   };
 
+  const reportShellPermission = async (
+    permission: "accessibility",
+    status: PermissionStatus,
+  ): Promise<boolean> => {
+    const outcome = await execute(
+      `shell:permission:${permission}`,
+      runtime.client.ReportShellPermission({ permission, status }),
+    );
+    return outcome.ok;
+  };
+
   const restartService = async (reason?: string): Promise<boolean> => {
     const outcome = await execute(
       "service:restart",
@@ -1004,6 +1020,7 @@ export const createAgentStore = (
     beginCloudPairing,
     pairCloud,
     unpairCloud,
+    reportShellPermission,
     restartService,
     shutdownService,
   };

@@ -5,10 +5,10 @@ import type { BallastBridge, ServiceAction, ServiceStatus } from "@ballast/deskt
  * type contract; outside Electron this is undefined and Settings falls back to
  * the protocol RPCs.
  *
- * HOOK(permissions): when apps/desktop adds `permissions.requestAccessibility()`
- * for macOS keyboard capture, call it from the keyboard connection dialog and
- * render the granted/denied result here. Do not add a second IPC surface in the
- * renderer.
+ * macOS Accessibility for keyboard capture is exposed through
+ * `permissions.status()` / `permissions.requestAccessibility()`. The Electron
+ * main process reports the result to the service through
+ * `ReportShellPermission`; the renderer only displays and requests it.
  */
 export const getDesktopBridge = (): BallastBridge | undefined => {
   if (typeof window === "undefined") return undefined;

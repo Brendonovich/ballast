@@ -12,6 +12,11 @@ export interface RealServiceInfo {
   readonly projectId: string;
   readonly projectPath: string;
   readonly tempRoot: string;
+  readonly vtsPid: number;
+  readonly approvals: {
+    readonly vtuberStudio: boolean;
+    readonly accessibility: boolean;
+  };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -27,7 +32,19 @@ export const readRealServiceInfo = (): RealServiceInfo | undefined => {
       typeof value["pid"] !== "number" ||
       typeof value["projectId"] !== "string" ||
       typeof value["projectPath"] !== "string" ||
-      typeof value["tempRoot"] !== "string"
+      typeof value["tempRoot"] !== "string" ||
+      typeof value["vtsPid"] !== "number"
+    ) {
+      return undefined;
+    }
+    const approvals = value["approvals"];
+    if (
+      typeof approvals !== "object" ||
+      approvals === null ||
+      !("vtuberStudio" in approvals) ||
+      typeof approvals.vtuberStudio !== "boolean" ||
+      !("accessibility" in approvals) ||
+      typeof approvals.accessibility !== "boolean"
     ) {
       return undefined;
     }
@@ -38,6 +55,11 @@ export const readRealServiceInfo = (): RealServiceInfo | undefined => {
       projectId: value["projectId"],
       projectPath: value["projectPath"],
       tempRoot: value["tempRoot"],
+      vtsPid: value["vtsPid"],
+      approvals: {
+        vtuberStudio: approvals.vtuberStudio,
+        accessibility: approvals.accessibility,
+      },
     };
   } catch {
     return undefined;

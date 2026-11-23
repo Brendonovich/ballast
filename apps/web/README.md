@@ -76,11 +76,21 @@ When `window.ballast` exists, Settings uses the Electron supervisor through the 
 Outside Electron the same rows/buttons fall back to `GetServiceInfo`/`GetHealth` and
 `RestartService`/`ShutdownService` RPCs. The bridge is type-checked but not bundled at runtime.
 
-Upcoming hooks:
-- `src/bridge.ts` — `HOOK(permissions)` for macOS Accessibility via
-  `permissions.requestAccessibility()`.
-- `src/screens/ConnectionsScreen.tsx` — `HOOK(connection-needs-action)` for the distinct VTube
-  Studio waiting-for-approval state, to become one banner/row with one action.
+### Permissions and connection approvals
+
+- The bridge's `permissions.status()` is queried when Connections opens. A non-granted startup
+  state is reported with `ReportShellPermission` only when no keyboard connection exists to
+  reconcile; the shell owns reporting after an actual request.
+- **Accessibility** approval rows/buttons only render when `window.ballast` exists. The connection
+  dialog shows `Accessibility permission: denied|unknown|granted` and one action:
+  `Open System Settings` (or `Check again` when granted). The request goes through
+  `bridge.permissions.requestAccessibility()`; the main process reports the result through
+  `ReportShellPermission`.
+- **VTube Studio** approval is service data (`ConnectionSummary.approval`). The row shows the
+  service message and opens a dialog with one `Check again` action; the user must click Allow inside
+  VTube Studio.
+- Plain browsers hide accessibility approvals and their dead-end warnings cleanly. VTube Studio
+  approval remains because it is not shell-owned.
 
 ## Data layer
 
@@ -114,10 +124,13 @@ Point dev at a live agent with `VITE_SERVICE_URL`/`VITE_SERVICE_TOKEN`, or open
 `--dev`.
 
 `test:e2e` uses `e2e/global-setup.ts` to spawn the real service with temp state/data dirs and
-`BALLAST_WEB_DIR=apps/web/dist`, add a temp project under `examples/` containing the repo's
-`tick-echo.ts` and `obs-scene.ts`, and write the URL/token/project id to
-`test-results/real-service.json`. If spawning fails, the real-service spec is skipped. Teardown
-calls `/shutdown`, removes the project and temp dirs. The mock spec runs against Vite.
+`BALLAST_WEB_DIR=apps/web/dist`, plus a VTube Studio fixture (`e2e/vts-fixture-server.ts`) that
+leaves AuthenticationToken pending. It adds a temp project under `examples/` with
+`tick-echo.ts`, `obs-scene.ts`, `vts-hotkey.ts` and `keyboard-hotkey.ts`, connects
+`vts/main` and `keyboard/main` to produce both approval states, and writes the URL/token/project
+id to `test-results/real-service.json`. If spawning or either approval fixture fails, the
+real-service specs are skipped. Teardown calls `/shutdown`, stops the VTS fixture, and removes the
+project and temp dirs. The mock spec runs against Vite.
 
 ### Serving contract for the agent service
 
@@ -168,6 +181,8 @@ project scan.
   gone and viewport filled.
 - `e2e/bridge.spec.ts` — fake `window.ballast`: installed/running state, Advanced uninstall,
   restore/stop through the bridge; not-installed install flow.
+- `e2e/approvals.spec.ts` — real service VTube Studio and macOS Accessibility approval rows,
+  status text, request hook, and light/dark dialog screenshots.
 - `e2e/real-service.spec.ts` — real service served UI: project selector, consent→approve,
   start/logs/source, parameter edit, OBS connection dialog, Settings, and real screenshots.
 
@@ -184,10 +199,15 @@ screenshots/real-05-connections.png
 screenshots/real-06-connection-dialog.png
 screenshots/real-07-settings.png
 screenshots/real-08-script-light.png
+
+screenshots/approvals-vtuber-studio-dark.png
+screenshots/approvals-vtuber-studio-light.png
+screenshots/approvals-accessibility-dark.png
+screenshots/approvals-accessibility-light.png
 ```
 
 Bundle before the redesign: **408.98 kB JS / 48.57 kB CSS** (118.54 / 8.68 kB gzip).
-Bundle now: **341.71 kB JS / 28.94 kB CSS** (108.84 / 6.50 kB gzip).
+Bundle now: **351.64 kB JS / 29.00 kB CSS** (110.91 / 6.50 kB gzip).
 
 ## Known protocol gaps / notes
 
