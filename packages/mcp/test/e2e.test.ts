@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect } from "effect";
 import * as Predicate from "effect/Predicate";
@@ -166,6 +166,30 @@ describe("real MCP stdio client against a real Ballast service", () => {
         if (!Array.isArray(initFiles)) throw new Error("init files are not an array");
         expect(initFiles).toContain("tsconfig.json");
 
+        yield* Effect.promise(async () => {
+          await mkdir(join(projectDir, ".ballast", "history"), { recursive: true });
+          await writeFile(
+            join(projectDir, ".ballast", "history", "chat-log.jsonl"),
+            JSON.stringify({
+              cursor: "7",
+              receivedAt: Date.now(),
+              fingerprint: "fingerprint",
+              event: { text: "durable hello" },
+            }) + "\n",
+            "utf8",
+          );
+        });
+        const history = yield* call(client, tools, "ballast_events", {
+          project: "E2E Project",
+          subscription: "chat-log",
+        });
+        expect(textOf(history)).toContain("durable hello");
+        const historyData = recordOf(history.structuredContent);
+        const historyEntries = historyData?.["history"];
+        expect(Array.isArray(historyEntries)).toBe(true);
+        if (!Array.isArray(historyEntries)) throw new Error("history is not an array");
+        expect(historyEntries.length).toBe(1);
+
         const check = yield* call(client, tools, "ballast_check", { project: "E2E Project" });
         const checkData = recordOf(check.structuredContent);
         expect(checkData?.["ok"]).toBe(true);
@@ -290,6 +314,76 @@ describe("real MCP stdio client against a real Ballast service", () => {
 
         const events = yield* call(client, tools, "ballast_events", { project: "E2E Project" });
         expect(Array.isArray(recordOf(events.structuredContent)?.["events"])).toBe(true);
+      }),
+    );
+  }, 120_000);
+
+  it("scaffolds the Solid artifact template and reports artifact status", async () => {
+    if (service === undefined) throw new Error("Service did not start");
+    const env = {
+      ...process.env,
+      BALLAST_STATE_DIR: service.stateDir,
+      BALLAST_DATA_DIR: service.dataDir,
+    };
+    const projectDir = join(service.root, "artifact-project");
+    await withClient(env, (client) =>
+      Effect.gen(function* () {
+        const tools = yield* client.listTools();
+        const init = yield* call(client, tools, "ballast_project_init", {
+          name: "E2E Artifact",
+          dir: projectDir,
+          artifact: true,
+        });
+        expect(textOf(init)).toContain("artifacts/dashboard/main.tsx");
+        expect(textOf(init)).toContain("src/api.ts");
+        const check = yield* call(client, tools, "ballast_check", {
+          project: "E2E Artifact",
+        });
+        const checkData = recordOf(check.structuredContent);
+        expect(checkData?.["ok"]).toBe(true);
+        const artifacts = checkData?.["artifacts"];
+        expect(Array.isArray(artifacts)).toBe(true);
+        if (!Array.isArray(artifacts)) throw new Error("artifacts are not an array");
+        expect(artifacts.length).toBe(1);
+        const declarations = checkData?.["declarations"];
+        expect(Array.isArray(declarations)).toBe(true);
+        if (!Array.isArray(declarations)) throw new Error("declarations are not an array");
+        expect(declarations.some((entry) => recordOf(entry)?.["kind"] === "artifact")).toBe(true);
+        expect(declarations.some((entry) => recordOf(entry)?.["kind"] === "api")).toBe(true);
+        expect(declarations.some((entry) => recordOf(entry)?.["kind"] === "store")).toBe(true);
+        expect(textOf(check)).toContain("artifacts, api and stores:");
+        expect(textOf(check)).toContain("reload:");
+
+        const status = yield* call(client, tools, "ballast_status", {
+          project: "E2E Artifact",
+        });
+        const statusData = recordOf(status.structuredContent);
+        const statusArtifacts = statusData?.["artifacts"];
+        expect(Array.isArray(statusArtifacts)).toBe(true);
+        if (!Array.isArray(statusArtifacts)) throw new Error("status artifacts are not an array");
+        expect(statusArtifacts.length).toBe(1);
+        expect(textOf(status)).toContain("artifacts:");
+
+        yield* Effect.promise(() =>
+          writeFile(
+            join(projectDir, "artifacts/dashboard/main.tsx"),
+            'export const bad: number = document.title;\n',
+            "utf8",
+          ),
+        );
+        const badArtifact = yield* call(client, tools, "ballast_check", {
+          project: "E2E Artifact",
+        });
+        const badArtifactData = recordOf(badArtifact.structuredContent);
+        expect(badArtifactData?.["ok"]).toBe(false);
+        const artifactDiagnostics = badArtifactData?.["diagnostics"];
+        expect(Array.isArray(artifactDiagnostics)).toBe(true);
+        if (!Array.isArray(artifactDiagnostics)) throw new Error("artifact diagnostics are not an array");
+        const artifactDiagnostic = recordOf(artifactDiagnostics[0]);
+        expect(stringOf(artifactDiagnostic, "file")).toBe("artifacts/dashboard/main.tsx");
+        expect(numberField(artifactDiagnostic, "line")).toBe(1);
+        expect(stringOf(artifactDiagnostic, "code")).toBe("TS2322");
+        expect(textOf(badArtifact)).toContain("[artifact] artifacts/dashboard/main.tsx:1");
       }),
     );
   }, 120_000);

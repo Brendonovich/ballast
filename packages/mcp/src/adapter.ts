@@ -2,6 +2,7 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type {
+  ArtifactSummary,
   ConnectionSummary,
   HealthStatus,
   ListProjectFilesResponse,
@@ -58,11 +59,15 @@ export interface ProjectAdapter {
   readonly createProject: (
     name: string,
     directory?: string,
+    artifact?: boolean,
   ) => Effect.Effect<ProjectDetail, ToolError>;
   readonly checkProject: (projectId: string) => Effect.Effect<CheckResult, ToolError>;
   readonly listProjectFiles: (
     projectId: string,
   ) => Effect.Effect<ListProjectFilesResponse, ToolError>;
+  readonly listArtifacts: (
+    projectId: string,
+  ) => Effect.Effect<ReadonlyArray<ArtifactSummary>, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly health: () => Effect.Effect<HealthStatus, ToolError>;
@@ -222,11 +227,12 @@ export const makeProjectAdapter = (gateway: AgentGateway): ProjectAdapter => {
     listProjects: gateway.listProjects,
     resolveProject,
     getProject,
-    createProject: (name, directory) =>
-      gateway.createProject(name, directory).pipe(Effect.map(normalizeDetail)),
+    createProject: (name, directory, artifact) =>
+      gateway.createProject(name, directory, artifact).pipe(Effect.map(normalizeDetail)),
     checkProject: (projectId) =>
       gateway.checkProject(projectId).pipe(Effect.map(normalizeCheck)),
     listProjectFiles: gateway.listProjectFiles,
+    listArtifacts: gateway.listArtifacts,
     restartProject: (projectId) =>
       gateway.restartProject(projectId).pipe(Effect.map(normalizeDetail)),
     listConnections: gateway.listConnections,
@@ -417,7 +423,112 @@ const unitDetail = (unit: UnitSummary, manifest: ProjectManifest | undefined): s
 const changePrefix = (change: "added" | "removed" | "changed"): string =>
   change === "added" ? "+" : change === "removed" ? "-" : "~";
 
-export const checkText = (check: CheckResult): string => {
+export interface DeclarationUnitView {
+  readonly kind: "artifact" | "api" | "store";
+  readonly name: string;
+  readonly source?: SourceLocation | undefined;
+  readonly detail: string;
+  readonly status: string;
+}
+
+/**
+ * Artifacts, the API group and counters are declaration units in the manifest
+ * but not yet rows in UnitSummary. Surface them from the manifest so check and
+ * status show their sources and artifact build state.
+ */
+export const declarationUnits = (
+  manifest: ProjectManifest | undefined,
+  artifacts: ReadonlyArray<ArtifactSummary>,
+  projectRoot: string,
+  running: boolean,
+): ReadonlyArray<DeclarationUnitView> => {
+  if (manifest === undefined) return [];
+  const status = running ? "active" : "waiting";
+  const artifactUnits: ReadonlyArray<DeclarationUnitView> = (manifest.artifacts ?? []).map(
+    (artifact) => {
+      const summary = artifacts.find((candidate) => candidate.name === artifact.name);
+      const source = normalizeSourceLocation(projectRoot, artifact.source);
+      return {
+        kind: "artifact",
+        name: artifact.name,
+        ...(source === undefined ? {} : { source }),
+        detail:
+          (artifact.title === undefined ? "" : artifact.title + " · ") +
+          artifact.entry +
+          (summary?.error === undefined ? "" : " · " + summary.error),
+        status: summary?.status ?? status,
+      };
+    },
+  );
+  const api = manifest.api;
+  const apiUnits: ReadonlyArray<DeclarationUnitView> =
+    api === undefined
+      ? []
+      : [
+          {
+            kind: "api",
+            name: "api",
+            ...(normalizeSourceLocation(projectRoot, api.source) === undefined
+              ? {}
+              : { source: normalizeSourceLocation(projectRoot, api.source) }),
+            detail:
+              api.procedures.length +
+              " procedure" +
+              (api.procedures.length === 1 ? "" : "s") +
+              " (" +
+              api.procedures
+                .map((procedure) => procedure.name + ":" + procedure.kind)
+                .join(", ") +
+              ")",
+            status,
+          },
+        ];
+  const storeUnits: ReadonlyArray<DeclarationUnitView> = (manifest.stores ?? []).map(
+    (store) => {
+      const source = normalizeSourceLocation(projectRoot, store.source);
+      return {
+        kind: "store",
+        name: store.name,
+        ...(source === undefined ? {} : { source }),
+        detail:
+          "counter" +
+          (store.initial === undefined ? "" : " · initial " + store.initial),
+        status,
+      };
+    },
+  );
+  return [...artifactUnits, ...apiUnits, ...storeUnits];
+};
+
+export interface CheckExtras {
+  readonly artifacts: ReadonlyArray<ArtifactSummary>;
+  readonly declarations: ReadonlyArray<DeclarationUnitView>;
+  readonly artifactOnly: boolean;
+  readonly requiresWorkerRestart: boolean;
+}
+
+const changeSummary = (check: CheckResult, extras: CheckExtras | undefined): string => {
+  if (check.changes.length === 0) {
+    return extras !== undefined && extras.artifacts.length > 0
+      ? "no manifest changes (artifact edits hot-reload; API/worker edits restart)"
+      : "no unit changes";
+  }
+  if (check.changes.every((change) => change.kind === "artifact")) {
+    return "artifact-only (hot reload; worker stays)";
+  }
+  if (check.changes.some((change) => change.kind !== "artifact")) {
+    return "restarts worker";
+  }
+  return "no unit changes";
+};
+
+const isArtifactDiagnostic = (file: string): boolean =>
+  file.startsWith("artifacts/") || file.includes("/artifacts/") || file.endsWith(".tsx");
+
+export const checkText = (
+  check: CheckResult,
+  extras?: CheckExtras | undefined,
+): string => {
   const lines: Array<string> = [];
   const summary = check.summary;
   const entry = summary.entry ?? "ballast.ts";
@@ -439,14 +550,24 @@ export const checkText = (check: CheckResult): string => {
       check.units.length +
       " unit" +
       (check.units.length === 1 ? "" : "s") +
+      (extras === undefined || extras.declarations.length === 0
+        ? ""
+        : " · " +
+          extras.declarations.length +
+          " declaration" +
+          (extras.declarations.length === 1 ? "" : "s")) +
       (check.pendingConsent === undefined ? "" : " · pending consent " + check.pendingConsent.id),
   );
-  if (check.error !== undefined) lines.push("error: " + check.error);
+  if (check.error !== undefined) {
+    const artifactError = /artifact/i.test(check.error);
+    lines.push((artifactError ? "[artifact] " : "") + "error: " + check.error);
+  }
   if (check.diagnostics.length > 0) {
     lines.push("diagnostics:");
     for (const diagnostic of check.diagnostics.slice(0, 20)) {
       lines.push(
         "  " +
+          (isArtifactDiagnostic(diagnostic.file) ? "[artifact] " : "") +
           diagnostic.file +
           ":" +
           diagnostic.line +
@@ -474,6 +595,34 @@ export const checkText = (check: CheckResult): string => {
     }
     if (check.units.length > 40) lines.push("  … " + (check.units.length - 40) + " more");
   }
+  if (extras !== undefined && extras.declarations.length > 0) {
+    lines.push("artifacts, api and stores:");
+    for (const declaration of extras.declarations) {
+      lines.push(
+        "  " +
+          declaration.kind +
+          " " +
+          declaration.name +
+          (declaration.source === undefined
+            ? ""
+            : " @ " + declaration.source.file + ":" + declaration.source.line) +
+          " · " +
+          declaration.status +
+          " — " +
+          declaration.detail,
+      );
+    }
+  }
+  if (extras !== undefined) {
+    for (const artifact of extras.artifacts) {
+      if (artifact.status !== "error") continue;
+      lines.push(
+        "artifact build failed: " +
+          artifact.name +
+          (artifact.error === undefined ? "" : " — " + artifact.error),
+      );
+    }
+  }
   if (check.changes.length > 0) {
     lines.push("diff:");
     for (const change of check.changes.slice(0, 30)) {
@@ -494,7 +643,7 @@ export const checkText = (check: CheckResult): string => {
     }
   }
   lines.push(
-    "requiresConsent: " +
+    "reload: " + changeSummary(check, extras) + " · requiresConsent: " +
       (check.requiresConsent ? "yes" : "no") +
       " · applied manifest: " +
       (check.appliedManifest === undefined ? "none" : "present"),

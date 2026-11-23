@@ -5,6 +5,7 @@ import * as McpSchema from "effect/ai/McpSchema";
 
 import type { McpServerService } from "./server-types.ts";
 import type {
+  ArtifactSummary,
   ConnectionSummary,
   EventRecord,
   LogEntry,
@@ -18,6 +19,7 @@ import type {
 import {
   applyProject,
   checkText,
+  declarationUnits,
   requirementLine,
   requirementViews,
 } from "./adapter.ts";
@@ -26,6 +28,8 @@ import { formatCatalog, selectCatalog } from "./catalog.ts";
 import type { CatalogFilter } from "./catalog.ts";
 import { formatUnknown, ToolError, toolError } from "./errors.ts";
 import { GUIDE } from "./guide.ts";
+import { readEventHistory } from "./history.ts";
+import type { EventHistoryEntry } from "./history.ts";
 
 export interface ToolContext {
   readonly adapter: ProjectAdapter;
@@ -144,6 +148,18 @@ const formatLog = (entry: LogEntry): string => {
   );
 };
 
+const formatHistory = (
+  entry: EventHistoryEntry,
+  topic: { readonly integration: string; readonly topic: string } | undefined,
+): string =>
+  timeText(entry.receivedAt) +
+  " history " +
+  entry.subscription +
+  (topic === undefined ? "" : " " + topic.integration + "/" + topic.topic) +
+  " " +
+  jsonText(entry.event, 500) +
+  (entry.fingerprint === "" ? "" : " fp=" + entry.fingerprint.slice(0, 12));
+
 const formatEvent = (event: EventRecord): string =>
   timeText(event.at) +
   " " +
@@ -227,12 +243,19 @@ export const statusState = (
 const formatStatus = (
   detail: ProjectDetail,
   connections: ReadonlyArray<ConnectionSummary>,
+  artifacts: ReadonlyArray<ArtifactSummary>,
 ): ToolOutput => {
   const project = detail.summary;
   const requirements = requirementViews(
     detail.requirements ?? [],
     connections,
     detail.manifest,
+  );
+  const declarations = declarationUnits(
+    detail.manifest,
+    artifacts,
+    detail.summary.root,
+    detail.summary.status === "running",
   );
   const attributedScopes = new Set(requirements.flatMap((view) => view.missingScopes));
   const extraScopes = [
@@ -293,8 +316,41 @@ const formatStatus = (
   if (extraScopes.length > 0) {
     lines.push("missing scopes: " + extraScopes.join(", "));
   }
-  if (detail.units.length > 0) {
+  if (artifacts.length > 0) {
+    lines.push("artifacts:");
+    for (const artifact of artifacts) {
+      lines.push(
+        "  " +
+          artifact.name +
+          (artifact.title === undefined ? "" : ' ("' + artifact.title + '")') +
+          " · " +
+          artifact.status +
+          " · " +
+          artifact.entry +
+          (artifact.error === undefined ? "" : " — " + artifact.error),
+      );
+    }
+  }
+  const declarationUnitsWithoutArtifacts = declarations.filter(
+    (declaration) => declaration.kind !== "artifact",
+  );
+  if (detail.units.length > 0 || declarationUnitsWithoutArtifacts.length > 0) {
     lines.push("units:");
+    for (const declaration of declarationUnitsWithoutArtifacts) {
+      lines.push(
+        "  " +
+          declaration.kind +
+          " " +
+          declaration.name +
+          (declaration.source === undefined
+            ? ""
+            : " @ " + declaration.source.file + ":" + declaration.source.line) +
+          " · " +
+          declaration.status +
+          " — " +
+          declaration.detail,
+      );
+    }
     for (const unit of detail.units.slice(0, 40)) {
       lines.push(
         "  " +
@@ -313,6 +369,8 @@ const formatStatus = (
     project,
     units: detail.units,
     requirements,
+    artifacts,
+    declarations,
     missingConnections: (detail.requirements ?? []).filter(
       (requirement) => requirement.boundInstanceId === undefined,
     ),
@@ -368,14 +426,19 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_project_init",
     description:
-      "Create and register a Ballast project through the running service: ballast.ts, package.json (ballast.entry) and a short AGENTS.md pointing at ballast_guide. The service refuses a non-empty folder. This does not start the project; the first Start is a user action in the Ballast app. Use ballast_check next.",
+      "Create and register a Ballast project through the running service: ballast.ts, package.json (ballast.entry), tsconfig.json and a short AGENTS.md pointing at ballast_guide. Set artifact: true to copy the Solid artifact template (src/api.ts and artifacts/dashboard/main.tsx). The service refuses a non-empty folder. This does not start the project; the first Start is a user action in the Ballast app. Use ballast_check next.",
     parameters: Schema.Struct({
       name: Schema.String,
       dir: Schema.optionalKey(Schema.String),
+      artifact: Schema.optionalKey(Schema.Boolean),
     }),
     run: (input) =>
       Effect.gen(function* () {
-        const detail = yield* context.adapter.createProject(input.name, input.dir);
+        const detail = yield* context.adapter.createProject(
+          input.name,
+          input.dir,
+          input.artifact,
+        );
         const project = detail.summary;
         const listing = yield* context.adapter.listProjectFiles(project.id);
         const files = listing.files
@@ -393,7 +456,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_check",
     description:
-      "Typecheck, bundle and plan a registered Ballast project WITHOUT applying or starting it. Returns structured diagnostics (file, line, column, TS code, message), the planned units with source links, the diff from the applied manifest, requiresConsent, missing scopes, and every connection requirement: bound to an instance, proposed at Start, unbound with compatible instances, or missing. Use after every edit. On a failed build the previously running version is untouched; ballast_status says whether it is still running.",
+      "Typecheck, bundle and plan a registered Ballast project WITHOUT applying or starting it. Returns worker and artifact diagnostics (file, line, column, code, message), planned units and sources, artifact/API/store declarations, artifact build status, the diff from the applied manifest, and whether changes are artifact-only (hot reload, worker stays) or restart the worker. Also reports requiresConsent, missing scopes, and every connection requirement (bound/proposed/unbound/missing). Use after every edit. On a failed build the previously running version is untouched.",
     parameters: Schema.Struct({
       project: Schema.String,
     }),
@@ -401,13 +464,31 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
         const check = yield* context.adapter.checkProject(project.id);
-        return result(checkText(check), {
+        const artifacts = yield* context.adapter
+          .listArtifacts(project.id)
+          .pipe(Effect.catch(() => Effect.succeed([])));
+        const declarations = declarationUnits(
+          check.manifest ?? check.appliedManifest,
+          artifacts,
+          check.summary.root,
+          check.summary.status === "running",
+        );
+        const extras = {
+          artifacts,
+          declarations,
+          artifactOnly:
+            check.changes.length > 0 &&
+            check.changes.every((change) => change.kind === "artifact"),
+          requiresWorkerRestart: check.changes.some((change) => change.kind !== "artifact"),
+        };
+        return result(checkText(check, extras), {
           ...check,
           requirementDetails: requirementViews(
             check.requirements,
             check.availableConnections,
             check.manifest ?? check.appliedManifest,
           ),
+          ...extras,
         });
       }),
   }),
@@ -432,7 +513,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_status",
     description:
-      "Report the service and one project (or all projects): running, waiting_for_user (with reason), previous_version_running_latest_failed, stopped or error; every connection requirement as bound, proposed, unbound or missing; missing scopes; and per-unit status and source links. Call it after ballast_apply or when the user asks what Ballast is doing. This is a snapshot; it does not plan or change anything.",
+      "Report the service and one project (or all projects): running, waiting_for_user (with reason), previous_version_running_latest_failed, stopped or error; artifacts with build status; artifact/API/store declarations; every connection requirement as bound, proposed, unbound or missing; missing scopes; and per-unit status and source links. Call it after ballast_apply or when the user asks what Ballast is doing. This is a snapshot; it does not plan or change anything.",
     parameters: Schema.Struct({
       project: Schema.optionalKey(Schema.String),
     }),
@@ -442,7 +523,10 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
           const project = yield* context.adapter.resolveProject(input.project);
           const detail = yield* context.adapter.getProject(project.id);
           const connections = yield* context.adapter.listConnections();
-          return formatStatus(detail, connections);
+          const artifacts = yield* context.adapter
+            .listArtifacts(project.id)
+            .pipe(Effect.catch(() => Effect.succeed([])));
+          return formatStatus(detail, connections, artifacts);
         }
         const [projects, health] = yield* Effect.all([
           context.adapter.listProjects(),
@@ -536,9 +620,10 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_events",
     description:
-      "Return recent inbound events and outbound requests recorded by the Ballast service for a project. Filter by unit (name or kind:name), integration or topic; the service receives unitKind/unitName. Since accepts epoch ms, an ISO date or a relative duration like 10m; limit defaults to 50 (max 500). Use it to see whether a subscription fired and what payload the handler received. This is a snapshot, not a live tail.",
+      "Return recent events for a project from both durable subscription history (inbound, survives reloads) and the live event ring (including outbound requests). Filter by subscription name, unit (name or kind:name), integration or topic. Since accepts epoch ms, an ISO date or a relative duration like 10m; limit defaults to 50 (max 500). Use it to see whether a subscription fired and what payload the handler received. This is a snapshot, not a live tail.",
     parameters: Schema.Struct({
       project: Schema.String,
+      subscription: Schema.optionalKey(Schema.String),
       unit: Schema.optionalKey(Schema.String),
       integration: Schema.optionalKey(Schema.String),
       topic: Schema.optionalKey(Schema.String),
@@ -548,6 +633,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
     run: (input) =>
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
+        const detail = yield* context.adapter.getProject(project.id);
         const since = yield* Effect.try({
           try: () => parseSince(input.since),
           catch: (cause) => toolError(formatUnknown(cause)),
@@ -570,16 +656,60 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
               filter === undefined ||
               (event.unitKind === filter.unitKind && event.unitName === filter.unitName),
           )
+          .filter(
+            (event) =>
+              input.subscription === undefined ||
+              event.unitName === input.subscription,
+          )
           .filter((event) => input.integration === undefined || event.integration === input.integration)
           .filter((event) => input.topic === undefined || event.topic === input.topic)
           .slice(-limit);
-        const text =
-          filtered.length === 0
-            ? "No events matched."
-            : filtered.map(formatEvent).join("\n");
-        return result(text, {
+
+        const topicBySubscription = new Map(
+          detail.manifest.topics.map((topic) => [
+            topic.name,
+            { integration: topic.integration, topic: topic.topic },
+          ]),
+        );
+        const history = yield* readEventHistory(project.root, {
+          ...(input.subscription === undefined ? {} : { subscription: input.subscription }),
+          limit: 500,
+        }).pipe(Effect.catch(() => Effect.succeed([])));
+        const historyFiltered = history
+          .filter((entry) => since === undefined || entry.receivedAt >= since)
+          .filter(
+            (entry) => input.subscription === undefined || entry.subscription === input.subscription,
+          )
+          .filter(() => filter === undefined || filter.unitKind === "topic")
+          .filter((entry) => filter === undefined || entry.subscription === filter.unitName)
+          .filter((entry) => {
+            if (input.integration === undefined && input.topic === undefined) return true;
+            const topic = topicBySubscription.get(entry.subscription);
+            if (topic === undefined) return false;
+            return (
+              (input.integration === undefined || topic.integration === input.integration) &&
+              (input.topic === undefined || topic.topic === input.topic)
+            );
+          })
+          .slice(0, limit);
+
+        const parts: Array<string> = [];
+        if (historyFiltered.length > 0) {
+          parts.push("history:");
+          for (const entry of historyFiltered) {
+            parts.push("  " + formatHistory(entry, topicBySubscription.get(entry.subscription)));
+          }
+        }
+        if (filtered.length > 0) {
+          parts.push("ring:");
+          for (const event of filtered) {
+            parts.push("  " + formatEvent(event));
+          }
+        }
+        return result(parts.length === 0 ? "No events matched." : parts.join("\n"), {
           projectId: project.id,
-          count: filtered.length,
+          history: historyFiltered,
+          count: historyFiltered.length + filtered.length,
           events: filtered,
         });
       }),

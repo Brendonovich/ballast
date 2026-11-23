@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { emptyProjectManifest } from "@ballast/agent-protocol";
 import type {
+  ArtifactSummary,
   ConnectionSummary,
   HealthStatus,
   ProjectConsentRequest,
@@ -12,6 +13,7 @@ import type {
 import {
   applyProject,
   checkText,
+  declarationUnits,
   normalizeSourceLocation,
   requirementLine,
   requirementViews,
@@ -107,6 +109,7 @@ const adapter = (state: AdapterState): ProjectAdapter => ({
       ],
     }),
   checkProject: () => Effect.succeed(state.check),
+  listArtifacts: () => Effect.succeed([]),
   restartProject: () => {
     state.restarts += 1;
     return Effect.succeed(
@@ -255,6 +258,78 @@ const consent: ProjectConsentRequest = {
   },
   bindings: [],
 };
+describe("artifact check output", () => {
+  it("lists artifact, api and store declarations with sources", () => {
+    const manifest = {
+      ...emptyProjectManifest("proj_test", "ballast.ts"),
+      artifacts: [
+        {
+          name: "dashboard",
+          title: "Stream dashboard",
+          entry: "artifacts/dashboard/main.tsx",
+          source: { file: "ballast.ts", line: 8, column: 10 },
+        },
+      ],
+      api: {
+        source: { file: "ballast.ts", line: 12, column: 10 },
+        procedures: [
+          { name: "Snapshot", kind: "query" as const, stream: false },
+          { name: "Reset", kind: "action" as const, stream: false },
+          { name: "Chat", kind: "stream" as const, stream: true },
+        ],
+      },
+      stores: [
+        {
+          name: "messages",
+          kind: "counter" as const,
+          initial: 0,
+          source: { file: "ballast.ts", line: 6, column: 20 },
+        },
+      ],
+    };
+    const artifacts: ReadonlyArray<ArtifactSummary> = [
+      {
+        name: "dashboard",
+        title: "Stream dashboard",
+        entry: "artifacts/dashboard/main.tsx",
+        fingerprint: "abc",
+        status: "ready",
+      },
+    ];
+    const declarations = declarationUnits(manifest, artifacts, "/tmp/project", true);
+    expect(declarations.map((declaration) => declaration.kind + ":" + declaration.name)).toEqual([
+      "artifact:dashboard",
+      "api:api",
+      "store:messages",
+    ]);
+    expect(declarations[0]?.source?.file).toBe("ballast.ts");
+  });
+
+  it("reports artifact-only changes as a hot reload", () => {
+    const text = checkText(baseCheck({ changes: [
+      { kind: "artifact", name: "dashboard", change: "changed" },
+    ] }), {
+      artifacts: [],
+      declarations: [],
+      artifactOnly: true,
+      requiresWorkerRestart: false,
+    });
+    expect(text).toContain("reload: artifact-only (hot reload; worker stays)");
+  });
+
+  it("reports API changes as a worker restart", () => {
+    const text = checkText(baseCheck({ changes: [
+      { kind: "api", name: "api", change: "changed" },
+    ] }), {
+      artifacts: [],
+      declarations: [],
+      artifactOnly: false,
+      requiresWorkerRestart: true,
+    });
+    expect(text).toContain("reload: restarts worker");
+  });
+});
+
 describe("requirement views", () => {
   it("formats bound, proposed, unbound and missing requirements", () => {
     const connections = [
@@ -491,7 +566,7 @@ describe("guide", () => {
     expect(GUIDE).toContain("Param.strings");
     expect(GUIDE).toContain("OBS.scenes(obs)");
     expect(GUIDE).toContain("satisfies Ballast.Project");
-    expect(GUIDE).toContain("Values are live");
+    expect(GUIDE).toContain("Params are live");
     expect(GUIDE).toContain("Ballast.Runtime");
     expect(GUIDE).not.toContain("Timer.unit");
     expect(GUIDE).not.toContain("being removed");

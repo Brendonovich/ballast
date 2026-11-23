@@ -13,6 +13,7 @@ import type {
   ConnectionSummary,
   EventRecord,
   HealthStatus,
+  ArtifactSummary,
   ListProjectFilesResponse,
   LogEntry,
   ProjectCheckResult,
@@ -86,12 +87,16 @@ export interface AgentGateway {
   readonly createProject: (
     name: string,
     directory?: string,
+    artifact?: boolean,
   ) => Effect.Effect<ProjectDetail, ToolError>;
   /** Non-applying typecheck + bundle + plan + diff. */
   readonly checkProject: (projectId: string) => Effect.Effect<ProjectCheckResult, ToolError>;
   readonly listProjectFiles: (
     projectId: string,
   ) => Effect.Effect<ListProjectFilesResponse, ToolError>;
+  readonly listArtifacts: (
+    projectId: string,
+  ) => Effect.Effect<ReadonlyArray<ArtifactSummary>, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly logs: (
@@ -138,9 +143,13 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
     withAgentClient(options, (client) => client.GetProject({ projectId })).pipe(
       Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
-  createProject: (name, directory) =>
+  createProject: (name, directory, artifact) =>
     withAgentClient(options, (client) =>
-      client.CreateProject(directory === undefined ? { name } : { name, directory }),
+      client.CreateProject({
+        name,
+        ...(directory === undefined ? {} : { directory }),
+        ...(artifact === undefined ? {} : { artifact }),
+      }),
     ).pipe(Effect.mapError((error) => toolError(formatUnknown(error)))),
   checkProject: (projectId) =>
     withAgentClient(options, (client) => client.CheckProject({ projectId })).pipe(
@@ -148,6 +157,11 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
     ),
   listProjectFiles: (projectId) =>
     withAgentClient(options, (client) => client.ListProjectFiles({ projectId })).pipe(
+      Effect.mapError((error) => toolError(formatUnknown(error))),
+    ),
+  listArtifacts: (projectId) =>
+    withAgentClient(options, (client) => client.ListArtifacts({ projectId })).pipe(
+      Effect.map((response) => response.artifacts),
       Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
   restartProject: (projectId) =>
