@@ -164,8 +164,17 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   await page.getByTestId("add-connection").click();
   const addDialog = page.getByRole("dialog");
   await addDialog.getByTestId("connection-integration").selectOption("twitch");
-  await expect(addDialog).toContainText("No callback port is configured");
-  await expect(addDialog).toContainText("BALLAST_TWITCH_CALLBACK_PORT");
+  await expect(addDialog).toContainText("http://localhost:17345/callback");
+  await expect(addDialog.getByTestId("connection-redirect-copy")).toBeVisible();
+  await addDialog.getByTestId("connection-mode").selectOption("cloud");
+  await expect(addDialog.getByTestId("cloud-account")).toHaveCount(2);
+  await expect(addDialog).toContainText("@streamer");
+  await expect(addDialog).toContainText("Reconnect this account");
+  await expect(
+    addDialog.getByRole("link", { name: /Link another account/ }),
+  ).toHaveAttribute("href", "https://cloud.ballast.stream/oauth/twitch/start");
+  await addDialog.getByTestId("cloud-account").first().getByRole("radio").check();
+
   await addDialog.getByTestId("connection-integration").selectOption("fake");
   await page.getByTestId("connection-label").fill("Test Fake");
   await page.getByTestId("create-connection-submit").click();

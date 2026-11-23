@@ -334,6 +334,30 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
 
       GetCloudStatus: () => cloud.status,
 
+      ListCloudAccounts: () =>
+        Effect.gen(function* () {
+          const api = yield* cloud.api;
+          if (api === undefined) {
+            return yield* Effect.fail(
+              agentError("conflict", "This machine is not linked to the Ballast cloud."),
+            );
+          }
+          const connections = yield* api.listConnections.pipe(
+            Effect.mapError((error) =>
+              agentError(error.status === 401 ? "unauthorized" : "upstream", error.message),
+            ),
+          );
+          return {
+            accounts: connections.map((connection) => ({
+              id: connection.id,
+              login: connection.login,
+              displayName: connection.displayName,
+              scopes: [...connection.scopes],
+              needsReauth: connection.needsReauth === true,
+            })),
+          };
+        }),
+
       BeginCloudPairing: ({ machineName }: { readonly machineName: string }) =>
         cloud.beginPairing(machineName),
 

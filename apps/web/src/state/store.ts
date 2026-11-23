@@ -1,6 +1,7 @@
 import type {
   CloudPairingSession,
   CloudStatus,
+  CloudTwitchAccount,
   ConnectionAuth,
   ConnectionIntegration,
   ConnectionMode,
@@ -52,6 +53,8 @@ export interface AgentStore {
   readonly projectFileRevision: (projectId: string) => number;
   readonly integrations: Accessor<ReadonlyArray<ConnectionIntegration>>;
   readonly loadIntegrations: () => Promise<void>;
+  readonly cloudAccounts: Accessor<ReadonlyArray<CloudTwitchAccount>>;
+  readonly loadCloudAccounts: () => Promise<void>;
   readonly connections: () => ReadonlyArray<ConnectionSummary>;
   readonly connection: (connectionId: string) => ConnectionSummary | undefined;
   readonly cloud: () => CloudStatus | undefined;
@@ -179,6 +182,7 @@ export const createAgentStore = (
 ): AgentStore => {
   const [snapshot, setSnapshot] = createSignal<ServiceSnapshot>();
   const [integrations, setIntegrations] = createSignal<ReadonlyArray<ConnectionIntegration>>([]);
+  const [cloudAccounts, setCloudAccounts] = createSignal<ReadonlyArray<CloudTwitchAccount>>([]);
   const [watchStatus, setWatchStatus] = createSignal<StreamStatus>("connecting");
   const [logStatus, setLogStatus] = createSignal<StreamStatus>("connecting");
   const [lastActionError, setLastActionError] = createSignal<string>();
@@ -496,6 +500,14 @@ export const createAgentStore = (
     disposed = true;
     for (const interrupt of handles.splice(0)) interrupt();
     await runtime.dispose();
+  };
+
+  const loadCloudAccounts = async (): Promise<void> => {
+    const outcome = await execute(
+      "cloud:accounts",
+      runtime.client.ListCloudAccounts(),
+    );
+    if (outcome.ok) setCloudAccounts(outcome.value.accounts);
   };
 
   const loadIntegrations = async (): Promise<void> => {
@@ -887,6 +899,7 @@ export const createAgentStore = (
     const outcome = await execute("cloud:unpair", runtime.client.UnpairCloud());
     if (!outcome.ok) return undefined;
     setCloud(outcome.value);
+    setCloudAccounts([]);
     return outcome.value;
   };
 
@@ -935,6 +948,8 @@ export const createAgentStore = (
     projectFileRevision,
     integrations,
     loadIntegrations,
+    cloudAccounts,
+    loadCloudAccounts,
     connections,
     connection,
     cloud,

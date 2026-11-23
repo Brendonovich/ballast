@@ -1668,6 +1668,26 @@ const handlers = Effect.gen(function* () {
 
     GetCloudStatus: () => Effect.map(Ref.get(store.state), (state) => state.cloud),
 
+    ListCloudAccounts: () =>
+      Effect.map(Ref.get(store.state), (state) => ({
+        accounts: state.connectionOrder.flatMap((id) => {
+          const connection = state.connections.get(id);
+          if (connection === undefined || connection.integration !== "twitch") return [];
+          return [
+            {
+              id: connection.id,
+              login: connection.account?.login ?? connection.label,
+              displayName: connection.account?.displayName ?? connection.label,
+              ...(connection.account?.avatarUrl === undefined
+                ? {}
+                : { avatarUrl: connection.account.avatarUrl }),
+              scopes: [...connection.scopes.granted],
+              needsReauth: connection.status === "reauth-required",
+            },
+          ];
+        }),
+      })),
+
     BeginCloudPairing: ({ machineName }: { readonly machineName: string }) =>
       Effect.gen(function* () {
         const state = yield* Ref.get(store.state);

@@ -67,12 +67,13 @@ splitter uses `row-resize`, which is a resize cursor, not a pointer.
   cannot be deleted and explains that it must be unbound first. **Add connection** is driven by
   `ListIntegrations`: integration, description, allowed modes, auth requirement and field set,
   then label, connect and auth where needed. Twitch own-app mode shows the client id/secret and
-  the fixed `redirectUrl` with a copy action; without one it explains that
-  `BALLAST_TWITCH_CALLBACK_PORT` is required and that the service would otherwise use a temporary
-  random-port callback. The dialog also edits, connects/disconnects, re-authorizes and keeps the
-  approval/permission states keyed by instance. Keyboard dialogs hide the redundant editable
-  macOS permission field; the accessibility status line plus **Open System Settings** is the
-  only control.
+  the fixed `redirectUrl` with a copy action. Twitch cloud mode lists the Twitch accounts from
+  `ListCloudAccounts` with login, display name, avatar when available, scopes and
+  reauthorization state; a sole account is preselected, and **Link another account** opens the
+  cloud's `/oauth/twitch/start`. The dialog also edits, connects/disconnects, re-authorizes and
+  keeps the approval/permission states keyed by instance. Keyboard dialogs hide the redundant
+  editable macOS permission field; the accessibility status line plus **Open System Settings**
+  is the only control.
 - **Projects** also show **Needs connections** when an explicit binding or sole-instance proposal
   is missing; Review opens the project's connection picker.
 - **Settings** — service/desktop state, stop (restart in the desktop app), cloud pair/unpair and
@@ -226,7 +227,7 @@ screenshots/approvals-accessibility-light.png
 ```
 
 Bundle before the redesign: **408.98 kB JS / 48.57 kB CSS** (118.54 / 8.68 kB gzip).
-Bundle now: **366.76 kB JS / 30.84 kB CSS** (116.86 / 6.72 kB gzip).
+Bundle now: **370.88 kB JS / 30.94 kB CSS** (117.77 / 6.73 kB gzip).
 
 ## Known protocol gaps / notes
 

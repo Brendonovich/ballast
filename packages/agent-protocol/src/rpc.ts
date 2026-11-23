@@ -2,7 +2,11 @@ import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import type { RpcClient } from "effect/rpc";
 
-import { CloudPairingSession, CloudStatus } from "./cloud.ts";
+import {
+  CloudPairingSession,
+  CloudStatus,
+  ListCloudAccountsResponse,
+} from "./cloud.ts";
 import {
   ConfigureConnectionRequest,
   ConnectionAuth,
@@ -312,6 +316,12 @@ export const GetCloudStatus = Rpc.make("GetCloudStatus", {
   error: AgentError,
 });
 
+/** Twitch accounts available through this machine's linked Ballast cloud. */
+export const ListCloudAccounts = Rpc.make("ListCloudAccounts", {
+  success: ListCloudAccountsResponse,
+  error: AgentError,
+});
+
 /** Ask the cloud for a pairing code/URL to show the user. */
 export const BeginCloudPairing = Rpc.make("BeginCloudPairing", {
   payload: Schema.Struct({ machineName: Schema.String }),
@@ -395,6 +405,7 @@ export const AgentRpcs = RpcGroup.make(
   DisconnectConnection,
   StartConnectionAuth,
   GetCloudStatus,
+  ListCloudAccounts,
   BeginCloudPairing,
   PairCloud,
   UnpairCloud,

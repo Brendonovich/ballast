@@ -102,7 +102,7 @@ export const ConnectionDialog = (props: {
     return fields.filter((field) => {
       if (activeIntegration() === "keyboard" && field.key === "permission") return false;
       if (activeIntegration() !== "twitch") return true;
-      if (mode() === "cloud") return field.key === "connection";
+      if (mode() === "cloud") return false;
       return field.key !== "connection";
     });
   };
@@ -132,6 +132,22 @@ export const ConnectionDialog = (props: {
   });
 
   createEffect(() => {
+    if (activeIntegration() !== "twitch" || mode() !== "cloud") return;
+    if (store.cloud()?.state !== "linked") return;
+    void store.loadCloudAccounts();
+  });
+
+  createEffect(() => {
+    if (activeIntegration() !== "twitch" || mode() !== "cloud") return;
+    const accounts = store.cloudAccounts();
+    if (accounts.length !== 1) return;
+    if ((drafts()["connection"] ?? "") !== "") return;
+    const only = accounts[0];
+    if (only === undefined) return;
+    setDrafts((current) => ({ ...current, connection: only.id }));
+  });
+
+  createEffect(() => {
     if (active() !== undefined) return;
     const loaded = store.integrations();
     if (loaded.length === 0) return;
@@ -156,6 +172,25 @@ export const ConnectionDialog = (props: {
           store.isPending(`connection:${current.id}:auth`);
   };
 
+  const selectedCloudAccount = () => {
+    const value = drafts()["connection"] ?? "";
+    return store
+      .cloudAccounts()
+      .find((account) => account.id === value || account.login === value);
+  };
+
+  const cloudLinkUrl = (): string | undefined => {
+    const url = store.cloud()?.cloudUrl;
+    if (url === undefined) return undefined;
+    return `${url.replace(/\/$/, "")}/oauth/twitch/start`;
+  };
+
+  const cloudSelectionReady = (): boolean => {
+    if (activeIntegration() !== "twitch" || mode() !== "cloud") return true;
+    if (store.cloud()?.state !== "linked") return false;
+    return selectedCloudAccount() !== undefined;
+  };
+
   const isFieldStored = (field: ConnectionField): boolean => {
     const current = active();
     return current !== undefined && fieldIsSet(current, field);
@@ -167,6 +202,7 @@ export const ConnectionDialog = (props: {
   };
 
   const requiredSatisfied = (): boolean =>
+    cloudSelectionReady() &&
     visibleFields()
       .filter((field) => field.required)
       .every((field) => {
@@ -175,18 +211,30 @@ export const ConnectionDialog = (props: {
         return draft !== "" || (current !== undefined && fieldIsSet(current, field));
       });
 
-  const dirtyValues = (): ReadonlyArray<{ readonly key: string; readonly value: string }> =>
-    visibleFields().flatMap((field) => {
+  const dirtyValues = (): ReadonlyArray<{ readonly key: string; readonly value: string }> => {
+    const values: Array<{ readonly key: string; readonly value: string }> =
+      visibleFields().flatMap((field) => {
+        const current = active();
+        const draft = drafts()[field.key] ?? "";
+        if (current === undefined) {
+          return draft === "" ? [] : [{ key: field.key, value: draft }];
+        }
+        if (field.kind === "secret") {
+          return draft === "" ? [] : [{ key: field.key, value: draft }];
+        }
+        return draft === fieldValue(current, field) ? [] : [{ key: field.key, value: draft }];
+      });
+    const account = selectedCloudAccount();
+    if (activeIntegration() === "twitch" && mode() === "cloud" && account !== undefined) {
       const current = active();
-      const draft = drafts()[field.key] ?? "";
-      if (current === undefined) {
-        return draft === "" ? [] : [{ key: field.key, value: draft }];
-      }
-      if (field.kind === "secret") {
-        return draft === "" ? [] : [{ key: field.key, value: draft }];
-      }
-      return draft === fieldValue(current, field) ? [] : [{ key: field.key, value: draft }];
-    });
+      const stored = current === undefined ? undefined : valueOf(current.values, "connection")?.value;
+      const storedAccount = store
+        .cloudAccounts()
+        .find((candidate) => candidate.id === stored || candidate.login === stored);
+      if (storedAccount?.id !== account.id) values.push({ key: "connection", value: account.id });
+    }
+    return values;
+  };
 
   const dirty = (): boolean => {
     const current = active();
@@ -211,6 +259,10 @@ export const ConnectionDialog = (props: {
     for (const field of visibleFields()) {
       const value = drafts()[field.key] ?? "";
       if (value !== "") config[field.key] = value;
+    }
+    const account = selectedCloudAccount();
+    if (activeIntegration() === "twitch" && mode() === "cloud" && account !== undefined) {
+      config["connection"] = account.id;
     }
     setError(undefined);
     const created = await store.createConnection({
@@ -496,16 +548,115 @@ export const ConnectionDialog = (props: {
           </Field>
         </Show>
 
+        <Show when={activeIntegration() === "twitch" && mode() === "cloud"}>
+          <Field label="Cloud account">
+            <Show
+              when={store.cloud()?.state === "linked"}
+              fallback={
+                <p class="text-[11px] text-warning">
+                  This machine is not linked to the Ballast cloud.
+                </p>
+              }
+            >
+              <div class="space-y-1.5">
+                <Show
+                  when={store.cloudAccounts().length > 0}
+                  fallback={
+                    <p class="text-[11px] text-faint">
+                      No Twitch accounts are linked to this cloud.
+                    </p>
+                  }
+                >
+                  <div class="space-y-1">
+                    <For each={store.cloudAccounts()}>
+                      {(account) => (
+                        <label
+                          data-testid="cloud-account"
+                          data-account-id={account.id}
+                          class="flex cursor-default items-start gap-2 rounded-md border border-edge bg-canvas px-2 py-1.5"
+                        >
+                          <input
+                            type="radio"
+                            name="cloud-account"
+                            class="mt-0.5 size-3.5 shrink-0 accent-[var(--v2-text-text-accent)]"
+                            aria-label={`${account.displayName} (@${account.login})`}
+                            checked={selectedCloudAccount()?.id === account.id}
+                            onChange={() =>
+                              setDrafts((current) => ({
+                                ...current,
+                                connection: account.id,
+                              }))
+                            }
+                          />
+                          <Show
+                            when={account.avatarUrl}
+                            fallback={
+                              <span class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-layer-2 text-[9px] text-muted">
+                                {account.displayName.trim().charAt(0).toUpperCase() || "?"}
+                              </span>
+                            }
+                          >
+                            {(url) => (
+                              <img
+                                src={url()}
+                                alt=""
+                                class="mt-0.5 size-5 shrink-0 rounded-full object-cover"
+                              />
+                            )}
+                          </Show>
+                          <span class="min-w-0 flex-1">
+                            <span class="block truncate text-[12px] text-body">
+                              {account.displayName}{" "}
+                              <span class="text-[10px] text-faint">@{account.login}</span>
+                            </span>
+                            <span
+                              class="block truncate text-[10px] text-faint"
+                              title={account.scopes.join(", ")}
+                            >
+                              {account.scopes.length === 1
+                                ? "1 scope"
+                                : `${account.scopes.length} scopes`}
+                              {account.scopes.length === 0
+                                ? ""
+                                : ` · ${account.scopes.join(", ")}`}
+                            </span>
+                            <Show when={account.needsReauth}>
+                              <span class="block text-[10px] text-warning">
+                                Reconnect this account
+                              </span>
+                            </Show>
+                          </span>
+                        </label>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+                <Show when={cloudLinkUrl()}>
+                  {(href) => (
+                    <a
+                      href={href()}
+                      target="_blank"
+                      rel="noreferrer"
+                      class="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+                    >
+                      Link another account <ExternalLinkIcon size={11} />
+                    </a>
+                  )}
+                </Show>
+              </div>
+            </Show>
+          </Field>
+        </Show>
+
         <Show when={activeIntegration() === "twitch" && mode() !== "cloud"}>
           <Show
             when={definition()?.redirectUrl}
             fallback={
               <div class="rounded-md border border-edge bg-layer-2 px-2.5 py-2 text-[11px] text-muted">
-                No callback port is configured, so there is no stable redirect URL to register.
-                The service uses a temporary localhost callback on a random port, or Twitch's
-                device flow when no client secret is set. Set{" "}
-                <span class="font-mono text-body">BALLAST_TWITCH_CALLBACK_PORT</span> for own-app
-                sign-in with a fixed redirect URL.
+                No redirect URL was provided by the service. Own-app sign-in needs a fixed
+                callback port; set{" "}
+                <span class="font-mono text-body">BALLAST_TWITCH_CALLBACK_PORT</span> and restart
+                the service.
               </div>
             }
           >

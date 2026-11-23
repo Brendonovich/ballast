@@ -176,7 +176,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     const catalogDialog = page.getByRole("dialog");
     await expect(catalogDialog.getByTestId("connection-integration")).toContainText("OBS Studio");
     await catalogDialog.getByTestId("connection-integration").selectOption("twitch");
-    await expect(catalogDialog).toContainText("http://127.0.0.1:43123/callback");
+    await expect(catalogDialog).toContainText("http://localhost:43123/callback");
     await expect(catalogDialog.getByTestId("connection-redirect-copy")).toBeVisible();
     await catalogDialog.getByRole("button", { name: "Close" }).click();
 

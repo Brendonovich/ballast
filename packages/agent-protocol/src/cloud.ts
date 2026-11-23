@@ -39,6 +39,22 @@ export const CloudStatus = Schema.Struct({
 });
 export type CloudStatus = typeof CloudStatus.Type;
 
+/** A Twitch account available through this machine's cloud link. */
+export const CloudTwitchAccount = Schema.Struct({
+  id: Schema.String,
+  login: Schema.String,
+  displayName: Schema.String,
+  avatarUrl: Schema.optionalKey(Schema.String),
+  scopes: Schema.Array(Schema.String),
+  needsReauth: Schema.Boolean,
+});
+export type CloudTwitchAccount = typeof CloudTwitchAccount.Type;
+
+export const ListCloudAccountsResponse = Schema.Struct({
+  accounts: Schema.Array(CloudTwitchAccount),
+});
+export type ListCloudAccountsResponse = typeof ListCloudAccountsResponse.Type;
+
 export const BeginCloudPairingRequest = Schema.Struct({
   machineName: Schema.String,
 });

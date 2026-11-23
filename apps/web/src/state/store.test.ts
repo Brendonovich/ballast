@@ -70,6 +70,19 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.integrations().some((entry) => entry.integration === "twitch")).toBe(true);
   });
 
+  it("loads the cloud accounts available through the linked cloud", async () => {
+    const { store } = await setup();
+
+    await store.loadCloudAccounts();
+    expect(store.cloudAccounts().map((account) => account.login)).toEqual([
+      "streamer",
+      "streamer_bot",
+    ]);
+    expect(store.cloudAccounts().find((account) => account.login === "streamer_bot")?.needsReauth).toBe(
+      true,
+    );
+  });
+
   it("creates, adds and removes projects", async () => {
     const { store } = await setup();
 
