@@ -56,6 +56,11 @@ const projectIdFromPath = (path: string): string | undefined => {
   return match?.[1] === undefined ? undefined : safeDecode(match[1]);
 };
 
+const artifactFromPath = (path: string): string | undefined => {
+  const match = /^\/projects\/[^/?#]+\/artifacts\/([^/?#]+)/.exec(path);
+  return match?.[1] === undefined ? undefined : safeDecode(match[1]);
+};
+
 export const AppShell = (props: RouteSectionProps): JSX.Element => {
   const store = useAgent();
   const location = useLocation();
@@ -71,10 +76,12 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   });
 
   const projectId = (): string | undefined => projectIdFromPath(location.pathname);
+  const artifactName = (): string | undefined => artifactFromPath(location.pathname);
   const projectWindow = (): boolean => projectId() !== undefined;
 
   createEffect(() => {
-    store.setLogProject(projectId());
+    // Artifact windows only show the artifact; they do not need project logs.
+    store.setLogProject(artifactName() === undefined ? projectId() : undefined);
   });
 
   createEffect(() => {
@@ -84,6 +91,16 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
       return;
     }
     const project = store.project(id);
+    const name = artifactName();
+    if (name !== undefined) {
+      const artifact = store.artifacts(id).find((entry) => entry.name === name);
+      const label = artifact?.title ?? artifact?.name ?? name;
+      document.title =
+        project === undefined
+          ? `${label} — Ballast`
+          : `${label} — ${project.name} — Ballast`;
+      return;
+    }
     document.title = project === undefined ? "Ballast" : `${project.name} — Ballast`;
   });
 

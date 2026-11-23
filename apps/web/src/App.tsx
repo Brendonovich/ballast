@@ -7,6 +7,7 @@ import { AppShell } from "./layout/AppShell.tsx";
 import { ErrorToasts } from "./ui/toast.tsx";
 import { ProjectsScreen } from "./screens/ProjectsScreen.tsx";
 import { ProjectScreen } from "./screens/ProjectScreen.tsx";
+import { ArtifactWindowScreen } from "./screens/ArtifactWindowScreen.tsx";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen.tsx";
 import { SettingsScreen } from "./screens/SettingsScreen.tsx";
 
@@ -15,6 +16,10 @@ export const App = (props: { readonly store: AgentStore }): JSX.Element => (
     <HashRouter root={AppShell}>
       <Route path="/" component={ProjectsScreen} />
       <Route path="/projects" component={ProjectsScreen} />
+      <Route
+        path="/projects/:projectId/artifacts/:artifact"
+        component={ArtifactWindowScreen}
+      />
       <Route path="/projects/:projectId" component={ProjectScreen} />
       <Route path="/connections" component={ConnectionsScreen} />
       <Route path="/settings" component={SettingsScreen} />

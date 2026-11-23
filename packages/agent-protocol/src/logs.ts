@@ -82,3 +82,53 @@ export const StreamEventsRequest = Schema.Struct({
   limit: Schema.optionalKey(Schema.Number),
 });
 export type StreamEventsRequest = typeof StreamEventsRequest.Type;
+
+/** One durable subscription-history row, as the service stores it. */
+export const EventHistoryEntry = Schema.Struct({
+  cursor: Schema.String,
+  receivedAt: Schema.Number,
+  fingerprint: Schema.String,
+  event: Schema.Unknown,
+});
+export type EventHistoryEntry = typeof EventHistoryEntry.Type;
+
+export const QueryEventHistoryRequest = Schema.Struct({
+  projectId: Schema.String,
+  subscription: Schema.String,
+  limit: Schema.optionalKey(Schema.Number),
+  /** Return rows older than this cursor. */
+  before: Schema.optionalKey(Schema.String),
+});
+export type QueryEventHistoryRequest = typeof QueryEventHistoryRequest.Type;
+
+export const QueryEventHistoryResponse = Schema.Struct({
+  entries: Schema.Array(EventHistoryEntry),
+  /** Pass as `before` to fetch the next older page. */
+  nextCursor: Schema.optionalKey(Schema.String),
+});
+export type QueryEventHistoryResponse = typeof QueryEventHistoryResponse.Type;
+
+/** One subscription that declares durable event history. */
+export const EventHistorySubscription = Schema.Struct({
+  name: Schema.String,
+  integration: Schema.String,
+  slot: Schema.String,
+  topic: Schema.String,
+  history: Schema.Boolean,
+  maxEntries: Schema.optionalKey(Schema.Number),
+  retentionMs: Schema.optionalKey(Schema.Number),
+});
+export type EventHistorySubscription = typeof EventHistorySubscription.Type;
+
+export const ListEventHistorySubscriptionsRequest = Schema.Struct({
+  projectId: Schema.String,
+  subscription: Schema.optionalKey(Schema.String),
+});
+export type ListEventHistorySubscriptionsRequest =
+  typeof ListEventHistorySubscriptionsRequest.Type;
+
+export const ListEventHistorySubscriptionsResponse = Schema.Struct({
+  subscriptions: Schema.Array(EventHistorySubscription),
+});
+export type ListEventHistorySubscriptionsResponse =
+  typeof ListEventHistorySubscriptionsResponse.Type;

@@ -25,6 +25,7 @@ import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ProjectRuntime } from "./project-runtime.ts";
 import { ensureProjectTypes, scaffoldProject } from "./scaffold.ts";
+import { EventHistory } from "./event-history.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
 
 export interface AgentRpcOptions {
@@ -45,6 +46,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
     const lifecycle = yield* Lifecycle;
     const logs = yield* Logs;
     const events = yield* EventLog;
+    const history = yield* EventHistory;
     const hub = yield* ServiceHub;
 
     const info = Effect.gen(function* () {
@@ -448,6 +450,68 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
           ...(request.topic === undefined ? {} : { topic: request.topic }),
           ...(request.afterSeq === undefined ? {} : { afterSeq: request.afterSeq }),
           ...(request.limit === undefined ? {} : { limit: request.limit }),
+        }),
+
+      QueryEventHistory: (request: {
+        readonly projectId: string;
+        readonly subscription: string;
+        readonly limit?: number;
+        readonly before?: string;
+      }) =>
+        Effect.gen(function* () {
+          const project = yield* projects.get(request.projectId);
+          if (project === undefined) {
+            return yield* Effect.fail(
+              agentError("not-found", "No project " + request.projectId),
+            );
+          }
+          const limit = Math.max(1, Math.min(Math.trunc(request.limit ?? 50), 500));
+          const records = yield* history.query(project.id, request.subscription, {
+            limit,
+            ...(request.before === undefined ? {} : { before: request.before }),
+          });
+          const next = records[records.length - 1];
+          return {
+            entries: [...records],
+            ...(records.length < limit || next === undefined
+              ? {}
+              : { nextCursor: next.cursor }),
+          };
+        }),
+
+      ListEventHistorySubscriptions: (request: {
+        readonly projectId: string;
+        readonly subscription?: string;
+      }) =>
+        Effect.gen(function* () {
+          const project = yield* projects.get(request.projectId);
+          if (project === undefined) {
+            return yield* Effect.fail(
+              agentError("not-found", "No project " + request.projectId),
+            );
+          }
+          const subscriptions = yield* history.subscriptions(project.id);
+          return {
+            subscriptions: subscriptions
+              .filter(
+                (subscription) =>
+                  request.subscription === undefined ||
+                  subscription.name === request.subscription,
+              )
+              .map((subscription) => ({
+                name: subscription.name,
+                integration: subscription.integration,
+                slot: subscription.slot,
+                topic: subscription.topic,
+                history: subscription.policy !== false,
+                ...(subscription.policy === false
+                  ? {}
+                  : {
+                      maxEntries: subscription.policy.maxEntries,
+                      retentionMs: subscription.policy.retentionMs,
+                    }),
+              })),
+          };
         }),
 
       WatchService: () =>

@@ -23,6 +23,8 @@ const bridge: BallastBridge = {
       projectId: string,
       options?: { readonly newWindow?: boolean },
     ) => ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenProject, projectId, options),
+    openArtifactWindow: (projectId: string, artifact: string) =>
+      ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenArtifact, projectId, artifact),
     openHome: (route?: string) =>
       ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenHome, route),
   },

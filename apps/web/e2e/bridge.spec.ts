@@ -29,7 +29,7 @@ const installBridge = async (page: Page): Promise<void> => {
       return { ok: true, status, message: null };
     };
     Reflect.set(window, "ballast", {
-      version: 2,
+      version: 3,
       service: {
         status: async () => status,
         start: () => action("start"),
@@ -54,6 +54,7 @@ const installBridge = async (page: Page): Promise<void> => {
       windows: {
         context: async () => ({ kind: "home", route: "projects" }),
         openProjectWindow: async () => {},
+        openArtifactWindow: async () => {},
         openHome: async () => {},
       },
       projects: {

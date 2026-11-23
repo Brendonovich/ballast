@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ConnectionSummary, ProjectSummary, UnitSummary } from "@ballast/agent-protocol";
 
 import {
+  artifactErrorSource,
+  artifactStatusLabel,
+  artifactStatusTone,
   connectionNeedsAttention,
   connectionStatusLabel,
   paramValueLabel,
@@ -82,6 +85,23 @@ describe("unit presentation", () => {
     expect(unitStatusTone("active")).toBe("success");
     expect(unitStatusTone("waiting")).toBe("neutral");
     expect(unitStatusTone("error")).toBe("danger");
+  });
+});
+
+describe("artifact presentation", () => {
+  it("labels build state and extracts a source location from a build error", () => {
+    expect(artifactStatusLabel("ready")).toBe("Ready");
+    expect(artifactStatusLabel("building")).toBe("Building");
+    expect(artifactStatusLabel("error")).toBe("Error");
+    expect(artifactStatusTone("ready")).toBe("success");
+    expect(artifactStatusTone("building")).toBe("info");
+    expect(artifactStatusTone("error")).toBe("danger");
+    expect(artifactErrorSource("artifacts/overlay/main.ts:9:14: Expected a closing tag")).toEqual({
+      file: "artifacts/overlay/main.ts",
+      line: 9,
+    });
+    expect(artifactErrorSource("bundle failed")).toBeUndefined();
+    expect(artifactErrorSource(undefined)).toBeUndefined();
   });
 });
 

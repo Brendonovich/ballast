@@ -39,7 +39,11 @@ import { AgentError, PermissionStatus } from "./common.ts";
 import { ServiceEvent, WatchServiceRequest } from "./events.ts";
 import {
   EventRecord,
+  ListEventHistorySubscriptionsRequest,
+  ListEventHistorySubscriptionsResponse,
   LogEntry,
+  QueryEventHistoryRequest,
+  QueryEventHistoryResponse,
   StreamEventsRequest,
   StreamLogsRequest,
 } from "./logs.ts";
@@ -430,6 +434,23 @@ export const StreamEvents = Rpc.make("StreamEvents", {
   stream: true,
 });
 
+/** Durable subscription history, newest first. */
+export const QueryEventHistory = Rpc.make("QueryEventHistory", {
+  payload: QueryEventHistoryRequest,
+  success: QueryEventHistoryResponse,
+  error: AgentError,
+});
+
+/** Subscriptions declared by the project, optionally narrowed by name. */
+export const ListEventHistorySubscriptions = Rpc.make(
+  "ListEventHistorySubscriptions",
+  {
+    payload: ListEventHistorySubscriptionsRequest,
+    success: ListEventHistorySubscriptionsResponse,
+    error: AgentError,
+  },
+);
+
 /** Snapshot first, then every state change until the client disconnects. */
 export const WatchService = Rpc.make("WatchService", {
   payload: WatchServiceRequest,
@@ -489,6 +510,8 @@ export const AgentRpcs = RpcGroup.make(
   RejectArtifactUrl,
   StreamLogs,
   StreamEvents,
+  QueryEventHistory,
+  ListEventHistorySubscriptions,
   WatchService,
 );
 export type AgentRpcs = typeof AgentRpcs;

@@ -13,7 +13,11 @@ const collectPageErrors = (page: Page): Array<string> => {
 
 const useTheme = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.addInitScript((value) => {
-    localStorage.setItem("ballast.theme", value);
+    try {
+      localStorage.setItem("ballast.theme", value);
+    } catch {
+      // Sandboxed artifact frames have an opaque origin.
+    }
   }, theme);
 };
 
@@ -123,6 +127,98 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   await expect(page.getByTestId("unit-row").first()).toBeVisible();
   await expect(page.getByTestId("source-panel")).toContainText("mock source");
   await expect(page.getByTestId("log-line").first()).toBeVisible();
+
+  // Artifacts are listed beside units; opening one replaces source and logs.
+  const artifactRow = page
+    .getByTestId("artifact-row")
+    .filter({ hasText: "Stream dashboard" });
+  await expect(artifactRow).toHaveAttribute("data-status", "ready");
+  await expect(artifactRow).toContainText("Ready · dashboard");
+  await expect(artifactRow.getByTestId("artifact-source")).toContainText("main.tsx:12");
+  await artifactRow.getByRole("button").first().click();
+  await expect(page.getByTestId("artifact-panel")).toBeVisible();
+  await expect(page.getByTestId("source-panel")).toHaveCount(0);
+  await expect(page.getByTestId("log-panel")).toHaveCount(0);
+  await expect(
+    page.frameLocator("iframe").getByRole("heading", { name: "Stream dashboard" }),
+  ).toBeVisible();
+
+  // Full screen hides both side panels, and Esc restores them.
+  await page.getByTestId("artifact-fullscreen").click();
+  await expect(page.getByTestId("units-panel")).toHaveCount(0);
+  await expect(page.getByTestId("project-sidebar")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("units-panel")).toBeVisible();
+  await expect(page.getByTestId("project-sidebar")).toBeVisible();
+
+  // Persistent URLs sit behind the overflow menu; action URLs need approval.
+  await page.getByTestId("artifact-menu").click();
+  await page.getByTestId("artifact-urls").click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByTestId("artifact-url-create").click();
+  await expect(page.getByTestId("artifact-url-copy")).toBeVisible();
+  await expect(page.getByRole("dialog")).toContainText(
+    "http://127.0.0.1:49490/a/mock-read-token/index.html",
+  );
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByTestId("artifact-url-copy").click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("mock-read-token");
+  await page.getByTestId("artifact-url-scope").selectOption("action");
+  await page.getByTestId("artifact-url-create").click();
+  await expect(page.getByTestId("artifact-url-confirmation")).toBeVisible();
+  await page
+    .getByTestId("artifact-url-confirmation")
+    .getByRole("button", { name: "Approve" })
+    .click();
+  await expect(page.getByTestId("artifact-url-copy-value")).toContainText(
+    "mock-action-token",
+  );
+  await page.getByTestId("artifact-url-copy").click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("mock-action-token");
+  await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
+
+  // Back returns to source and logs.
+  await page
+    .getByTestId("artifact-panel")
+    .getByRole("button", { name: "Back to source" })
+    .click();
+  await expect(page.getByTestId("source-panel")).toBeVisible();
+  await expect(page.getByTestId("log-panel")).toBeVisible();
+  await expect(page.getByTestId("artifact-panel")).toHaveCount(0);
+
+  // A failed build links its file:line to the source viewer.
+  const failedArtifact = page
+    .getByTestId("artifact-row")
+    .filter({ hasText: "Alert overlay" });
+  await expect(failedArtifact).toHaveAttribute("data-status", "error");
+  await expect(failedArtifact.getByTestId("artifact-error-source")).toContainText(
+    "main.ts:9",
+  );
+  await failedArtifact.getByRole("button").first().click();
+  await expect(page.getByTestId("artifact-panel")).toContainText("Artifact build failed");
+  await expect(page.getByTestId("artifact-panel")).toContainText("Expected a closing tag");
+  await expect(page.getByTestId("artifact-panel-error-source")).toContainText("main.ts:9");
+  await page
+    .getByTestId("artifact-panel")
+    .getByRole("button", { name: "Back to source" })
+    .click();
+  await expect(page.getByTestId("source-panel")).toBeVisible();
+
+  // A plain browser opens the artifact route in its own tab.
+  await artifactRow.getByRole("button").first().click();
+  await page.getByTestId("artifact-menu").click();
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByTestId("artifact-popout").click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(/#\/projects\/proj_main\/artifacts\/dashboard/);
+  await expect(popup.getByTestId("artifact-panel")).toBeVisible();
+  await expect(popup).toHaveTitle("Stream dashboard — Main Channel — Ballast");
+  await popup.close();
+  await page.getByTestId("artifact-panel").getByRole("button", { name: "Back to source" }).click();
 
   // Clicking a unit selects it as the log filter.
   const firstUnit = page.getByTestId("unit-row").first();
@@ -240,6 +336,29 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   expect(errors).toEqual([]);
 });
 
+test("refreshes the artifact view token before it expires", async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem("ballast.theme", "dark");
+      localStorage.setItem("ballast.mockArtifactTtlMs", "38000");
+    } catch {
+      // Sandboxed artifact frames have an opaque origin.
+    }
+  });
+  await openProjects(page);
+  await openProject(page, "Main Channel");
+  await page.getByTestId("artifact-row").getByRole("button").first().click();
+  const iframe = page.locator("iframe");
+  const first = await iframe.getAttribute("src");
+  expect(first).toContain("token=");
+  await expect
+    .poll(() => iframe.getAttribute("src"), { timeout: 15_000 })
+    .not.toBe(first);
+  await expect(
+    page.frameLocator("iframe").getByRole("heading", { name: "Stream dashboard" }),
+  ).toBeVisible();
+});
+
 const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await useTheme(page, theme);
   await openProjects(page);
@@ -272,6 +391,34 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
     `screenshots/${theme}-project-second.png`,
     `screenshots/${theme}-two-windows.png`,
   );
+
+  // Artifacts: list, open, full screen and URL management.
+  await expect(page.getByTestId("artifact-row").first()).toBeVisible();
+  await page.screenshot({ path: `screenshots/${theme}-08-artifacts.png` });
+  await page.getByTestId("artifact-row").first().getByRole("button").first().click();
+  await expect(
+    page.frameLocator("iframe").getByRole("heading", { name: "Stream dashboard" }),
+  ).toBeVisible();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-09-artifact.png` });
+  await page.getByTestId("artifact-fullscreen").click();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-10-artifact-fullscreen.png` });
+  await page.keyboard.press("Escape");
+  await page.getByTestId("artifact-menu").click();
+  await page.getByTestId("artifact-urls").click();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-11-artifact-urls.png` });
+  await page.getByTestId("artifact-url-scope").selectOption("action");
+  await page.getByTestId("artifact-url-create").click();
+  await expect(page.getByTestId("artifact-url-confirmation")).toBeVisible();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-12-artifact-url-confirm.png` });
+  await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
+  await page
+    .getByTestId("artifact-panel")
+    .getByRole("button", { name: "Back to source" })
+    .click();
 
   await page.getByTestId("source-maximize").click();
   await page.waitForTimeout(150);

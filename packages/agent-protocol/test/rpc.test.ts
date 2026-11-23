@@ -212,6 +212,38 @@ describe("@ballast/agent-protocol RPC group", () => {
     }),
   );
 
+  it.effect("queries durable subscription history through the service", () =>
+    Effect.gen(function* () {
+      const agent = yield* client;
+
+      const listed = yield* agent.ListEventHistorySubscriptions({ projectId: main });
+      const name = listed.subscriptions[0]?.name;
+      if (name === undefined) throw new Error("mock history subscription missing");
+
+      const page = yield* agent.QueryEventHistory({
+        projectId: main,
+        subscription: name,
+        limit: 1,
+      });
+      expect(page.entries).toHaveLength(1);
+      expect(page.entries[0]?.fingerprint).toBe("mock");
+      expect(page.entries[0]?.event).toMatchObject({
+        reward: { title: "Hydrate" },
+      });
+
+      const filtered = yield* agent.ListEventHistorySubscriptions({
+        projectId: main,
+        subscription: name,
+      });
+      expect(filtered.subscriptions.map((entry) => entry.name)).toEqual([name]);
+
+      const missing = yield* agent
+        .QueryEventHistory({ projectId: "nope", subscription: name })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(missing)).toBe(true);
+    }),
+  );
+
   it.effect("watches the initial service snapshot", () =>
     Effect.gen(function* () {
       const agent = yield* client;

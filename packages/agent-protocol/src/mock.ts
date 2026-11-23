@@ -20,10 +20,16 @@ import {
 } from "./connections.ts";
 import type { AgentError, ParamValue } from "./common.ts";
 import { agentError } from "./common.ts";
-import type { LogEntry, EventRecord } from "./logs.ts";
+import type {
+  EventHistoryEntry,
+  EventHistorySubscription,
+  EventRecord,
+  LogEntry,
+} from "./logs.ts";
 import type {
   ManifestDatabaseUnit,
   ProjectConsentRequest,
+  ProjectManifest,
   ProjectRequirement,
   ProjectSummary,
   UnitSummary,
@@ -114,7 +120,7 @@ const mainProject: ProjectSummary = {
   entry: "ballast.ts",
   enabled: true,
   status: "running",
-  unitCount: 4,
+  unitCount: 8,
   createdAt: base - 30 * 24 * HOUR,
   updatedAt: base + 2 * HOUR,
 };
@@ -126,7 +132,7 @@ const altProject: ProjectSummary = {
   entry: "ballast.ts",
   enabled: false,
   status: "stopped",
-  unitCount: 4,
+  unitCount: 3,
   createdAt: base - 12 * 24 * HOUR,
   updatedAt: base + 55 * MINUTE,
 };
@@ -910,6 +916,51 @@ const projectScripts = (
       : [detail];
   });
 
+/**
+ * Unit names are declared in the project manifest, but a script manifest only
+ * carries topics. This mirrors the names those declarations would get.
+ */
+const topicUnitNames: ReadonlyMap<string, string> = new Map([
+  ["twitch/channel.channel_points_custom_reward_redemption.add", "redemption"],
+  ["twitch/channel.cheer", "cheer"],
+  ["fake/tick", "tick"],
+]);
+
+/**
+ * The project sidebar renders project-level params, so the mock has to expose
+ * the params its scripts declare. Units and the sidebar otherwise disagree.
+ */
+/** Tests may shorten the embed TTL through localStorage to observe refreshes. */
+const mockArtifactTtl = (): number => {
+  try {
+    const storage: unknown = Reflect.get(globalThis, "localStorage");
+    if (typeof storage !== "object" || storage === null) return 5 * MINUTE;
+    const getItem: unknown = Reflect.get(storage, "getItem");
+    if (typeof getItem !== "function") return 5 * MINUTE;
+    const raw: unknown = Reflect.apply(getItem, storage, ["ballast.mockArtifactTtlMs"]);
+    const value = typeof raw === "string" ? Number(raw) : Number.NaN;
+    return Number.isFinite(value) && value >= 5_000 ? value : 5 * MINUTE;
+  } catch {
+    return 5 * MINUTE;
+  }
+};
+
+const projectManifestOf = (
+  state: MockState,
+  project: ProjectSummary,
+): ProjectManifest => {
+  const params = new Map<string, ParamView>();
+  for (const detail of projectScripts(state, project.id)) {
+    for (const param of detail.manifest.params) {
+      if (!params.has(param.key)) params.set(param.key, param);
+    }
+  }
+  return {
+    ...emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+    params: [...params.values()],
+  };
+};
+
 const requireProject = (
   state: MockState,
   projectId: string,
@@ -1019,7 +1070,7 @@ const handlers = Effect.gen(function* () {
 
   const projectDetailOf = (state: MockState, project: ProjectSummary) => ({
     summary: project,
-    manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+    manifest: projectManifestOf(state, project),
     requirements: requirementsOf(state, project.id),
     units: unitsOf(state, project.id),
   });
@@ -1034,7 +1085,7 @@ const handlers = Effect.gen(function* () {
         ...detail.manifest.topics.map(
           (topic): UnitSummary => ({
             kind: "topic",
-            name: topic.topic,
+            name: topicUnitNames.get(topic.topic) ?? topic.topic,
             status,
           }),
         ),
@@ -1079,10 +1130,9 @@ const handlers = Effect.gen(function* () {
       Effect.gen(function* () {
         const state = yield* Ref.get(store.state);
         const project = yield* requireProject(state, projectId);
-        const entry = project.entry ?? "ballast.ts";
         return {
           summary: project,
-          manifest: emptyProjectManifest(projectId, entry),
+          manifest: projectManifestOf(state, project),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
         };
@@ -1094,7 +1144,7 @@ const handlers = Effect.gen(function* () {
           const project = yield* requireProject(state, projectId);
           return {
             summary: project,
-            manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
           };
@@ -1111,7 +1161,7 @@ const handlers = Effect.gen(function* () {
           yield* Ref.set(store.state, { ...state, projects });
           return {
             summary: next,
-            manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, next),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
           };
@@ -1128,7 +1178,7 @@ const handlers = Effect.gen(function* () {
           yield* Ref.set(store.state, { ...state, projects });
           return {
             summary: next,
-            manifest: emptyProjectManifest(projectId, next.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, next),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
           };
@@ -1141,7 +1191,7 @@ const handlers = Effect.gen(function* () {
           const project = yield* requireProject(state, projectId);
           return {
             summary: project,
-            manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
           };
@@ -1154,7 +1204,7 @@ const handlers = Effect.gen(function* () {
           const project = yield* requireProject(state, request.projectId);
           return {
             summary: project,
-            manifest: emptyProjectManifest(request.projectId, project.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
           };
@@ -1175,7 +1225,7 @@ const handlers = Effect.gen(function* () {
           yield* Ref.set(store.state, { ...state, projects });
           return {
             summary: next,
-            manifest: emptyProjectManifest(request.projectId, next.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, next),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
           };
@@ -1248,7 +1298,7 @@ const handlers = Effect.gen(function* () {
         const project = yield* requireProject(state, consent.projectId);
         return {
           summary: project,
-          manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+          manifest: projectManifestOf(state, project),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
               };
@@ -1264,7 +1314,7 @@ const handlers = Effect.gen(function* () {
           const project = yield* requireProject(state, consent.projectId);
           return {
             summary: project,
-            manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
                   };
@@ -1302,7 +1352,7 @@ const handlers = Effect.gen(function* () {
         });
         return {
           summary: project,
-          manifest: emptyProjectManifest(id, "ballast.ts"),
+          manifest: projectManifestOf(state, project),
           requirements: [],
           units: [],
         };
@@ -1315,8 +1365,8 @@ const handlers = Effect.gen(function* () {
           return {
             summary: project,
             ok: true,
-            manifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
-            appliedManifest: emptyProjectManifest(projectId, project.entry ?? "ballast.ts"),
+            manifest: projectManifestOf(state, project),
+            appliedManifest: projectManifestOf(state, project),
             units: unitsOf(state, projectId),
             changes: [],
             requiresConsent: false,
@@ -1389,7 +1439,7 @@ const handlers = Effect.gen(function* () {
         ]);
         return {
           summary: project,
-          manifest: emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+          manifest: projectManifestOf(state, project),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
         };
@@ -1460,8 +1510,18 @@ const handlers = Effect.gen(function* () {
                 name: "dashboard",
                 title: "Stream dashboard",
                 entry: "artifacts/dashboard/main.tsx",
+                source: { file: "artifacts/dashboard/main.tsx", line: 12, column: 3 },
                 fingerprint: "mock-dashboard-v1",
                 status: "ready" as const,
+              },
+              {
+                name: "overlay",
+                title: "Alert overlay",
+                entry: "artifacts/overlay/main.ts",
+                source: { file: "artifacts/overlay/main.ts", line: 3, column: 1 },
+                fingerprint: "mock-overlay-v1",
+                status: "error" as const,
+                error: "artifacts/overlay/main.ts:9:14: Expected a closing tag",
               },
             ],
           };
@@ -1481,12 +1541,13 @@ const handlers = Effect.gen(function* () {
           if (project.id !== mainProject.id || artifact !== "dashboard") {
             return yield* fail(agentError("not-found", "No artifact " + artifact));
           }
+          const token = "mock-embed-" + Math.random().toString(36).slice(2);
           return {
-            url: "http://127.0.0.1:49490",
-            pageUrl: "http://127.0.0.1:49490/a/mock-embed-token/index.html",
-            token: "mock-embed-token",
+            url: "",
+            pageUrl: "mock-artifact.html?token=" + encodeURIComponent(token),
+            token,
             scope: "read" as const,
-            expiresAt: Date.now() + 5 * MINUTE,
+            expiresAt: Date.now() + mockArtifactTtl(),
           };
         }),
       ),
@@ -1545,7 +1606,9 @@ const handlers = Effect.gen(function* () {
         return {
           _tag: "created" as const,
           url,
-          copyUrl: "http://127.0.0.1:49490/a/mock-read-token/index.html",
+          copyUrl:
+            "http://127.0.0.1:49490/a/mock-read-token/index.html" +
+            (request.transparent ? "?background=transparent" : ""),
         };
       }),
 
@@ -1628,7 +1691,9 @@ const handlers = Effect.gen(function* () {
           });
           return {
             url,
-            copyUrl: "http://127.0.0.1:49490/a/mock-action-token/index.html",
+            copyUrl:
+              "http://127.0.0.1:49490/a/mock-action-token/index.html" +
+              (confirmation.transparent ? "?background=transparent" : ""),
           };
         }),
       ),
@@ -2055,6 +2120,83 @@ const handlers = Effect.gen(function* () {
           );
         }),
       ),
+
+    QueryEventHistory: (request: {
+      readonly projectId: string;
+      readonly subscription: string;
+      readonly limit?: number;
+      readonly before?: string;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        if (!state.projects.has(request.projectId)) {
+          return yield* fail(agentError("not-found", "No project " + request.projectId));
+        }
+        const nameOf = (record: EventRecord): string =>
+          record.unitName ?? record.integration + "/" + record.topic;
+        const rows: ReadonlyArray<EventHistoryEntry> = state.events
+          .filter(
+            (record) =>
+              record.projectId === request.projectId &&
+              record.direction === "inbound" &&
+              record.dropped !== true &&
+              nameOf(record) === request.subscription,
+          )
+          .sort((left, right) => right.at - left.at)
+          .map((record) => ({
+            cursor: String(record.seq),
+            receivedAt: record.at,
+            fingerprint: "mock",
+            event: record.payload,
+          }));
+        const start =
+          request.before === undefined
+            ? 0
+            : rows.findIndex((row) => row.cursor === request.before) + 1;
+        const limit = Math.max(1, Math.min(Math.trunc(request.limit ?? 50), 500));
+        const page = rows.slice(start, start + limit);
+        const next = page[page.length - 1];
+        return {
+          entries: page,
+          ...(page.length < limit || next === undefined
+            ? {}
+            : { nextCursor: next.cursor }),
+        };
+      }),
+
+    ListEventHistorySubscriptions: (request: {
+      readonly projectId: string;
+      readonly subscription?: string;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        if (!state.projects.has(request.projectId)) {
+          return yield* fail(agentError("not-found", "No project " + request.projectId));
+        }
+        const subscriptions = new Map<string, EventHistorySubscription>();
+        for (const record of state.events) {
+          if (record.projectId !== request.projectId) continue;
+          if (record.direction !== "inbound" || record.dropped === true) continue;
+          const name = record.unitName ?? record.integration + "/" + record.topic;
+          if (subscriptions.has(name)) continue;
+          if (
+            request.subscription !== undefined &&
+            request.subscription !== name
+          ) {
+            continue;
+          }
+          subscriptions.set(name, {
+            name,
+            integration: record.integration,
+            slot: record.connectionId?.split("/")[1] ?? "main",
+            topic: record.topic,
+            history: true,
+            maxEntries: 1000,
+            retentionMs: 7 * 24 * 60 * 60 * 1000,
+          });
+        }
+        return { subscriptions: [...subscriptions.values()] };
+      }),
 
     WatchService: () =>
       Stream.unwrap(

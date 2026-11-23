@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -55,6 +55,47 @@ const runStatement = (
  * generation. `close` releases the files; a hot reload drops the old
  * generation's connections and the new worker reopens them on first use.
  */
+export interface OrphanedDatabase {
+  readonly name: string;
+  readonly sizeBytes: number;
+}
+
+const SQLITE_SUFFIX = ".sqlite";
+
+/**
+ * List `.sqlite` files under `directory` whose base name is not in the
+ * `declared` set. A removed declaration leaves the data file behind: it is
+ * reported here (with its size) and kept on disk, never deleted. Only the main
+ * `.sqlite` file is listed — the `-wal`, `-shm` and `-journal` sidecars
+ * do not end in `.sqlite` and are ignored.
+ */
+export const listOrphanedDatabases = (
+  directory: string,
+  declared: ReadonlySet<string>,
+): ReadonlyArray<OrphanedDatabase> => {
+  let entries: ReadonlyArray<string>;
+  try {
+    entries = readdirSync(directory);
+  } catch {
+    return [];
+  }
+  const orphans: Array<OrphanedDatabase> = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(SQLITE_SUFFIX)) continue;
+    const name = entry.slice(0, -SQLITE_SUFFIX.length);
+    if (name.length === 0 || declared.has(name)) continue;
+    let sizeBytes = 0;
+    try {
+      sizeBytes = statSync(join(directory, entry)).size;
+    } catch {
+      // Report the file even if its size cannot be read.
+    }
+    orphans.push({ name, sizeBytes });
+  }
+  orphans.sort((left, right) => left.name.localeCompare(right.name));
+  return orphans;
+};
+
 export const startRunDatabases = (
   directory: string,
 ): Effect.Effect<RunDatabases, never, Scope.Scope> =>

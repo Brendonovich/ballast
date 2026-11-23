@@ -256,4 +256,27 @@ describe("diff", () => {
     ]);
     expect(result.params.removed).toEqual([]);
   });
+
+  it("diffs databases without requiring consent", () => {
+    const previous = manifest({ databases: [{ name: "main" }] });
+    const next = manifest({ databases: [{ name: "other" }] });
+
+    const result = diff(previous, next);
+
+    expect(result.requiresConsent).toBe(false);
+    expect(result.databases?.added.map((database) => database.name)).toEqual([
+      "other",
+    ]);
+    expect(result.databases?.removed.map((database) => database.name)).toEqual([
+      "main",
+    ]);
+
+    const project = diffProject(previous, next);
+    expect(project.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "database", name: "main", change: "removed" }),
+        expect.objectContaining({ kind: "database", name: "other", change: "added" }),
+      ]),
+    );
+  });
 });

@@ -10,6 +10,7 @@ import {
 import type { JSX } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
 import type {
+  ArtifactSummary,
   ProjectRequirement,
   TimerSummary,
   UnitSummary,
@@ -46,6 +47,7 @@ import { SourcePanel } from "./project/SourcePanel.tsx";
 import type { SourceJump } from "./project/SourcePanel.tsx";
 import { UnitsPanel } from "./project/UnitsPanel.tsx";
 import { ConnectionDialog } from "./connections/ConnectionDialog.tsx";
+import { ArtifactPanel } from "./project/ArtifactPanel.tsx";
 
 const SPLIT_KEY = "ballast.projectSplit";
 const SIDEBAR_KEY = "ballast.projectSidebarCollapsed";
@@ -104,6 +106,7 @@ export const ProjectScreen = (): JSX.Element => {
   const summary = createMemo(() => store.project(projectId()));
   const detail = createMemo(() => store.projectDetail(projectId()));
   const units = createMemo<ReadonlyArray<UnitSummary>>(() => detail()?.units ?? []);
+  const artifacts = createMemo<ReadonlyArray<ArtifactSummary>>(() => store.artifacts(projectId()));
   const loading = createMemo(() => store.isProjectLoading(projectId()));
   const pendingConsent = createMemo(
     () => detail()?.pendingConsent ?? store.projectConsent(projectId()),
@@ -150,6 +153,14 @@ export const ProjectScreen = (): JSX.Element => {
   const [selectedUnit, setSelectedUnit] = createSignal<UnitSummary>();
   const [jump, setJump] = createSignal<SourceJump>();
   const [timers, setTimers] = createSignal<ReadonlyArray<TimerSummary>>([]);
+  const [selectedArtifactName, setSelectedArtifactName] = createSignal<string>();
+  const [artifactFullscreen, setArtifactFullscreen] = createSignal(false);
+  const selectedArtifact = createMemo(() => {
+    const name = selectedArtifactName();
+    return name === undefined
+      ? undefined
+      : artifacts().find((artifact) => artifact.name === name);
+  });
   const [addingConnection, setAddingConnection] = createSignal<ProjectRequirement>();
   const [pendingBinding, setPendingBinding] = createSignal<PendingBinding>();
   const permission = useAccessibilityPermission();
@@ -167,9 +178,12 @@ export const ProjectScreen = (): JSX.Element => {
     const pid = projectId();
     const started = store.info()?.startedAt;
     const revision = store.projectRevision(pid);
+    const artifactRevision = store.artifactListRevision(pid);
     if (pid === "" || started === undefined) return;
     void revision;
+    void artifactRevision;
     void store.fetchProject(pid, true);
+    void store.fetchArtifacts(pid, true);
   });
 
   createEffect(() => {
@@ -186,6 +200,8 @@ export const ProjectScreen = (): JSX.Element => {
   createEffect(() => {
     const pid = projectId();
     setSelectedUnit(undefined);
+    setSelectedArtifactName(undefined);
+    setArtifactFullscreen(false);
     setJump(undefined);
     setTimers([]);
     void pid;
@@ -193,7 +209,13 @@ export const ProjectScreen = (): JSX.Element => {
 
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && maximized() !== undefined) {
+      if (event.key !== "Escape") return;
+      if (artifactFullscreen()) {
+        event.preventDefault();
+        setArtifactFullscreen(false);
+        return;
+      }
+      if (maximized() !== undefined) {
         event.preventDefault();
         setMaximized(undefined);
       }
@@ -233,9 +255,36 @@ export const ProjectScreen = (): JSX.Element => {
   };
 
   const openSource = (file: string, line: number): void => {
+    setSelectedArtifactName(undefined);
+    setArtifactFullscreen(false);
     jumpToken += 1;
     setJump({ file, line, token: jumpToken });
     if (maximized() === "logs") setMaximized(undefined);
+  };
+
+  const openArtifact = (artifact: ArtifactSummary): void => {
+    setSelectedArtifactName(artifact.name);
+    setArtifactFullscreen(false);
+    if (maximized() === "logs") setMaximized(undefined);
+  };
+
+  const closeArtifact = (): void => {
+    setSelectedArtifactName(undefined);
+    setArtifactFullscreen(false);
+  };
+
+  const popOutArtifact = (artifact: ArtifactSummary): void => {
+    if (bridge !== undefined) {
+      void bridge.windows.openArtifactWindow(projectId(), artifact.name);
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.hash =
+      "/projects/" +
+      encodeURIComponent(projectId()) +
+      "/artifacts/" +
+      encodeURIComponent(artifact.name);
+    window.open(url.toString(), "_blank", "noopener");
   };
 
   const beginResize = (event: PointerEvent): void => {
@@ -495,50 +544,78 @@ export const ProjectScreen = (): JSX.Element => {
           </Show>
 
           <div class="flex min-h-0 flex-1 gap-3">
-            <UnitsPanel
-              units={units()}
-              selected={selectedUnit()}
-              onSelect={setSelectedUnit}
-              onOpenSource={openSource}
-            />
+            <Show when={!artifactFullscreen()}>
+              <UnitsPanel
+                units={units()}
+                selected={selectedUnit()}
+                onSelect={setSelectedUnit}
+                onOpenSource={openSource}
+                artifacts={artifacts()}
+                selectedArtifact={selectedArtifactName()}
+                onOpenArtifact={openArtifact}
+              />
+            </Show>
 
             <div ref={splitArea} class="flex min-h-0 min-w-0 flex-1 flex-col">
-              <div class="min-h-0" style={sourceStyle()}>
-                <SourcePanel
-                  projectId={projectId()}
-                  jump={jump()}
-                  collapsed={maximized() === "logs"}
-                  maximized={maximized() === "source"}
-                  onToggleMaximize={() => toggleMaximize("source")}
-                />
-              </div>
-              <Show when={maximized() === undefined}>
-                <div
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize source and logs"
-                  data-testid="project-splitter"
-                  class="group flex h-1.5 shrink-0 cursor-row-resize touch-none items-center justify-center"
-                  onPointerDown={beginResize}
-                  onDblClick={resetSplit}
-                >
-                  <span class="h-px w-10 rounded bg-[var(--v2-border-border-base)] transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
-                </div>
+              <Show
+                when={selectedArtifact()}
+                fallback={
+                  <>
+                    <div class="min-h-0" style={sourceStyle()}>
+                      <SourcePanel
+                        projectId={projectId()}
+                        jump={jump()}
+                        collapsed={maximized() === "logs"}
+                        maximized={maximized() === "source"}
+                        onToggleMaximize={() => toggleMaximize("source")}
+                      />
+                    </div>
+                    <Show when={maximized() === undefined}>
+                      <div
+                        role="separator"
+                        aria-orientation="horizontal"
+                        aria-label="Resize source and logs"
+                        data-testid="project-splitter"
+                        class="group flex h-1.5 shrink-0 cursor-row-resize touch-none items-center justify-center"
+                        onPointerDown={beginResize}
+                        onDblClick={resetSplit}
+                      >
+                        <span class="h-px w-10 rounded bg-[var(--v2-border-border-base)] transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
+                      </div>
+                    </Show>
+                    <div class="min-h-0" style={logsStyle()}>
+                      <LogsPanel
+                        projectId={projectId()}
+                        units={units()}
+                        selected={selectedUnit()}
+                        onSelect={setSelectedUnit}
+                        collapsed={maximized() === "source"}
+                        maximized={maximized() === "logs"}
+                        onToggleMaximize={() => toggleMaximize("logs")}
+                      />
+                    </div>
+                  </>
+                }
+              >
+                {(artifact) => (
+                  <div class="min-h-0 flex-1">
+                    <ArtifactPanel
+                      projectId={projectId()}
+                      artifact={artifact()}
+                      fullscreen={artifactFullscreen()}
+                      onToggleFullscreen={() =>
+                        setArtifactFullscreen((current) => !current)
+                      }
+                      onClose={closeArtifact}
+                      onPopOut={() => popOutArtifact(artifact())}
+                      onOpenSource={openSource}
+                    />
+                  </div>
+                )}
               </Show>
-              <div class="min-h-0" style={logsStyle()}>
-                <LogsPanel
-                  projectId={projectId()}
-                  units={units()}
-                  selected={selectedUnit()}
-                  onSelect={setSelectedUnit}
-                  collapsed={maximized() === "source"}
-                  maximized={maximized() === "logs"}
-                  onToggleMaximize={() => toggleMaximize("logs")}
-                />
-              </div>
             </div>
 
-            <Show when={!sidebarCollapsed() && detail()}>
+            <Show when={!artifactFullscreen() && !sidebarCollapsed() && detail()}>
               {(current) => (
                 <ProjectSidebar
                   detail={current()}

@@ -10,7 +10,7 @@
 // not yet a workspace dependency of @ballast/desktop). No service token is ever
 // part of this contract.
 
-export const BRIDGE_VERSION = 2 as const;
+export const BRIDGE_VERSION = 3 as const;
 
 export const BRIDGE_CHANNELS = {
   serviceStatus: "ballast:service:status",
@@ -29,6 +29,7 @@ export const BRIDGE_CHANNELS = {
   appPickDirectory: "ballast:app:pick-directory",
   windowsContext: "ballast:windows:context",
   windowsOpenProject: "ballast:windows:open-project",
+  windowsOpenArtifact: "ballast:windows:open-artifact",
   windowsOpenHome: "ballast:windows:open-home",
   projectsSetMenu: "ballast:projects:set-menu",
   serviceStatusEvent: "ballast:event:service-status",
@@ -125,7 +126,8 @@ export type HomeRoute = "projects" | "connections" | "settings";
 /** What the current Electron window is showing. */
 export type WindowContext =
   | { readonly kind: "home"; readonly route: HomeRoute }
-  | { readonly kind: "project"; readonly projectId: string };
+  | { readonly kind: "project"; readonly projectId: string }
+  | { readonly kind: "artifact"; readonly projectId: string; readonly artifact: string };
 
 export interface OpenProjectWindowOptions {
   /** Open a separate window; without it a home window is reused. */
@@ -170,6 +172,8 @@ export interface BallastBridge {
       projectId: string,
       options?: OpenProjectWindowOptions,
     ): Promise<void>;
+    /** Focus an artifact window, or open it in a new one. */
+    openArtifactWindow(projectId: string, artifact: string): Promise<void>;
     /** Focus a home window at a service-wide route, opening it when needed. */
     openHome(route?: HomeRoute): Promise<void>;
   };

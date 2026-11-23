@@ -28,7 +28,7 @@ export async function spawnServiceProcess(config: DesktopConfig, stage: Stage): 
   if (config.servicePort !== undefined) env["BALLAST_SERVICE_PORT"] = String(config.servicePort);
 
   try {
-    const child = spawn(config.execPath, [stage.entry, "serve"], {
+    const child = spawn(config.execPath, ["--no-warnings=ExperimentalWarning", stage.entry, "serve"], {
       cwd: stage.directory,
       env,
       detached: true,

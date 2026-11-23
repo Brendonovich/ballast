@@ -14,7 +14,8 @@ import type { Logger } from "./logger.ts";
 import {
   writeWindowSession,
   writeWindowSessionSync,
-  type StoredProjectWindow,
+  type RestoredWindows,
+  type StoredBounds,
 } from "./window-state.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -34,13 +35,14 @@ export interface WindowControllerOptions {
   readonly getStatus: () => Promise<ServiceStatus>;
   readonly getConnection: () => Promise<WindowConnection | null>;
   readonly showLogs: () => Promise<void>;
-  readonly restoredProjects: ReadonlyArray<StoredProjectWindow>;
+  readonly restoredWindows: RestoredWindows;
 }
 
 interface WindowRecord {
   readonly window: BrowserWindow;
-  kind: "home" | "project";
+  kind: "home" | "project" | "artifact";
   projectId?: string;
+  artifact?: string;
   route: HomeRoute;
   mode: WindowMode;
   loadedOrigin: string | null;
@@ -61,6 +63,8 @@ export interface WindowController {
     options?: { readonly newWindow?: boolean },
     sender?: WebContents,
   ): Promise<void>;
+  /** Focus an existing artifact window, otherwise open a new one. */
+  openArtifactWindow(projectId: string, artifact: string): Promise<void>;
   /** Focus an existing project window, otherwise open a new one. */
   focusOrOpen(projectId: string): Promise<void>;
   openHome(route?: HomeRoute): Promise<void>;
@@ -86,6 +90,18 @@ const isHttpUrl = (raw: string): boolean => {
 };
 
 const routeHash = (record: WindowRecord): string => {
+  if (
+    record.kind === "artifact" &&
+    record.projectId !== undefined &&
+    record.artifact !== undefined
+  ) {
+    return (
+      "#/projects/" +
+      encodeURIComponent(record.projectId) +
+      "/artifacts/" +
+      encodeURIComponent(record.artifact)
+    );
+  }
   if (record.kind === "project" && record.projectId !== undefined) {
     return "#/projects/" + encodeURIComponent(record.projectId);
   }
@@ -126,29 +142,39 @@ export function createWindowController(options: WindowControllerOptions): Window
     record.window.focus();
   };
 
-  const projectWindows = (): ReadonlyArray<StoredProjectWindow> =>
-    records.flatMap((record) => {
-      if (record.kind !== "project" || record.projectId === undefined) return [];
+  const sessionOf = (): RestoredWindows => {
+    const projects: Array<{ readonly projectId: string; readonly bounds: StoredBounds }> = [];
+    const artifacts: Array<{
+      readonly projectId: string;
+      readonly artifact: string;
+      readonly bounds: StoredBounds;
+    }> = [];
+    for (const record of records) {
+      if (record.projectId === undefined) continue;
       const bounds = record.window.getBounds();
-      return [
-        {
-          projectId: record.projectId,
-          bounds: {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width,
-            height: bounds.height,
-          },
+      const value = {
+        projectId: record.projectId,
+        bounds: {
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
         },
-      ];
-    });
+      };
+      if (record.kind === "project") projects.push(value);
+      if (record.kind === "artifact" && record.artifact !== undefined) {
+        artifacts.push({ ...value, artifact: record.artifact });
+      }
+    }
+    return { projects, artifacts };
+  };
 
   const saveNow = (): void => {
     if (saveTimer !== undefined) {
       clearTimeout(saveTimer);
       saveTimer = undefined;
     }
-    void writeWindowSession(config.userDataDir, projectWindows()).catch((cause: unknown) => {
+    void writeWindowSession(config.userDataDir, sessionOf()).catch((cause: unknown) => {
       logger.warn("could not save window session", {
         message: cause instanceof Error ? cause.message : String(cause),
       });
@@ -327,6 +353,14 @@ export function createWindowController(options: WindowControllerOptions): Window
     created.on("closed", () => {
       const index = records.indexOf(record);
       if (index >= 0) records.splice(index, 1);
+      if (record.kind === "project" && record.projectId !== undefined) {
+        for (const artifactWindow of records.filter(
+          (candidate) =>
+            candidate.kind === "artifact" && candidate.projectId === record.projectId,
+        )) {
+          artifactWindow.window.close();
+        }
+      }
       if (!quitting) scheduleSave();
     });
   };
@@ -334,7 +368,8 @@ export function createWindowController(options: WindowControllerOptions): Window
   const createRecord = (
     initial: Pick<WindowRecord, "kind" | "route"> & {
       readonly projectId?: string;
-      readonly bounds?: StoredProjectWindow["bounds"];
+      readonly artifact?: string;
+      readonly bounds?: StoredBounds;
     },
   ): WindowRecord => {
     const bounds = initial.bounds;
@@ -362,6 +397,7 @@ export function createWindowController(options: WindowControllerOptions): Window
       window: created,
       kind: initial.kind,
       ...(initial.projectId === undefined ? {} : { projectId: initial.projectId }),
+      ...(initial.artifact === undefined ? {} : { artifact: initial.artifact }),
       route: initial.route,
       mode: "none",
       loadedOrigin: null,
@@ -376,7 +412,7 @@ export function createWindowController(options: WindowControllerOptions): Window
     });
     created.setTitle(titleFor(record));
     void syncRecordWithCurrentStatus(record);
-    if (initial.kind === "project") scheduleSave();
+    if (initial.kind !== "home") scheduleSave();
     return record;
   };
 
@@ -404,6 +440,37 @@ export function createWindowController(options: WindowControllerOptions): Window
         record.projectId === projectId &&
         !record.window.isDestroyed(),
     );
+
+  const findArtifactWindow = (
+    projectId: string,
+    artifact: string,
+  ): WindowRecord | undefined =>
+    records.find(
+      (record) =>
+        record.kind === "artifact" &&
+        record.projectId === projectId &&
+        record.artifact === artifact &&
+        !record.window.isDestroyed(),
+    );
+
+  const openArtifactWindow = async (
+    projectId: string,
+    artifact: string,
+  ): Promise<void> => {
+    const existing = findArtifactWindow(projectId, artifact);
+    if (existing !== undefined) {
+      focus(existing);
+      return;
+    }
+    const record = createRecord({
+      kind: "artifact",
+      projectId,
+      artifact,
+      route: "projects",
+    });
+    focus(record);
+    await syncRecordWithCurrentStatus(record);
+  };
 
   const show = (): void => {
     const record = focusedRecord();
@@ -464,13 +531,23 @@ export function createWindowController(options: WindowControllerOptions): Window
   return {
     show,
     showInitial: () => {
-      if (options.restoredProjects.length > 0) {
-        for (const restored of options.restoredProjects) {
+      const restored = options.restoredWindows;
+      if (restored.projects.length > 0 || restored.artifacts.length > 0) {
+        for (const project of restored.projects) {
           createRecord({
             kind: "project",
-            projectId: restored.projectId,
+            projectId: project.projectId,
             route: "projects",
-            ...(restored.bounds === undefined ? {} : { bounds: restored.bounds }),
+            ...(project.bounds === undefined ? {} : { bounds: project.bounds }),
+          });
+        }
+        for (const artifact of restored.artifacts) {
+          createRecord({
+            kind: "artifact",
+            projectId: artifact.projectId,
+            artifact: artifact.artifact,
+            route: "projects",
+            ...(artifact.bounds === undefined ? {} : { bounds: artifact.bounds }),
           });
         }
         const last = records.at(-1);
@@ -485,11 +562,23 @@ export function createWindowController(options: WindowControllerOptions): Window
       void syncRecordWithCurrentStatus(record);
     },
     openProjectWindow,
+    openArtifactWindow,
     focusOrOpen,
     openHome,
     contextFor: (sender) => {
       const record =
         sender === undefined ? focusedRecord() : (recordFor(sender) ?? focusedRecord());
+      if (
+        record?.kind === "artifact" &&
+        record.projectId !== undefined &&
+        record.artifact !== undefined
+      ) {
+        return {
+          kind: "artifact",
+          projectId: record.projectId,
+          artifact: record.artifact,
+        };
+      }
       if (record?.kind === "project" && record.projectId !== undefined) {
         return { kind: "project", projectId: record.projectId };
       }
@@ -538,7 +627,7 @@ export function createWindowController(options: WindowControllerOptions): Window
         saveTimer = undefined;
       }
       try {
-        writeWindowSessionSync(config.userDataDir, projectWindows());
+        writeWindowSessionSync(config.userDataDir, sessionOf());
       } catch (cause) {
         logger.warn("could not save window session", {
           message: cause instanceof Error ? cause.message : String(cause),

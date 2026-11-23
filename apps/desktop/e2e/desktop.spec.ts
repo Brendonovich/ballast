@@ -159,7 +159,55 @@ const projectPage = async (
 ): Promise<Page> =>
   waitFor("project window " + projectId, async () => {
     const encoded = encodeURIComponent(projectId);
-    return ui.windows().find((candidate) => candidate.url().includes("/projects/" + encoded));
+    return ui
+      .windows()
+      .find(
+        (candidate) =>
+          candidate.url().includes("/projects/" + encoded) &&
+          !candidate.url().includes("/artifacts/"),
+      );
+  });
+
+const bridgeOpenArtifact = async (
+  page: Page,
+  projectId: string,
+  artifact: string,
+): Promise<void> => {
+  await page.evaluate(
+    async ({ id, name }) => {
+      const bridge: unknown = Reflect.get(globalThis, "ballast");
+      if (typeof bridge !== "object" || bridge === null) {
+        throw new Error("window.ballast is missing");
+      }
+      const windows: unknown = Reflect.get(bridge, "windows");
+      if (typeof windows !== "object" || windows === null) {
+        throw new Error("window.ballast.windows is missing");
+      }
+      const open = Reflect.get(windows, "openArtifactWindow");
+      if (typeof open !== "function") {
+        throw new Error("openArtifactWindow is missing");
+      }
+      await open.call(windows, id, name);
+    },
+    { id: projectId, name: artifact },
+  );
+};
+
+const artifactPage = async (
+  ui: ElectronApplication,
+  projectId: string,
+  artifact: string,
+): Promise<Page> =>
+  waitFor("artifact window " + artifact, async () => {
+    const encodedProject = encodeURIComponent(projectId);
+    const encodedArtifact = encodeURIComponent(artifact);
+    return ui
+      .windows()
+      .find((candidate) =>
+        candidate
+          .url()
+          .includes("/projects/" + encodedProject + "/artifacts/" + encodedArtifact),
+      );
   });
 
 const alive = (pid: number): boolean => {
@@ -189,6 +237,10 @@ export const title = "E2E Tick";
 export default Effect.gen(function* () {
   const prefix = yield* Ballast.Param.string("prefix", { title: "Prefix", default: ">" });
   const fake = yield* Fake.Connection("main");
+  yield* Ballast.Artifact("dashboard", {
+    title: "Stream dashboard",
+    entry: "./artifacts/dashboard/main.ts",
+  });
   yield* Fake.Tick.subscribe("tick", fake, (tick) =>
     Effect.gen(function* () {
       const { text } = yield* fake.echo({ text: \`\${yield* prefix} tick \${tick.n}\` });
@@ -271,6 +323,12 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
         path.join(agentRoot, "node_modules", "effect"),
         path.join(directory, "node_modules", "effect"),
         "dir",
+      );
+      await mkdir(path.join(directory, "artifacts", "dashboard"), { recursive: true });
+      await writeFile(
+        path.join(directory, "artifacts", "dashboard", "main.ts"),
+        'export default (root: HTMLElement) => {\n  root.textContent = "E2E artifact";\n};\n',
+        "utf8",
       );
       await writeFile(path.join(directory, "ballast.ts"), script, "utf8");
     }
@@ -428,6 +486,23 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       fullPage: true,
     });
 
+    // Pop an artifact into its own window; reopening focuses it.
+    await bridgeOpenArtifact(page, projectId, "dashboard");
+    const artifactWindow = await artifactPage(ui, projectId, "dashboard");
+    await expect.poll(() => artifactWindow.title()).toBe(
+      "Stream dashboard — E2E Tick — Ballast",
+    );
+    await expect.poll(() => ui.windows().length).toBe(3);
+    await expect(
+      artifactWindow.frameLocator("iframe").getByText("E2E artifact"),
+    ).toBeVisible({ timeout: 20_000 });
+    await bridgeOpenArtifact(page, projectId, "dashboard");
+    const focusedArtifact = await ui.evaluate(
+      ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
+    );
+    expect(focusedArtifact).toContain("/artifacts/dashboard");
+    await expect.poll(() => ui.windows().length).toBe(3);
+
     const firstBounds = { x: 20, y: 40, width: 900, height: 620 };
     const secondBounds = { x: 700, y: 40, width: 900, height: 620 };
     await ui.evaluate(
@@ -465,7 +540,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     expect(afterQuitHealth.ok).toBe(true);
     expect(afterQuitHealth.pid).toBe(servicePid);
 
-    // 5. Relaunch restores the two project windows and their bounds.
+    // 5. Relaunch restores both project windows, the artifact window and bounds.
     ui = await electron.launch({
       executablePath: electronPath,
       args: ["."],
@@ -474,23 +549,31 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       timeout: 60_000,
     });
     await waitFor("restored windows", async () =>
-      ui !== undefined && ui.windows().length >= 2 ? true : undefined,
+      ui !== undefined && ui.windows().length >= 3 ? true : undefined,
     );
     const restoredFirst = await projectPage(ui, projectId);
     const restoredSecond = await projectPage(ui, secondProjectId);
+    const restoredArtifact = await artifactPage(ui, projectId, "dashboard");
     await expect.poll(() => restoredFirst.title()).toBe("E2E Tick — Ballast");
     await expect.poll(() => restoredSecond.title()).toBe("E2E Second — Ballast");
+    await expect.poll(() => restoredArtifact.title()).toBe(
+      "Stream dashboard — E2E Tick — Ballast",
+    );
     const restoredBounds = await ui.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().map((window) => ({
         url: window.webContents.getURL(),
         bounds: window.getBounds(),
       })),
     );
-    const firstRestored = restoredBounds.find((entry) =>
-      entry.url.includes("/projects/" + encodeURIComponent(projectId)),
+    const firstRestored = restoredBounds.find(
+      (entry) =>
+        entry.url.includes("/projects/" + encodeURIComponent(projectId)) &&
+        !entry.url.includes("/artifacts/"),
     );
-    const secondRestored = restoredBounds.find((entry) =>
-      entry.url.includes("/projects/" + encodeURIComponent(secondProjectId)),
+    const secondRestored = restoredBounds.find(
+      (entry) =>
+        entry.url.includes("/projects/" + encodeURIComponent(secondProjectId)) &&
+        !entry.url.includes("/artifacts/"),
     );
     expect(firstRestored?.bounds).toEqual(firstBounds);
     expect(secondRestored?.bounds).toEqual(secondBounds);

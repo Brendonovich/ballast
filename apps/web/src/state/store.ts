@@ -1,7 +1,12 @@
 import type {
+  ArtifactSummary,
+  ArtifactUrlConfirmation,
+  ArtifactUrlSummary,
+  ArtifactView,
   CloudPairingSession,
   CloudStatus,
   CloudTwitchAccount,
+  CreateArtifactUrlResult,
   ConnectionAuth,
   ConnectionIntegration,
   ConnectionMode,
@@ -56,6 +61,36 @@ export interface AgentStore {
   readonly projectFileRevision: (projectId: string) => number;
   readonly integrations: Accessor<ReadonlyArray<ConnectionIntegration>>;
   readonly loadIntegrations: () => Promise<void>;
+  readonly artifacts: (projectId: string) => ReadonlyArray<ArtifactSummary>;
+  readonly artifactRevision: (projectId: string, artifact: string) => number;
+  readonly artifactListRevision: (projectId: string) => number;
+  readonly artifactUrlRevision: Accessor<number>;
+  readonly fetchArtifacts: (
+    projectId: string,
+    force?: boolean,
+  ) => Promise<ReadonlyArray<ArtifactSummary> | undefined>;
+  readonly getArtifactView: (
+    projectId: string,
+    artifact: string,
+  ) => Promise<ArtifactView | undefined>;
+  readonly createArtifactUrl: (request: {
+    readonly projectId: string;
+    readonly artifact: string;
+    readonly scope: "read" | "action";
+    readonly transparent: boolean;
+  }) => Promise<CreateArtifactUrlResult | undefined>;
+  readonly listArtifactUrls: (
+    projectId: string,
+    artifact: string,
+  ) => Promise<ReadonlyArray<ArtifactUrlSummary> | undefined>;
+  readonly revokeArtifactUrl: (id: string) => Promise<boolean>;
+  readonly listArtifactUrlConfirmations: (
+    projectId: string,
+  ) => Promise<ReadonlyArray<ArtifactUrlConfirmation> | undefined>;
+  readonly approveArtifactUrl: (
+    confirmationId: string,
+  ) => Promise<{ readonly url: ArtifactUrlSummary; readonly copyUrl: string } | undefined>;
+  readonly rejectArtifactUrl: (confirmationId: string) => Promise<boolean>;
   readonly cloudAccounts: Accessor<ReadonlyArray<CloudTwitchAccount>>;
   readonly loadCloudAccounts: () => Promise<void>;
   readonly connections: () => ReadonlyArray<ConnectionSummary>;
@@ -186,6 +221,16 @@ export const createAgentStore = (
   const [snapshot, setSnapshot] = createSignal<ServiceSnapshot>();
   const [integrations, setIntegrations] = createSignal<ReadonlyArray<ConnectionIntegration>>([]);
   const [cloudAccounts, setCloudAccounts] = createSignal<ReadonlyArray<CloudTwitchAccount>>([]);
+  const [artifactsByProject, setArtifactsByProject] = createSignal<
+    Readonly<Record<string, ReadonlyArray<ArtifactSummary>>>
+  >({});
+  const [artifactRevisions, setArtifactRevisions] = createSignal<
+    Readonly<Record<string, number>>
+  >({});
+  const [artifactListRevisions, setArtifactListRevisions] = createSignal<
+    Readonly<Record<string, number>>
+  >({});
+  const [artifactUrlRevision, setArtifactUrlRevision] = createSignal(0);
   const [watchStatus, setWatchStatus] = createSignal<StreamStatus>("connecting");
   const [logStatus, setLogStatus] = createSignal<StreamStatus>("connecting");
   const [lastActionError, setLastActionError] = createSignal<string>();
@@ -261,6 +306,12 @@ export const createAgentStore = (
   const projectConsent = (projectId: string): ProjectConsentRequest | undefined =>
     projectConsents()[projectId];
   const projectRevision = (projectId: string): number => projectRevisions()[projectId] ?? 0;
+  const artifacts = (projectId: string): ReadonlyArray<ArtifactSummary> =>
+    artifactsByProject()[projectId] ?? [];
+  const artifactRevision = (projectId: string, artifact: string): number =>
+    artifactRevisions()[`${projectId}\u0000${artifact}`] ?? 0;
+  const artifactListRevision = (projectId: string): number =>
+    artifactListRevisions()[projectId] ?? 0;
   const projectFileRevision = (projectId: string): number =>
     projectFileRevisions()[projectId] ?? 0;
   const connections = (): ReadonlyArray<ConnectionSummary> =>
@@ -338,6 +389,11 @@ export const createAgentStore = (
       };
     });
     setProjectDetails((current) => {
+      const next = { ...current };
+      delete next[projectId];
+      return next;
+    });
+    setArtifactsByProject((current) => {
       const next = { ...current };
       delete next[projectId];
       return next;
@@ -426,6 +482,24 @@ export const createAgentStore = (
       }
       case "project-removed": {
         removeProjectState(event.projectId);
+        return;
+      }
+      case "artifact-changed": {
+        const key = `${event.projectId}\u0000${event.artifact}`;
+        setArtifactRevisions((current) => ({
+          ...current,
+          [key]: (current[key] ?? 0) + 1,
+        }));
+        setArtifactListRevisions((current) => ({
+          ...current,
+          [event.projectId]: (current[event.projectId] ?? 0) + 1,
+        }));
+        return;
+      }
+      case "artifact-url":
+      case "artifact-url-confirmation":
+      case "artifact-url-confirmation-resolved": {
+        setArtifactUrlRevision((current) => current + 1);
         return;
       }
       case "connection": {
@@ -533,6 +607,96 @@ export const createAgentStore = (
     stopLogs();
     for (const interrupt of handles.splice(0)) interrupt();
     await runtime.dispose();
+  };
+
+  const fetchArtifacts = async (
+    projectId: string,
+    force = false,
+  ): Promise<ReadonlyArray<ArtifactSummary> | undefined> => {
+    if (!force && artifactsByProject()[projectId] !== undefined) {
+      return artifactsByProject()[projectId];
+    }
+    const outcome = await execute(
+      `artifacts:${projectId}:list`,
+      runtime.client.ListArtifacts({ projectId }),
+    );
+    if (!outcome.ok) return undefined;
+    setArtifactsByProject((current) => ({
+      ...current,
+      [projectId]: outcome.value.artifacts,
+    }));
+    return outcome.value.artifacts;
+  };
+
+  const getArtifactView = async (
+    projectId: string,
+    artifact: string,
+  ): Promise<ArtifactView | undefined> => {
+    const outcome = await execute(
+      `artifacts:${projectId}:${artifact}:view`,
+      runtime.client.GetArtifactView({ projectId, artifact }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const createArtifactUrl = async (request: {
+    readonly projectId: string;
+    readonly artifact: string;
+    readonly scope: "read" | "action";
+    readonly transparent: boolean;
+  }): Promise<CreateArtifactUrlResult | undefined> => {
+    const outcome = await execute(
+      `artifacts:${request.projectId}:${request.artifact}:url:create`,
+      runtime.client.CreateArtifactUrl(request),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const listArtifactUrls = async (
+    projectId: string,
+    artifact: string,
+  ): Promise<ReadonlyArray<ArtifactUrlSummary> | undefined> => {
+    const outcome = await execute(
+      `artifacts:${projectId}:${artifact}:urls`,
+      runtime.client.ListArtifactUrls({ projectId, artifact }),
+    );
+    return outcome.ok ? outcome.value.urls : undefined;
+  };
+
+  const revokeArtifactUrl = async (id: string): Promise<boolean> => {
+    const outcome = await execute(
+      `artifacts:url:${id}:revoke`,
+      runtime.client.RevokeArtifactUrl({ id }),
+    );
+    return outcome.ok;
+  };
+
+  const listArtifactUrlConfirmations = async (
+    projectId: string,
+  ): Promise<ReadonlyArray<ArtifactUrlConfirmation> | undefined> => {
+    const outcome = await execute(
+      `artifacts:${projectId}:url:confirmations`,
+      runtime.client.ListArtifactUrlConfirmations({ projectId }),
+    );
+    return outcome.ok ? outcome.value.confirmations : undefined;
+  };
+
+  const approveArtifactUrl = async (
+    confirmationId: string,
+  ): Promise<{ readonly url: ArtifactUrlSummary; readonly copyUrl: string } | undefined> => {
+    const outcome = await execute(
+      `artifacts:url:${confirmationId}:approve`,
+      runtime.client.ApproveArtifactUrl({ confirmationId }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const rejectArtifactUrl = async (confirmationId: string): Promise<boolean> => {
+    const outcome = await execute(
+      `artifacts:url:${confirmationId}:reject`,
+      runtime.client.RejectArtifactUrl({ confirmationId }),
+    );
+    return outcome.ok;
   };
 
   const loadCloudAccounts = async (): Promise<void> => {
@@ -982,6 +1146,18 @@ export const createAgentStore = (
     projectFileRevision,
     integrations,
     loadIntegrations,
+    artifacts,
+    artifactRevision,
+    artifactListRevision,
+    artifactUrlRevision,
+    fetchArtifacts,
+    getArtifactView,
+    createArtifactUrl,
+    listArtifactUrls,
+    revokeArtifactUrl,
+    listArtifactUrlConfirmations,
+    approveArtifactUrl,
+    rejectArtifactUrl,
     cloudAccounts,
     loadCloudAccounts,
     connections,

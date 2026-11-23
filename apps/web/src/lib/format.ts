@@ -1,4 +1,5 @@
 import type {
+  ArtifactStatus,
   ConnectionStatus,
   ConnectionSummary,
   ParamValue,
@@ -178,6 +179,39 @@ export const unitStatusTone = (status: UnitStatus): Tone => {
     case "error":
       return "danger";
   }
+};
+
+export const artifactStatusLabel = (status: ArtifactStatus): string => {
+  switch (status) {
+    case "ready":
+      return "Ready";
+    case "building":
+      return "Building";
+    case "error":
+      return "Error";
+  }
+};
+
+export const artifactStatusTone = (status: ArtifactStatus): Tone => {
+  switch (status) {
+    case "ready":
+      return "success";
+    case "building":
+      return "info";
+    case "error":
+      return "danger";
+  }
+};
+
+export const artifactErrorSource = (
+  error: string | undefined,
+): { readonly file: string; readonly line: number } | undefined => {
+  if (error === undefined) return undefined;
+  const match = /^(.+?):(\d+):(\d+)/.exec(error);
+  if (match === null || match[1] === undefined || match[2] === undefined) {
+    return undefined;
+  }
+  return { file: match[1], line: Number(match[2]) };
 };
 
 export const connectionStatusLabel = (status: ConnectionStatus): string => {

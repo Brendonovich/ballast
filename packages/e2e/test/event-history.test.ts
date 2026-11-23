@@ -134,6 +134,46 @@ describe("subscription event history e2e", () => {
         expect(entries.length).toBeLessThanOrEqual(3);
         await expect(stat(join(eventsPath, "quiet.jsonl"))).rejects.toThrow();
 
+        const listed = await withAgentClient(service.registration, (client) =>
+          client.ListEventHistorySubscriptions({ projectId }),
+        );
+        expect(listed.subscriptions.find((entry) => entry.name === "ticks")?.history).toBe(
+          true,
+        );
+        expect(listed.subscriptions.find((entry) => entry.name === "quiet")?.history).toBe(
+          false,
+        );
+        const onlyTicks = await withAgentClient(service.registration, (client) =>
+          client.ListEventHistorySubscriptions({ projectId, subscription: "ticks" }),
+        );
+        expect(onlyTicks.subscriptions.map((entry) => entry.name)).toEqual(["ticks"]);
+
+        const firstPage = await withAgentClient(service.registration, (client) =>
+          client.QueryEventHistory({
+            projectId,
+            subscription: "ticks",
+            limit: 2,
+          }),
+        );
+        expect(firstPage.entries).toHaveLength(2);
+        expect(typeof firstPage.entries[0]?.fingerprint).toBe("string");
+        const nextCursor = firstPage.nextCursor;
+        if (nextCursor === undefined) throw new Error("nextCursor missing");
+        const older = await withAgentClient(service.registration, (client) =>
+          client.QueryEventHistory({
+            projectId,
+            subscription: "ticks",
+            limit: 2,
+            before: nextCursor,
+          }),
+        );
+        expect(older.entries.length).toBeGreaterThan(0);
+        expect(
+          older.entries.every(
+            (entry) => !firstPage.entries.some((page) => page.cursor === entry.cursor),
+          ),
+        ).toBe(true);
+
         await withAgentClient(service.registration, (client) =>
           client.RestartProject({ projectId }),
         );
@@ -162,6 +202,16 @@ describe("subscription event history e2e", () => {
         );
         expect(replayed[0]?.unitName).toBe("ticks");
         expect(replayed[0]?.direction).toBe("inbound");
+
+        const persisted = await withAgentClient(service.registration, (client) =>
+          client.QueryEventHistory({
+            projectId,
+            subscription: "ticks",
+            limit: 10,
+          }),
+        );
+        expect(persisted.entries.length).toBeGreaterThan(0);
+        expect(persisted.entries[0]?.event).toMatchObject({ n: expect.any(Number) });
       } finally {
         await service.process.stop();
         await rm(root, { recursive: true, force: true });

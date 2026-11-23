@@ -166,7 +166,7 @@ async function start(): Promise<void> {
     getStatus: () => launcher.status(),
     getConnection: () => launcher.getConnection(),
     showLogs,
-    restoredProjects: restoredWindows,
+    restoredWindows,
   });
   windows = windowsController;
 

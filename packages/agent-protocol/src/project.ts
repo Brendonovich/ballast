@@ -214,6 +214,17 @@ export const ProjectSummary = Schema.Struct({
 });
 export type ProjectSummary = typeof ProjectSummary.Type;
 
+/**
+ * A `.ballast/db/<name>.sqlite` file whose declaration was removed from the
+ * manifest. The file is kept on disk (never deleted automatically); only the
+ * main `.sqlite` file is listed, not its `-wal`/`-shm` sidecars.
+ */
+export const OrphanedDatabase = Schema.Struct({
+  name: Schema.String,
+  sizeBytes: Schema.Number,
+});
+export type OrphanedDatabase = typeof OrphanedDatabase.Type;
+
 export const ProjectDetail = Schema.Struct({
   summary: ProjectSummary,
   manifest: ProjectManifest,
@@ -223,6 +234,8 @@ export const ProjectDetail = Schema.Struct({
   pendingConsent: Schema.optionalKey(ProjectConsentRequest),
   lastErrorSource: Schema.optionalKey(SourceLocation),
   appliedManifest: Schema.optionalKey(ProjectManifest),
+  /** Database files under `.ballast/db` with no current declaration. */
+  orphanedDatabases: Schema.optionalKey(Schema.Array(OrphanedDatabase)),
 });
 export type ProjectDetail = typeof ProjectDetail.Type;
 

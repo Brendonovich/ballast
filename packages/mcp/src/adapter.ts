@@ -71,6 +71,8 @@ export interface ProjectAdapter {
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly health: () => Effect.Effect<HealthStatus, ToolError>;
+  readonly queryEventHistory: AgentGateway["queryEventHistory"];
+  readonly listEventHistorySubscriptions: AgentGateway["listEventHistorySubscriptions"];
   readonly logs: AgentGateway["logs"];
   readonly events: AgentGateway["events"];
 }
@@ -237,6 +239,8 @@ export const makeProjectAdapter = (gateway: AgentGateway): ProjectAdapter => {
       gateway.restartProject(projectId).pipe(Effect.map(normalizeDetail)),
     listConnections: gateway.listConnections,
     health: gateway.health,
+    queryEventHistory: gateway.queryEventHistory,
+    listEventHistorySubscriptions: gateway.listEventHistorySubscriptions,
     logs: gateway.logs,
     events: gateway.events,
   };

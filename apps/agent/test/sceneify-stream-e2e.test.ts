@@ -126,8 +126,12 @@ describe("examples/sceneify-stream", () => {
           yield* emit("channel.follow", { ...user, ...broadcaster, followed_at: new Date().toISOString() });
           yield* waitFor(() => item("Gameplay", "Alert 1") !== undefined, "the follow alert");
           expect(input("Alert 1")?.settings).toMatchObject({ local_file: "C:\\Stream\\alerts\\alert.webm" });
-          expect(item("Gameplay", "Alert Banner")?.enabled).toBe(true);
-          expect(input("Alert Banner")?.settings).toMatchObject({ text: "Viewer followed!" });
+          yield* waitFor(
+            () =>
+              item("Gameplay", "Alert Banner")?.enabled === true &&
+              input("Alert Banner")?.settings["text"] === "Viewer followed!",
+            "the follow banner",
+          );
 
           server.emit("MediaInputPlaybackEnded", { inputName: "Alert 1", inputUuid: "uuid-alert-1" });
           yield* waitFor(() => item("Gameplay", "Alert 1") === undefined, "the alert cleanup");
@@ -145,7 +149,10 @@ describe("examples/sceneify-stream", () => {
           yield* emit("channel.cheer", { is_anonymous: false, ...user, ...broadcaster, message: "Cheer600", bits: 600 });
           yield* waitFor(() => hype()?.enabled === true, "hype mode");
           yield* waitFor(() => item("Just Chatting", "Alert 2") !== undefined, "the cheer alert");
-          expect(input("Alert Banner")?.settings).toMatchObject({ text: "Viewer cheered 600 bits!" });
+          yield* waitFor(
+            () => input("Alert Banner")?.settings["text"] === "Viewer cheered 600 bits!",
+            "the cheer banner",
+          );
           expect(item("Gameplay", "Alert 2")).toBeUndefined();
         }),
       ),

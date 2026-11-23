@@ -142,17 +142,23 @@ export const LogsLive = Layer.effect(
       lastSeq: Effect.map(Ref.get(state), (current) => current.nextSeq - 1),
       stream: (filter) =>
         Stream.unwrap(
-          Effect.map(Ref.get(state), (current) => {
+          Effect.gen(function* () {
+            // Subscribe before reading the buffer so nothing written in between is lost.
+            const subscription = yield* PubSub.subscribe(changes);
+            const current = yield* Ref.get(state);
             const buffered = current.entries.filter(
               (entry) =>
                 entry.seq > (filter.afterSeq ?? 0) && logMatches(filter, entry),
             );
             const replay =
               filter.limit === undefined ? buffered : buffered.slice(-filter.limit);
+            const replayedThrough = current.nextSeq - 1;
             return Stream.concat(
               Stream.fromIterable(replay),
-              Stream.fromPubSub(changes).pipe(
-                Stream.filter((entry) => logMatches(filter, entry)),
+              Stream.fromSubscription(subscription).pipe(
+                Stream.filter(
+                  (entry) => entry.seq > replayedThrough && logMatches(filter, entry),
+                ),
               ),
             );
           }),
@@ -254,17 +260,23 @@ export const EventLogLive = Layer.effect(
       lastSeq: Effect.map(Ref.get(state), (current) => current.nextSeq - 1),
       stream: (filter) =>
         Stream.unwrap(
-          Effect.map(Ref.get(state), (current) => {
+          Effect.gen(function* () {
+            // Subscribe before reading the buffer so nothing written in between is lost.
+            const subscription = yield* PubSub.subscribe(changes);
+            const current = yield* Ref.get(state);
             const buffered = current.entries.filter(
               (entry) =>
                 entry.seq > (filter.afterSeq ?? 0) && eventMatches(filter, entry),
             );
             const replay =
               filter.limit === undefined ? buffered : buffered.slice(-filter.limit);
+            const replayedThrough = current.nextSeq - 1;
             return Stream.concat(
               Stream.fromIterable(replay),
-              Stream.fromPubSub(changes).pipe(
-                Stream.filter((entry) => eventMatches(filter, entry)),
+              Stream.fromSubscription(subscription).pipe(
+                Stream.filter(
+                  (entry) => entry.seq > replayedThrough && eventMatches(filter, entry),
+                ),
               ),
             );
           }),

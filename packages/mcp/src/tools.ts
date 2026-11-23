@@ -28,8 +28,6 @@ import { formatCatalog, selectCatalog } from "./catalog.ts";
 import type { CatalogFilter } from "./catalog.ts";
 import { formatUnknown, ToolError, toolError } from "./errors.ts";
 import { GUIDE } from "./guide.ts";
-import { readEventHistory } from "./history.ts";
-import type { EventHistoryEntry } from "./history.ts";
 
 export interface ToolContext {
   readonly adapter: ProjectAdapter;
@@ -148,14 +146,24 @@ const formatLog = (entry: LogEntry): string => {
   );
 };
 
-const formatHistory = (
-  entry: EventHistoryEntry,
-  topic: { readonly integration: string; readonly topic: string } | undefined,
-): string =>
+interface HistoryView {
+  readonly subscription: string;
+  readonly integration: string;
+  readonly topic: string;
+  readonly cursor: string;
+  readonly receivedAt: number;
+  readonly fingerprint: string;
+  readonly event: unknown;
+}
+
+const formatHistory = (entry: HistoryView): string =>
   timeText(entry.receivedAt) +
   " history " +
   entry.subscription +
-  (topic === undefined ? "" : " " + topic.integration + "/" + topic.topic) +
+  " " +
+  entry.integration +
+  "/" +
+  entry.topic +
   " " +
   jsonText(entry.event, 500) +
   (entry.fingerprint === "" ? "" : " fp=" + entry.fingerprint.slice(0, 12));
@@ -633,7 +641,6 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
     run: (input) =>
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
-        const detail = yield* context.adapter.getProject(project.id);
         const since = yield* Effect.try({
           try: () => parseSince(input.since),
           catch: (cause) => toolError(formatUnknown(cause)),
@@ -649,7 +656,10 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
           ...(input.topic === undefined ? {} : { topic: input.topic }),
         };
         const events = yield* context.adapter.events(request, 500);
+        // Durable history covers inbound events; the ring adds outbound
+        // requests (and remains a fallback when history is disabled).
         const filtered = events
+          .filter((event) => event.direction === "outbound")
           .filter((event) => since === undefined || event.at >= since)
           .filter(
             (event) =>
@@ -665,39 +675,49 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
           .filter((event) => input.topic === undefined || event.topic === input.topic)
           .slice(-limit);
 
-        const topicBySubscription = new Map(
-          detail.manifest.topics.map((topic) => [
-            topic.name,
-            { integration: topic.integration, topic: topic.topic },
-          ]),
-        );
-        const history = yield* readEventHistory(project.root, {
+        const subscriptions = yield* context.adapter.listEventHistorySubscriptions({
+          projectId: project.id,
           ...(input.subscription === undefined ? {} : { subscription: input.subscription }),
-          limit: 500,
-        }).pipe(Effect.catch(() => Effect.succeed([])));
+        });
+        const selectedSubscriptions = subscriptions.subscriptions.filter(
+          (subscription) =>
+            subscription.history &&
+            (filter === undefined ||
+              (filter.unitKind === "topic" && subscription.name === filter.unitName)) &&
+            (input.subscription === undefined || subscription.name === input.subscription) &&
+            (input.integration === undefined ||
+              subscription.integration === input.integration) &&
+            (input.topic === undefined || subscription.topic === input.topic),
+        );
+        const history: Array<HistoryView> = [];
+        for (const subscription of selectedSubscriptions) {
+          const response = yield* context.adapter.queryEventHistory({
+            projectId: project.id,
+            subscription: subscription.name,
+            limit: 500,
+          });
+          for (const entry of response.entries) {
+            history.push({
+              subscription: subscription.name,
+              integration: subscription.integration,
+              topic: subscription.topic,
+              cursor: entry.cursor,
+              receivedAt: entry.receivedAt,
+              fingerprint: entry.fingerprint,
+              event: entry.event,
+            });
+          }
+        }
         const historyFiltered = history
           .filter((entry) => since === undefined || entry.receivedAt >= since)
-          .filter(
-            (entry) => input.subscription === undefined || entry.subscription === input.subscription,
-          )
-          .filter(() => filter === undefined || filter.unitKind === "topic")
-          .filter((entry) => filter === undefined || entry.subscription === filter.unitName)
-          .filter((entry) => {
-            if (input.integration === undefined && input.topic === undefined) return true;
-            const topic = topicBySubscription.get(entry.subscription);
-            if (topic === undefined) return false;
-            return (
-              (input.integration === undefined || topic.integration === input.integration) &&
-              (input.topic === undefined || topic.topic === input.topic)
-            );
-          })
+          .sort((left, right) => right.receivedAt - left.receivedAt)
           .slice(0, limit);
 
         const parts: Array<string> = [];
         if (historyFiltered.length > 0) {
           parts.push("history:");
           for (const entry of historyFiltered) {
-            parts.push("  " + formatHistory(entry, topicBySubscription.get(entry.subscription)));
+            parts.push("  " + formatHistory(entry));
           }
         }
         if (filtered.length > 0) {

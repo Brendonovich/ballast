@@ -148,7 +148,7 @@ const spawnService = (
         const stdout = openSync(path.join(logDir, "service.log"), "a", 0o600);
         const stderr = openSync(path.join(logDir, "service.err.log"), "a", 0o600);
         try {
-          const child = spawn(process.execPath, [...process.execArgv, entry, "serve"], {
+          const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", ...process.execArgv, entry, "serve"], {
             env: {
               ...process.env,
               BALLAST_STATE_DIR: stateDir,

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createAgentRuntime } from "../src/agent/client.ts";
@@ -23,6 +23,10 @@ export const title = "${title}";
 const Cooldown = Schema.Struct({ reason: Schema.String });
 
 export default Effect.gen(function* () {
+  yield* Ballast.Artifact("dashboard", {
+    title: "Stream dashboard",
+    entry: "./artifacts/dashboard/main.ts",
+  });
   const greeting = yield* Ballast.Param.string("greeting", {
     title: "Greeting",
     description: "Shown in both run logs.",
@@ -66,12 +70,30 @@ export default Effect.gen(function* () {
 });
 `;
 
+const artifactEntry = `export default (root: HTMLElement) => {
+  root.style.background = "#0b1020";
+  root.style.color = "#e6edf7";
+  root.style.minHeight = "100vh";
+  root.style.padding = "32px";
+  root.style.fontFamily = "ui-sans-serif, system-ui, sans-serif";
+  const heading = document.createElement("h1");
+  heading.textContent = "E2E artifact";
+  const note = document.createElement("p");
+  note.textContent = "Served by the real artifact gateway.";
+  note.style.color = "#8fa3c4";
+  root.replaceChildren(heading, note);
+};
+`;
+
 const writeBundle = async (
   projectsDir: string,
   projectName: string,
   content: string,
 ): Promise<string> => {
-  const file = join(projectsDir, projectSlug(projectName), "ballast.ts");
+  const directory = join(projectsDir, projectSlug(projectName));
+  await mkdir(join(directory, "artifacts", "dashboard"), { recursive: true });
+  await writeFile(join(directory, "artifacts", "dashboard", "main.ts"), artifactEntry, "utf8");
+  const file = join(directory, "ballast.ts");
   await writeFile(file, content, "utf8");
   return file;
 };
@@ -261,6 +283,50 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       });
       await page.waitForTimeout(150);
       await page.screenshot({ path: `screenshots/real-${theme}-03-project.png` });
+
+      // The real gateway serves a built artifact into the sandboxed iframe.
+      await expect(page.getByTestId("artifact-row")).toHaveAttribute(
+        "data-status",
+        "ready",
+        { timeout: 20_000 },
+      );
+      await page.getByTestId("artifact-row").getByRole("button").first().click();
+      await expect(page.getByTestId("artifact-panel")).toBeVisible();
+      await expect(
+        page.frameLocator("iframe").getByRole("heading", { name: "E2E artifact" }),
+      ).toBeVisible({ timeout: 20_000 });
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: `screenshots/real-${theme}-11-artifact.png` });
+
+      if (theme === "dark") {
+        await page.getByTestId("artifact-menu").click();
+        await page.getByTestId("artifact-urls").click();
+        await page.getByTestId("artifact-url-create").click();
+        await expect(page.getByTestId("artifact-url-copy-value")).toContainText("/a/");
+        const readCopy = await page.getByTestId("artifact-url-copy-value").textContent();
+        expect(readCopy).toContain("http://127.0.0.1:");
+        await page.getByTestId("artifact-url-scope").selectOption("action");
+        await page.getByTestId("artifact-url-create").click();
+        await expect(page.getByTestId("artifact-url-confirmation")).toBeVisible();
+        await page
+          .getByTestId("artifact-url-confirmation")
+          .getByRole("button", { name: "Approve" })
+          .click();
+        await expect(page.getByTestId("artifact-url-copy-value")).toContainText("/a/");
+        await expect(page.getByTestId("artifact-url-copy-value")).not.toHaveText(
+          readCopy ?? "",
+        );
+        await expect(page.getByTestId("artifact-url-row")).toHaveCount(2);
+        await page.getByTestId("artifact-url-row").first().getByTestId("artifact-url-revoke").click();
+        await expect(page.getByTestId("artifact-url-row")).toHaveCount(1);
+        await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
+      }
+
+      await page
+        .getByTestId("artifact-panel")
+        .getByRole("button", { name: "Back to source" })
+        .click();
+      await expect(unit(page, "alpha")).toBeVisible();
 
       await unit(page, "alpha").getByRole("button").first().click();
       await expect(page.getByTestId("log-unit-filter")).toContainText("alpha");

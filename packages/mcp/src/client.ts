@@ -16,9 +16,13 @@ import type {
   ArtifactSummary,
   ListProjectFilesResponse,
   LogEntry,
+  ListEventHistorySubscriptionsRequest,
+  ListEventHistorySubscriptionsResponse,
   ProjectCheckResult,
   ProjectDetail,
   ProjectSummary,
+  QueryEventHistoryRequest,
+  QueryEventHistoryResponse,
   StreamEventsRequest,
   StreamLogsRequest,
 } from "@ballast/agent-protocol";
@@ -99,6 +103,12 @@ export interface AgentGateway {
   ) => Effect.Effect<ReadonlyArray<ArtifactSummary>, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
+  readonly queryEventHistory: (
+    request: QueryEventHistoryRequest,
+  ) => Effect.Effect<QueryEventHistoryResponse, ToolError>;
+  readonly listEventHistorySubscriptions: (
+    request: ListEventHistorySubscriptionsRequest,
+  ) => Effect.Effect<ListEventHistorySubscriptionsResponse, ToolError>;
   readonly logs: (
     request: StreamLogsRequest,
     take: number,
@@ -173,6 +183,14 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
       Effect.map((response) => response.connections),
       Effect.mapError((error) => toolError(formatUnknown(error))),
     ),
+  queryEventHistory: (request) =>
+    withAgentClient(options, (client) => client.QueryEventHistory(request)).pipe(
+      Effect.mapError((error) => toolError(formatUnknown(error))),
+    ),
+  listEventHistorySubscriptions: (request) =>
+    withAgentClient(options, (client) =>
+      client.ListEventHistorySubscriptions(request),
+    ).pipe(Effect.mapError((error) => toolError(formatUnknown(error)))),
   logs: (request, take) =>
     withAgentClient(options, (client) => snapshot(client.StreamLogs(request), take)).pipe(
       Effect.mapError((error) => toolError(formatUnknown(error))),

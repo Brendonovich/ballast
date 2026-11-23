@@ -110,6 +110,8 @@ const adapter = (state: AdapterState): ProjectAdapter => ({
     }),
   checkProject: () => Effect.succeed(state.check),
   listArtifacts: () => Effect.succeed([]),
+  queryEventHistory: () => Effect.succeed({ entries: [] }),
+  listEventHistorySubscriptions: () => Effect.succeed({ subscriptions: [] }),
   restartProject: () => {
     state.restarts += 1;
     return Effect.succeed(

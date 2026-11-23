@@ -94,6 +94,20 @@ export function registerBridgeIpc(options: BridgeIpcOptions): void {
       await options.windows.openProjectWindow(projectId, settings, event.sender);
     },
   );
+  ipcMain.handle(
+    BRIDGE_CHANNELS.windowsOpenArtifact,
+    async (_event, projectId: unknown, artifact: unknown) => {
+      if (
+        typeof projectId !== "string" ||
+        projectId === "" ||
+        typeof artifact !== "string" ||
+        artifact === ""
+      ) {
+        throw new Error("a project id and artifact name are required");
+      }
+      await options.windows.openArtifactWindow(projectId, artifact);
+    },
+  );
   ipcMain.handle(BRIDGE_CHANNELS.windowsOpenHome, async (_event, route: unknown) => {
     await options.windows.openHome(
       route === "connections" || route === "settings" ? route : "projects",

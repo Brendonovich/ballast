@@ -41,7 +41,7 @@ import { diffProject, planProject, resolveProjectEntry } from "@ballast/planner"
 import { bundleScript } from "../bundle.ts";
 import { startRuntimeSession } from "../runtime-session.ts";
 import { ProjectStores } from "./artifact-stores.ts";
-import { startRunDatabases } from "./database.ts";
+import { listOrphanedDatabases, startRunDatabases } from "./database.ts";
 import { EventHistory, historyRegistration } from "./event-history.ts";
 import type { RunDatabases } from "./database.ts";
 import type { RuntimeSession } from "../runtime-session.ts";
@@ -718,11 +718,18 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const bound = yield* bindingsFor(record);
         const requirements = yield* requirementsFor(record);
         const timerRows = yield* timers.list({ projectId: record.project.id });
+        const orphanedDatabases = yield* Effect.sync(() =>
+          listOrphanedDatabases(
+            paths.join(record.project.root, ".ballast", "db"),
+            new Set(manifest.databases.map((database) => database.name)),
+          ),
+        );
         return {
           summary: summaryOf(record),
           manifest: wireManifest(manifest, record.params, options, bound),
           requirements,
           units: units(record, timerRows),
+          orphanedDatabases,
           ...(record.appliedAt === undefined ? {} : { appliedAt: record.appliedAt }),
           ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
           ...(record.lastErrorSource === undefined ? {} : { lastErrorSource: record.lastErrorSource }),

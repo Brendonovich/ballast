@@ -166,30 +166,6 @@ describe("real MCP stdio client against a real Ballast service", () => {
         if (!Array.isArray(initFiles)) throw new Error("init files are not an array");
         expect(initFiles).toContain("tsconfig.json");
 
-        yield* Effect.promise(async () => {
-          await mkdir(join(projectDir, ".ballast", "history"), { recursive: true });
-          await writeFile(
-            join(projectDir, ".ballast", "history", "chat-log.jsonl"),
-            JSON.stringify({
-              cursor: "7",
-              receivedAt: Date.now(),
-              fingerprint: "fingerprint",
-              event: { text: "durable hello" },
-            }) + "\n",
-            "utf8",
-          );
-        });
-        const history = yield* call(client, tools, "ballast_events", {
-          project: "E2E Project",
-          subscription: "chat-log",
-        });
-        expect(textOf(history)).toContain("durable hello");
-        const historyData = recordOf(history.structuredContent);
-        const historyEntries = historyData?.["history"];
-        expect(Array.isArray(historyEntries)).toBe(true);
-        if (!Array.isArray(historyEntries)) throw new Error("history is not an array");
-        expect(historyEntries.length).toBe(1);
-
         const check = yield* call(client, tools, "ballast_check", { project: "E2E Project" });
         const checkData = recordOf(check.structuredContent);
         expect(checkData?.["ok"]).toBe(true);
@@ -384,6 +360,68 @@ describe("real MCP stdio client against a real Ballast service", () => {
         expect(numberField(artifactDiagnostic, "line")).toBe(1);
         expect(stringOf(artifactDiagnostic, "code")).toBe("TS2322");
         expect(textOf(badArtifact)).toContain("[artifact] artifacts/dashboard/main.tsx:1");
+      }),
+    );
+  }, 120_000);
+
+  it("reads durable subscription history through QueryEventHistory", async () => {
+    if (service === undefined) throw new Error("Service did not start");
+    const env = {
+      ...process.env,
+      BALLAST_STATE_DIR: service.stateDir,
+      BALLAST_DATA_DIR: service.dataDir,
+    };
+    const projectDir = join(service.root, "history-project");
+    await withClient(env, (client) =>
+      Effect.gen(function* () {
+        const tools = yield* client.listTools();
+        yield* call(client, tools, "ballast_project_init", {
+          name: "E2E History",
+          dir: projectDir,
+        });
+        yield* Effect.promise(() =>
+          writeFile(
+            join(projectDir, "ballast.ts"),
+            [
+              'import * as Fake from "@ballast/fake";',
+              'import { Effect } from "effect";',
+              "",
+              "export default Effect.gen(function* () {",
+              '  const fake = yield* Fake.Connection("main");',
+              '  yield* Fake.Chat.subscribe("chat-log", fake, () => Effect.void, {',
+              '    history: { maxEntries: 100, retention: "1 day" },',
+              "  });",
+              "});",
+              "",
+            ].join("\n"),
+            "utf8",
+          ),
+        );
+        yield* Effect.promise(async () => {
+          await mkdir(join(projectDir, ".ballast", "history"), { recursive: true });
+          await writeFile(
+            join(projectDir, ".ballast", "history", "chat-log.jsonl"),
+            JSON.stringify({
+              cursor: "7",
+              receivedAt: Date.now(),
+              fingerprint: "fingerprint",
+              event: { text: "durable hello" },
+            }) + "\n",
+            "utf8",
+          );
+        });
+        // Let the service plan the new subscription and register its history.
+        yield* Effect.sleep("2500 millis");
+        const history = yield* call(client, tools, "ballast_events", {
+          project: "E2E History",
+          subscription: "chat-log",
+        });
+        expect(textOf(history)).toContain("durable hello");
+        const historyData = recordOf(history.structuredContent);
+        const historyEntries = historyData?.["history"];
+        expect(Array.isArray(historyEntries)).toBe(true);
+        if (!Array.isArray(historyEntries)) throw new Error("history is not an array");
+        expect(historyEntries.length).toBe(1);
       }),
     );
   }, 120_000);
