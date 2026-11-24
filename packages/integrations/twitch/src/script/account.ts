@@ -116,6 +116,24 @@ const helixDeclarers: HelixDeclarer = {
     makeHelixClient(slot, "getEventSubSubscriptions", requests.getEventSubSubscriptions),
   deleteEventSubSubscription: (slot) =>
     makeHelixClient(slot, "deleteEventSubSubscription", requests.deleteEventSubSubscription),
+  createPoll: (slot) => makeHelixClient(slot, "createPoll", requests.createPoll),
+  getPolls: (slot) => makeHelixClient(slot, "getPolls", requests.getPolls),
+  endPoll: (slot) => makeHelixClient(slot, "endPoll", requests.endPoll),
+  createPrediction: (slot) => makeHelixClient(slot, "createPrediction", requests.createPrediction),
+  getPredictions: (slot) => makeHelixClient(slot, "getPredictions", requests.getPredictions),
+  endPrediction: (slot) => makeHelixClient(slot, "endPrediction", requests.endPrediction),
+  getBroadcasterSubscriptions: (slot) => makeHelixClient(slot, "getBroadcasterSubscriptions", requests.getBroadcasterSubscriptions),
+  checkUserSubscription: (slot) => makeHelixClient(slot, "checkUserSubscription", requests.checkUserSubscription),
+  getStreams: (slot) => makeHelixClient(slot, "getStreams", requests.getStreams),
+  getChatters: (slot) => makeHelixClient(slot, "getChatters", requests.getChatters),
+  getChatSettings: (slot) => makeHelixClient(slot, "getChatSettings", requests.getChatSettings),
+  updateChatSettings: (slot) => makeHelixClient(slot, "updateChatSettings", requests.updateChatSettings),
+  sendAnnouncement: (slot) => makeHelixClient(slot, "sendAnnouncement", requests.sendAnnouncement),
+  banUser: (slot) => makeHelixClient(slot, "banUser", requests.banUser),
+  unbanUser: (slot) => makeHelixClient(slot, "unbanUser", requests.unbanUser),
+  getChannelVips: (slot) => makeHelixClient(slot, "getChannelVips", requests.getChannelVips),
+  addChannelVip: (slot) => makeHelixClient(slot, "addChannelVip", requests.addChannelVip),
+  removeChannelVip: (slot) => makeHelixClient(slot, "removeChannelVip", requests.removeChannelVip),
 };
 
 /**

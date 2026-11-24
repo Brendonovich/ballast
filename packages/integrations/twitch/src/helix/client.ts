@@ -180,6 +180,114 @@ export interface HelixClientService {
     Schema.Schema.Type<typeof requests.deleteEventSubSubscription.output>,
     HelixError | TokenProviderError
   >;
+  readonly createPoll: (
+    input: Schema.Schema.Type<typeof requests.createPoll.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.createPoll.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getPolls: (
+    input: Schema.Schema.Type<typeof requests.getPolls.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getPolls.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly endPoll: (
+    input: Schema.Schema.Type<typeof requests.endPoll.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.endPoll.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly createPrediction: (
+    input: Schema.Schema.Type<typeof requests.createPrediction.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.createPrediction.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getPredictions: (
+    input: Schema.Schema.Type<typeof requests.getPredictions.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getPredictions.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly endPrediction: (
+    input: Schema.Schema.Type<typeof requests.endPrediction.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.endPrediction.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getBroadcasterSubscriptions: (
+    input: Schema.Schema.Type<typeof requests.getBroadcasterSubscriptions.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getBroadcasterSubscriptions.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly checkUserSubscription: (
+    input: Schema.Schema.Type<typeof requests.checkUserSubscription.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.checkUserSubscription.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getStreams: (
+    input: Schema.Schema.Type<typeof requests.getStreams.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getStreams.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getChatters: (
+    input: Schema.Schema.Type<typeof requests.getChatters.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getChatters.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getChatSettings: (
+    input: Schema.Schema.Type<typeof requests.getChatSettings.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getChatSettings.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly updateChatSettings: (
+    input: Schema.Schema.Type<typeof requests.updateChatSettings.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.updateChatSettings.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly sendAnnouncement: (
+    input: Schema.Schema.Type<typeof requests.sendAnnouncement.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.sendAnnouncement.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly banUser: (
+    input: Schema.Schema.Type<typeof requests.banUser.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.banUser.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly unbanUser: (
+    input: Schema.Schema.Type<typeof requests.unbanUser.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.unbanUser.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly getChannelVips: (
+    input: Schema.Schema.Type<typeof requests.getChannelVips.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.getChannelVips.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly addChannelVip: (
+    input: Schema.Schema.Type<typeof requests.addChannelVip.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.addChannelVip.output>,
+    HelixError | TokenProviderError
+  >;
+  readonly removeChannelVip: (
+    input: Schema.Schema.Type<typeof requests.removeChannelVip.input>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<typeof requests.removeChannelVip.output>,
+    HelixError | TokenProviderError
+  >;
 }
 
 export class HelixClient extends Context.Service<HelixClient, HelixClientService>()(
@@ -329,6 +437,24 @@ export const make = (
       getEventSubSubscriptions: (input) => request(requests.getEventSubSubscriptions, input),
       deleteEventSubSubscription: (input) =>
         request(requests.deleteEventSubSubscription, input),
+      createPoll: (input) => request(requests.createPoll, input),
+      getPolls: (input) => request(requests.getPolls, input),
+      endPoll: (input) => request(requests.endPoll, input),
+      createPrediction: (input) => request(requests.createPrediction, input),
+      getPredictions: (input) => request(requests.getPredictions, input),
+      endPrediction: (input) => request(requests.endPrediction, input),
+      getBroadcasterSubscriptions: (input) => request(requests.getBroadcasterSubscriptions, input),
+      checkUserSubscription: (input) => request(requests.checkUserSubscription, input),
+      getStreams: (input) => request(requests.getStreams, input),
+      getChatters: (input) => request(requests.getChatters, input),
+      getChatSettings: (input) => request(requests.getChatSettings, input),
+      updateChatSettings: (input) => request(requests.updateChatSettings, input),
+      sendAnnouncement: (input) => request(requests.sendAnnouncement, input),
+      banUser: (input) => request(requests.banUser, input),
+      unbanUser: (input) => request(requests.unbanUser, input),
+      getChannelVips: (input) => request(requests.getChannelVips, input),
+      addChannelVip: (input) => request(requests.addChannelVip, input),
+      removeChannelVip: (input) => request(requests.removeChannelVip, input),
     };
   });
 

@@ -52,19 +52,41 @@ runtime executor table the agent uses.
 
 ### Topics
 
-All eight topics in `Twitch.EventSub.topics` are script-facing objects built on
-the core `Topic` primitive, so subscribing records the topic and its scopes:
+Every script-facing topic is built on the core `Topic` primitive, so
+subscribing records the topic and its scopes:
 
 | Export | EventSub type | Scope | Extra options |
 | --- | --- | --- | --- |
 | `ChannelPointsRedemption` | `channel.channel_points_custom_reward_redemption.add` | `channel:read:redemptions` | `{ rewardId?: string }` |
+| `ChannelPointsRedemptionUpdate` | `channel.channel_points_custom_reward_redemption.update` | `channel:read:redemptions` | `{ rewardId?: string }` |
+| `CustomRewardAdd` | `channel.channel_points_custom_reward.add` | `channel:read:redemptions` | |
+| `CustomRewardUpdate` | `channel.channel_points_custom_reward.update` | `channel:read:redemptions` | `{ rewardId?: string }` |
+| `CustomRewardRemove` | `channel.channel_points_custom_reward.remove` | `channel:read:redemptions` | `{ rewardId?: string }` |
 | `ChatMessage` | `channel.chat.message` | `user:read:chat` | `{ broadcaster?: ConnectionRef }` |
 | `Follow` | `channel.follow` (v2) | `moderator:read:followers` | `{ broadcaster?: ConnectionRef }` |
 | `Subscribe` | `channel.subscribe` | `channel:read:subscriptions` | |
+| `SubscriptionGift` | `channel.subscription.gift` | `channel:read:subscriptions` | |
+| `SubscriptionMessage` | `channel.subscription.message` | `channel:read:subscriptions` | |
+| `SubscriptionEnd` | `channel.subscription.end` | `channel:read:subscriptions` | |
 | `Cheer` | `channel.cheer` | `bits:read` | |
 | `Raid` | `channel.raid` | — | `{ direction?: "incoming" \| "outgoing" }` |
+| `HypeTrainBegin` | `channel.hype_train.begin` (v2) | `channel:read:hype_train` | |
+| `HypeTrainProgress` | `channel.hype_train.progress` (v2) | `channel:read:hype_train` | |
+| `HypeTrainEnd` | `channel.hype_train.end` (v2) | `channel:read:hype_train` | |
+| `PollBegin` | `channel.poll.begin` | `channel:read:polls` | |
+| `PollProgress` | `channel.poll.progress` | `channel:read:polls` | |
+| `PollEnd` | `channel.poll.end` | `channel:read:polls` | |
+| `PredictionBegin` | `channel.prediction.begin` | `channel:read:predictions` | |
+| `PredictionProgress` | `channel.prediction.progress` | `channel:read:predictions` | |
+| `PredictionLock` | `channel.prediction.lock` | `channel:read:predictions` | |
+| `PredictionEnd` | `channel.prediction.end` | `channel:read:predictions` | |
+| `ChannelUpdate` | `channel.update` (v2) | — | |
 | `StreamOnline` | `stream.online` | — | |
 | `StreamOffline` | `stream.offline` | — | |
+
+The same topics are exported as data in `Twitch.EventSub.topics` (keyed by these
+names) and `Twitch.EventSub.catalog` (keyed by topic), which the cloud
+subscription manager and the inspector consume.
 
 `ChatMessage` subscribes on the account whose token reads chat. Pass
 `{ broadcaster }` to read another channel (for example a bot reading the
@@ -81,6 +103,51 @@ yield* Twitch.ChatMessage.subscribe(bot, handler, { broadcaster });
 `{ direction: "outgoing" }` to see raids this channel starts.
 `ChannelPointsRedemption`'s `rewardId` is a server-side filter; filtering by
 title (as the example does) is still useful when the reward can be renamed.
+
+### Helix requests
+
+`account.helix(name)` declares one request at a time, so the manifest carries
+exactly the scopes a script uses. The requests in `Twitch.Helix.requests`:
+
+| Request | Endpoint | Scope |
+| --- | --- | --- |
+| `getUsers` | `GET /users` | — |
+| `getChannelInformation` | `GET /channels` | — |
+| `modifyChannelInformation` | `PATCH /channels` | `channel:manage:broadcast` |
+| `createCustomReward` | `POST /channel_points/custom_rewards` | `channel:manage:redemptions` |
+| `updateCustomReward` | `PATCH /channel_points/custom_rewards` | `channel:manage:redemptions` |
+| `deleteCustomReward` | `DELETE /channel_points/custom_rewards` | `channel:manage:redemptions` |
+| `getCustomRewards` | `GET /channel_points/custom_rewards` | `channel:read:redemptions` |
+| `updateRedemptionStatus` | `PATCH /channel_points/custom_rewards/redemptions` | `channel:manage:redemptions` |
+| `createPoll` | `POST /polls` | `channel:manage:polls` |
+| `getPolls` | `GET /polls` | `channel:read:polls` |
+| `endPoll` | `PATCH /polls` | `channel:manage:polls` |
+| `createPrediction` | `POST /predictions` | `channel:manage:predictions` |
+| `getPredictions` | `GET /predictions` | `channel:read:predictions` |
+| `endPrediction` | `PATCH /predictions` | `channel:manage:predictions` |
+| `getBroadcasterSubscriptions` | `GET /subscriptions` | `channel:read:subscriptions` |
+| `checkUserSubscription` | `GET /subscriptions/user` | `user:read:subscriptions` |
+| `getStreams` | `GET /streams` | — |
+| `getChatters` | `GET /chat/chatters` | `moderator:read:chatters` |
+| `getChatSettings` | `GET /chat/settings` | — |
+| `updateChatSettings` | `PATCH /chat/settings` | `moderator:manage:chat_settings` |
+| `sendAnnouncement` | `POST /chat/announcements` | `moderator:manage:announcements` |
+| `banUser` | `POST /moderation/bans` | `moderator:manage:banned_users` |
+| `unbanUser` | `DELETE /moderation/bans` | `moderator:manage:banned_users` |
+| `getChannelVips` | `GET /channels/vips` | `channel:read:vips` |
+| `addChannelVip` | `POST /channels/vips` | `channel:manage:vips` |
+| `removeChannelVip` | `DELETE /channels/vips` | `channel:manage:vips` |
+| `sendChatMessage` | `POST /chat/messages` | `user:write:chat` |
+| `createClip` | `POST /clips` | `clips:edit` |
+| `startCommercial` | `POST /channels/commercial` | `channel:edit:commercial` |
+| `createEventSubSubscription` | `POST /eventsub/subscriptions` | — |
+| `getEventSubSubscriptions` | `GET /eventsub/subscriptions` | — |
+| `deleteEventSubSubscription` | `DELETE /eventsub/subscriptions` | — |
+
+The moderation requests (`getChatters`, chat settings, announcements and bans)
+take both `broadcaster_id` and `moderator_id`; the account whose token calls
+them must be the broadcaster or one of their moderators. `checkUserSubscription`
+uses the calling user's own id for `user_id`.
 
 ### Manifest conditions
 

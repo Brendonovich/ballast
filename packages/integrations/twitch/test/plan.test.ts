@@ -8,6 +8,7 @@ const example = fileURLToPath(
 );
 const helixPlan = fileURLToPath(new URL("./fixtures/helix-plan.ts", import.meta.url));
 const topicOptions = fileURLToPath(new URL("./fixtures/topic-options.ts", import.meta.url));
+const extendedTopics = fileURLToPath(new URL("./fixtures/extended-topics.ts", import.meta.url));
 
 describe("plan Twitch scripts", () => {
   it.effect("records the redeem-to-scene manifest", () =>
@@ -63,6 +64,64 @@ describe("plan Twitch scripts", () => {
           slot: "broadcaster",
           request: "helix/sendChatMessage",
           scopes: ["user:write:chat"],
+        },
+      ]);
+    }),
+  );
+
+  it.effect("records the expanded EventSub topics and Helix requests", () =>
+    Effect.gen(function* () {
+      const manifest = yield* plan(extendedTopics);
+      const topics = new Map(
+        manifest.topics.map((topic) => [topic.topic, topic]),
+      );
+
+      expect([...topics.keys()].sort()).toEqual([
+        "twitch/channel.channel_points_custom_reward_redemption.update",
+        "twitch/channel.hype_train.begin",
+        "twitch/channel.poll.end",
+        "twitch/channel.prediction.lock",
+        "twitch/channel.subscription.gift",
+        "twitch/channel.update",
+      ]);
+      expect(
+        topics.get("twitch/channel.channel_points_custom_reward_redemption.update")?.condition,
+      ).toEqual({
+        broadcaster_user_id: { slot: "broadcaster" },
+        reward_id: "reward-1",
+      });
+      expect(topics.get("twitch/channel.hype_train.begin")?.scopes).toEqual([
+        "channel:read:hype_train",
+      ]);
+      expect(topics.get("twitch/channel.poll.end")?.scopes).toEqual(["channel:read:polls"]);
+      expect(topics.get("twitch/channel.prediction.lock")?.scopes).toEqual([
+        "channel:read:predictions",
+      ]);
+      expect(topics.get("twitch/channel.update")?.scopes).toEqual([]);
+      expect(topics.get("twitch/channel.subscription.gift")?.scopes).toEqual([
+        "channel:read:subscriptions",
+      ]);
+
+      expect(
+        [...manifest.requests].sort((a, b) => a.request.localeCompare(b.request)),
+      ).toEqual([
+        {
+          integration: "twitch",
+          slot: "broadcaster",
+          request: "helix/banUser",
+          scopes: ["moderator:manage:banned_users"],
+        },
+        {
+          integration: "twitch",
+          slot: "broadcaster",
+          request: "helix/endPoll",
+          scopes: ["channel:manage:polls"],
+        },
+        {
+          integration: "twitch",
+          slot: "broadcaster",
+          request: "helix/sendAnnouncement",
+          scopes: ["moderator:manage:announcements"],
         },
       ]);
     }),

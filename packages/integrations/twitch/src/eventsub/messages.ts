@@ -5,6 +5,7 @@ import type { SubscriptionType } from "./subscriptions.ts";
 import {
   UnknownSubscriptionType,
   isSubscriptionType,
+  payloadDecoders,
   subscriptions,
   type NotificationFor,
 } from "./subscriptions.ts";
@@ -144,60 +145,21 @@ type NotificationDecoder = (
   details: NotificationDetails,
 ) => Effect.Effect<EventSubNotification, Schema.SchemaError>;
 
-const notificationDecoders: Record<SubscriptionType, NotificationDecoder> = {
-  "channel.channel_points_custom_reward_redemption.add": (event, details) =>
-    Effect.map(
-      subscriptions["channel.channel_points_custom_reward_redemption.add"].decode(event),
-      (decoded) => ({
-        ...decoded,
-        version:
-          subscriptions["channel.channel_points_custom_reward_redemption.add"].version,
-        ...details,
-      }),
-    ),
-  "channel.chat.message": (event, details) =>
-    Effect.map(subscriptions["channel.chat.message"].decode(event), (decoded) => ({
+const notificationDecoder =
+  (type: SubscriptionType): NotificationDecoder =>
+  (event, details) =>
+    Effect.map(payloadDecoders[type](event), (decoded) => ({
       ...decoded,
-      version: subscriptions["channel.chat.message"].version,
+      version: subscriptions[type].version,
       ...details,
-    })),
-  "channel.follow": (event, details) =>
-    Effect.map(subscriptions["channel.follow"].decode(event), (decoded) => ({
-      ...decoded,
-      version: subscriptions["channel.follow"].version,
-      ...details,
-    })),
-  "channel.subscribe": (event, details) =>
-    Effect.map(subscriptions["channel.subscribe"].decode(event), (decoded) => ({
-      ...decoded,
-      version: subscriptions["channel.subscribe"].version,
-      ...details,
-    })),
-  "channel.cheer": (event, details) =>
-    Effect.map(subscriptions["channel.cheer"].decode(event), (decoded) => ({
-      ...decoded,
-      version: subscriptions["channel.cheer"].version,
-      ...details,
-    })),
-  "channel.raid": (event, details) =>
-    Effect.map(subscriptions["channel.raid"].decode(event), (decoded) => ({
-      ...decoded,
-      version: subscriptions["channel.raid"].version,
-      ...details,
-    })),
-  "stream.online": (event, details) =>
-    Effect.map(subscriptions["stream.online"].decode(event), (decoded) => ({
-      ...decoded,
-      version: subscriptions["stream.online"].version,
-      ...details,
-    })),
-  "stream.offline": (event, details) =>
-    Effect.map(subscriptions["stream.offline"].decode(event), (decoded) => ({
-      ...decoded,
-      version: subscriptions["stream.offline"].version,
-      ...details,
-    })),
-};
+    }));
+
+const notificationDecoders = Object.fromEntries(
+  (Object.keys(subscriptions) as Array<SubscriptionType>).map((type) => [
+    type,
+    notificationDecoder(type),
+  ]),
+) as Record<SubscriptionType, NotificationDecoder>;
 
 /**
  * Decode a notification's event payload once its subscription type is known.
