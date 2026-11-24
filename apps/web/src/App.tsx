@@ -1,4 +1,5 @@
-import { HashRouter, Route } from "@solidjs/router";
+import { HashRouter, Route, useParams } from "@solidjs/router";
+import { Show } from "solid-js";
 import type { JSX } from "solid-js";
 
 import type { AgentStore } from "./state/store.ts";
@@ -15,6 +16,19 @@ import {
   ProjectSettingsScreen,
 } from "./screens/ProjectSectionScreen.tsx";
 
+/**
+ * Re-scoping a window changes only the route's project id. Remount the
+ * workspace so every pane (source, logs, outline) starts from the new project.
+ */
+const ProjectRoute = (): JSX.Element => {
+  const params = useParams<{ projectId?: string }>();
+  return (
+    <Show when={params.projectId} keyed>
+      {(projectId) => <ProjectScreen projectId={projectId} />}
+    </Show>
+  );
+};
+
 export const App = (props: { readonly store: AgentStore }): JSX.Element => (
   <AgentStoreProvider store={props.store}>
     <HashRouter root={AppShell}>
@@ -26,7 +40,7 @@ export const App = (props: { readonly store: AgentStore }): JSX.Element => (
       />
       <Route path="/projects/:projectId/connections" component={ProjectConnectionsScreen} />
       <Route path="/projects/:projectId/settings" component={ProjectSettingsScreen} />
-      <Route path="/projects/:projectId" component={ProjectScreen} />
+      <Route path="/projects/:projectId" component={ProjectRoute} />
       <Route path="/connections" component={ConnectionsScreen} />
       <Route path="/settings" component={SettingsScreen} />
       <Route path="*" component={ProjectsScreen} />

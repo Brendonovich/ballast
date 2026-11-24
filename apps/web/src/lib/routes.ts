@@ -15,10 +15,6 @@ export const projectPath = (projectId: string): string =>
 export const projectSectionPath = (projectId: string, section: ProjectSection): string =>
   projectPath(projectId) + "/" + section;
 
-/** Plain-browser routes back to a project carry it in the query. */
-export const homeSectionPath = (section: ProjectSection, fromProject?: string): string =>
-  "/" + section + (fromProject === undefined ? "" : "?from=" + encodeURIComponent(fromProject));
-
 export const projectIdFromPath = (path: string): string | undefined => {
   const match = /^\/projects\/([^/?#]+)/.exec(path);
   return match?.[1] === undefined ? undefined : safeDecode(match[1]);

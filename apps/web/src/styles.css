@@ -348,3 +348,15 @@
 .code-view .hljs-title.function_ {
   color: var(--syntax-variable);
 }
+
+/* The macOS desktop top bar is the title bar: drag it, but not its controls. */
+.titlebar-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+
+.titlebar-drag :is(button, a, input, select, textarea, [data-no-drag]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

@@ -10,7 +10,7 @@ import {
   MinimizeIcon,
   MoreIcon,
 } from "../../ui/icons.tsx";
-import { Button, IconButton, Spinner } from "../../ui/primitives.tsx";
+import { Button, IconButton, Spinner, cx } from "../../ui/primitives.tsx";
 import { ArtifactUrlsDialog } from "./ArtifactUrlsDialog.tsx";
 
 /**
@@ -24,6 +24,8 @@ export const ArtifactPanel = (props: {
   readonly projectId: string;
   readonly artifact: ArtifactSummary;
   readonly fullscreen: boolean;
+  /** Pop-out windows: the window's top bar names the artifact, so no header. */
+  readonly bare?: boolean;
   readonly onToggleFullscreen?: () => void;
   readonly onClose?: () => void;
   readonly onPopOut?: () => void;
@@ -164,73 +166,78 @@ export const ArtifactPanel = (props: {
   return (
     <section
       data-testid="artifact-panel"
-      class="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-edge bg-canvas"
+      class={cx(
+        "flex h-full min-h-0 flex-col overflow-hidden bg-canvas",
+        props.bare !== true && "rounded-md border border-edge",
+      )}
     >
-      <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5 text-[11px]">
-        <Show when={props.onClose}>
-          <IconButton label="Back to source" size="small" onClick={() => props.onClose?.()}>
-            <ArrowLeftIcon size={13} />
-          </IconButton>
-        </Show>
-        <span class="min-w-0 truncate font-medium text-body">
-          {props.artifact.title ?? props.artifact.name}
-        </span>
-        <span class="hidden shrink-0 text-[10px] text-faint sm:inline">
-          {artifactStatusLabel(props.artifact.status)}
-        </span>
-        <span class="ml-auto flex shrink-0 items-center gap-0.5">
-          <Show when={props.onToggleFullscreen}>
-            <IconButton
-              label={props.fullscreen ? "Exit full screen" : "Full screen"}
-              size="small"
-              testId="artifact-fullscreen"
-              onClick={() => props.onToggleFullscreen?.()}
-            >
-              <Show when={props.fullscreen} fallback={<MaximizeIcon size={12} />}>
-                <MinimizeIcon size={12} />
-              </Show>
+      <Show when={props.bare !== true}>
+        <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5 text-[11px]">
+          <Show when={props.onClose}>
+            <IconButton label="Back to source" size="small" onClick={() => props.onClose?.()}>
+              <ArrowLeftIcon size={13} />
             </IconButton>
           </Show>
-          <div ref={menu} class="relative">
-            <IconButton
-              label="Artifact actions"
-              size="small"
-              testId="artifact-menu"
-              onClick={() => setMenuOpen((current) => !current)}
-            >
-              <MoreIcon size={13} />
-            </IconButton>
-            <Show when={menuOpen()}>
-              <div class="absolute right-0 top-7 z-20 w-36 rounded-md border border-edge-strong bg-layer py-1 shadow-[var(--v2-elevation-overlay)]">
-                <button
-                  type="button"
-                  data-testid="artifact-urls"
-                  class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setUrlsOpen(true);
-                  }}
-                >
-                  URLs…
-                </button>
-                <Show when={props.onPopOut}>
+          <span class="min-w-0 truncate font-medium text-body">
+            {props.artifact.title ?? props.artifact.name}
+          </span>
+          <span class="hidden shrink-0 text-[10px] text-faint sm:inline">
+            {artifactStatusLabel(props.artifact.status)}
+          </span>
+          <span class="ml-auto flex shrink-0 items-center gap-0.5">
+            <Show when={props.onToggleFullscreen}>
+              <IconButton
+                label={props.fullscreen ? "Exit full screen" : "Full screen"}
+                size="small"
+                testId="artifact-fullscreen"
+                onClick={() => props.onToggleFullscreen?.()}
+              >
+                <Show when={props.fullscreen} fallback={<MaximizeIcon size={12} />}>
+                  <MinimizeIcon size={12} />
+                </Show>
+              </IconButton>
+            </Show>
+            <div ref={menu} class="relative">
+              <IconButton
+                label="Artifact actions"
+                size="small"
+                testId="artifact-menu"
+                onClick={() => setMenuOpen((current) => !current)}
+              >
+                <MoreIcon size={13} />
+              </IconButton>
+              <Show when={menuOpen()}>
+                <div class="absolute right-0 top-7 z-20 w-36 rounded-md border border-edge-strong bg-layer py-1 shadow-[var(--v2-elevation-overlay)]">
                   <button
                     type="button"
-                    data-testid="artifact-popout"
+                    data-testid="artifact-urls"
                     class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
                     onClick={() => {
                       setMenuOpen(false);
-                      props.onPopOut?.();
+                      setUrlsOpen(true);
                     }}
                   >
-                    Open in new window
+                    URLs…
                   </button>
-                </Show>
-              </div>
-            </Show>
-          </div>
-        </span>
-      </div>
+                  <Show when={props.onPopOut}>
+                    <button
+                      type="button"
+                      data-testid="artifact-popout"
+                      class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        props.onPopOut?.();
+                      }}
+                    >
+                      Open in new window
+                    </button>
+                  </Show>
+                </div>
+              </Show>
+            </div>
+          </span>
+        </div>
+      </Show>
 
       <div class="min-h-0 flex-1">
         <Show

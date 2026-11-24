@@ -95,6 +95,15 @@ export function registerBridgeIpc(options: BridgeIpcOptions): void {
     },
   );
   ipcMain.handle(
+    BRIDGE_CHANNELS.windowsRescopeProject,
+    async (event, projectId: unknown) => {
+      if (typeof projectId !== "string" || projectId === "") {
+        throw new Error("a project id is required");
+      }
+      return options.windows.rescopeProject(projectId, event.sender);
+    },
+  );
+  ipcMain.handle(
     BRIDGE_CHANNELS.windowsOpenArtifact,
     async (_event, projectId: unknown, artifact: unknown) => {
       if (

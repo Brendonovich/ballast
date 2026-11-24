@@ -8,7 +8,7 @@ import {
   onMount,
 } from "solid-js";
 import type { JSX } from "solid-js";
-import { useNavigate, useParams } from "@solidjs/router";
+import { useNavigate } from "@solidjs/router";
 import type {
   ArtifactSummary,
   ProjectRequirement,
@@ -20,16 +20,11 @@ import { useAgent } from "../state/context.tsx";
 import { getDesktopBridge } from "../bridge.ts";
 import { useAccessibilityPermission } from "../permissions.ts";
 import {
-  blockingRequirements,
   integrationName,
-  plural,
-  projectStatusLabel,
-  projectStatusTone,
   projectWorkerRunning,
 } from "../lib/format.ts";
 import {
   AlertIcon,
-  ArrowLeftIcon,
   PanelRightIcon,
   PlayIcon,
   StopIcon,
@@ -39,9 +34,9 @@ import {
   ConfirmDialog,
   EmptyState,
   Spinner,
-  Status,
 } from "../ui/primitives.tsx";
 import { LogsPanel } from "./project/LogsPanel.tsx";
+import { TopBarActions } from "../layout/top-bar-slot.tsx";
 import { ProjectSidebar } from "./project/ProjectSidebar.tsx";
 import { SourcePanel } from "./project/SourcePanel.tsx";
 import type { SourceJump } from "./project/SourcePanel.tsx";
@@ -98,13 +93,11 @@ const writeSidebar = (collapsed: boolean): void => {
   }
 };
 
-export const ProjectScreen = (): JSX.Element => {
+export const ProjectScreen = (props: { readonly projectId: string }): JSX.Element => {
   const store = useAgent();
   const navigate = useNavigate();
   const bridge = getDesktopBridge();
-  const params = useParams<{ projectId?: string }>();
-
-  const projectId = createMemo(() => safeDecode(params.projectId ?? ""));
+  const projectId = createMemo(() => safeDecode(props.projectId));
   const summary = createMemo(() => store.project(projectId()));
   const detail = createMemo(() => store.projectDetail(projectId()));
   const units = createMemo<ReadonlyArray<UnitSummary>>(() => detail()?.units ?? []);
@@ -113,26 +106,6 @@ export const ProjectScreen = (): JSX.Element => {
   const pendingConsent = createMemo(
     () => detail()?.pendingConsent ?? store.projectConsent(projectId()),
   );
-  const requirements = createMemo<ReadonlyArray<ProjectRequirement>>(
-    () => detail()?.requirements ?? [],
-  );
-  const blocking = createMemo(() => blockingRequirements(requirements()));
-  const statusLabel = (): string => {
-    const project = summary();
-    if (project === undefined) return "";
-    if (blocking().length > 0) return "Needs connections";
-    if (pendingConsent() !== undefined) return "Needs consent";
-    if (project.status === "error") return projectStatusLabel(project);
-    return projectStatusLabel(project);
-  };
-  const statusTone = (): "warning" | "success" | "danger" | "neutral" | "info" => {
-    const project = summary();
-    if (project === undefined) return "neutral";
-    if (blocking().length > 0) return "warning";
-    if (pendingConsent() !== undefined) return "warning";
-    if (project.status === "error") return projectStatusTone(project);
-    return projectStatusTone(project);
-  };
   const workerRunning = (): boolean => {
     const project = summary();
     return project !== undefined && projectWorkerRunning(project);
@@ -425,27 +398,9 @@ export const ProjectScreen = (): JSX.Element => {
     >
       {(project) => (
         <div class="flex h-full min-h-0 flex-col gap-2 overflow-hidden px-5 pb-4 pt-3">
-          <div class="flex shrink-0 items-center gap-3">
-            <button
-              type="button"
-              aria-label="Back to Projects"
-              class="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-body"
-              onClick={openHome}
-            >
-              <ArrowLeftIcon size={14} />
-            </button>
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-2">
-                <h1 class="truncate text-[16px] font-medium leading-6 tracking-[-0.02em] text-strong">
-                  {project().name}
-                </h1>
-                <Status tone={statusTone()}>{statusLabel()}</Status>
-              </div>
-              <p class="truncate font-mono text-[10px] text-faint">
-                {project().root}
-                <Show when={detail()}>{(current) => <> · {plural(current().units.length, "unit")}</>}</Show>
-              </p>
-            </div>
+          {/* The top bar's switcher shows the name; keep a heading for assistive tech. */}
+          <h1 class="sr-only">{project().name}</h1>
+          <TopBarActions>
             <Button
               size="small"
               variant="ghost"
@@ -454,11 +409,11 @@ export const ProjectScreen = (): JSX.Element => {
               icon={<PanelRightIcon size={13} />}
               onClick={toggleSidebar}
             >
-              <span class="hidden sm:inline">Project</span>
+              <span class="hidden lg:inline">Project</span>
             </Button>
             <Show when={pendingConsent() === undefined && workerRunning()}>
               <Button
-                size="normal"
+                size="small"
                 variant="ghost"
                 data-testid="restart-project"
                 loading={store.isPending(`project:${projectId()}:restart`)}
@@ -469,7 +424,7 @@ export const ProjectScreen = (): JSX.Element => {
             </Show>
             <Show when={pendingConsent() === undefined || !workerRunning()}>
               <Button
-                size="normal"
+                size="small"
                 variant={workerRunning() ? "outline" : "primary"}
                 data-testid="toggle-project"
                 loading={
@@ -482,7 +437,7 @@ export const ProjectScreen = (): JSX.Element => {
                 {workerRunning() ? "Stop" : "Start"}
               </Button>
             </Show>
-          </div>
+          </TopBarActions>
 
           <Show when={pendingConsent()}>
             {(consent) => (

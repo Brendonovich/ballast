@@ -259,7 +259,7 @@ const FolderPicker = (props: {
   );
 };
 
-const NewProjectDialog = (props: {
+export const NewProjectDialog = (props: {
   readonly onClose: () => void;
   readonly onCreated: (detail: ProjectDetail) => void;
 }): JSX.Element => {

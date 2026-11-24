@@ -65,6 +65,13 @@ export const WorkspaceIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const PlusIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </Icon>
+);
+
 export const PlayIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="m8 5 11 7-11 7V5Z" />

@@ -210,6 +210,34 @@ const artifactPage = async (
       );
   });
 
+const screenshotDir = path.join(desktopRoot, "screenshots");
+
+/**
+ * Screenshot the Electron window's page in both themes for review. The page
+ * capture omits the native traffic lights, but shows the space left for them.
+ */
+const captureThemes = async (
+  page: Page,
+  name: string,
+  prepare: () => Promise<void>,
+): Promise<void> => {
+  await mkdir(screenshotDir, { recursive: true });
+  for (const theme of ["dark", "light"] as const) {
+    await page.evaluate((value) => localStorage.setItem("ballast.theme", value), theme);
+    await page.reload();
+    await expect(page.getByTestId("top-bar")).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.dataset.colorScheme))
+      .toBe(theme);
+    await prepare();
+    await sleep(250);
+    await page.screenshot({ path: path.join(screenshotDir, `${theme}-${name}.png`) });
+  }
+  await page.evaluate(() => localStorage.removeItem("ballast.theme"));
+  await page.reload();
+  await expect(page.getByTestId("top-bar")).toBeVisible();
+};
+
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -263,6 +291,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
   const serviceLog = path.join(logDir, "service.log");
   const project = path.join(root, "project");
   const secondProject = path.join(root, "project-two");
+  const thirdProject = path.join(root, "project-three");
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -310,6 +339,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     for (const [directory, script] of [
       [project, tickScript],
       [secondProject, tickScript.replace("E2E Tick", "E2E Second")],
+      [thirdProject, tickScript.replace("E2E Tick", "E2E Third")],
     ] as const) {
       await mkdir(path.join(directory, "node_modules", "@ballast"), { recursive: true });
       for (const pkg of ["core", "fake"]) {
@@ -327,7 +357,14 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       await mkdir(path.join(directory, "artifacts", "dashboard"), { recursive: true });
       await writeFile(
         path.join(directory, "artifacts", "dashboard", "main.ts"),
-        'export default (root: HTMLElement) => {\n  root.textContent = "E2E artifact";\n};\n',
+        [
+          "export default (root: HTMLElement) => {",
+          '  document.body.style.cssText = "margin:0;background:#0b1020;color:#e6edf7;font:14px system-ui";',
+          '  root.style.padding = "24px";',
+          '  root.textContent = "E2E artifact";',
+          "};",
+          "",
+        ].join("\n"),
         "utf8",
       );
       await writeFile(path.join(directory, "ballast.ts"), script, "utf8");
@@ -361,6 +398,12 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       addedSecond.stdout,
     ).summary.id;
     expect(secondProjectId.length).toBeGreaterThan(0);
+
+    const addedThird = await runCli(["projects", "add", thirdProject, "--name", "E2E Third"], env);
+    expect(addedThird.code, addedThird.stderr).toBe(0);
+    const thirdProjectId = parseCliJson<{ readonly summary: { readonly id: string } }>(
+      addedThird.stdout,
+    ).summary.id;
 
     const configured = await runCli(["connections", "configure", "fake/main"], env);
     expect(configured.code, configured.stderr).toBe(0);
@@ -461,8 +504,41 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       { timeout: 30_000 },
     );
     await expect.poll(() => page.title()).toBe("E2E Tick — Ballast");
-    await expect(page.getByTestId("project-nav-projects")).toBeVisible();
+    await expect(page.getByTestId("top-bar")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("ballast-window-1.png"), fullPage: true });
+
+    // The top bar is the title bar on macOS: draggable, traffic lights inset,
+    // controls excluded from the drag region and clickable.
+    const region = (testId: string): Promise<string> =>
+      page
+        .getByTestId(testId)
+        .evaluate((element) => getComputedStyle(element).getPropertyValue("-webkit-app-region"));
+    const switcherBox = await page.getByTestId("project-switcher").boundingBox();
+    if (process.platform === "darwin") {
+      expect(await region("top-bar")).toBe("drag");
+      for (const control of ["project-switcher", "toggle-project", "project-nav-connections"]) {
+        expect(await region(control)).toBe("no-drag");
+      }
+      const buttons = await ui.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]?.getWindowButtonPosition() ?? null,
+      );
+      expect(buttons).toEqual({ x: 14, y: 13 });
+      expect(switcherBox?.x ?? 0).toBeGreaterThanOrEqual(80);
+    } else {
+      expect(await region("top-bar")).not.toBe("drag");
+    }
+    expect((await page.getByTestId("top-bar").boundingBox())?.height).toBe(40);
+    await page.getByTestId("project-switcher").click();
+    await expect(page.getByTestId("project-switcher-menu")).toBeVisible();
+    await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
+    await page.keyboard.press("Escape");
+    await captureThemes(page, "project-top-bar", async () => {
+      await expect(page.getByTestId("project-navigator")).toBeVisible();
+    });
+    await captureThemes(page, "project-switcher", async () => {
+      await page.getByTestId("project-switcher").click();
+      await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
+    });
 
     // Connections and Settings open inside the project window, not a new one.
     const windowsBefore = ui.windows().length;
@@ -473,6 +549,9 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     await expect(page.getByTestId("connection-row").first()).toBeVisible();
     await expect.poll(() => page.title()).toBe("Connections — E2E Tick — Ballast");
     await page.screenshot({ path: testInfo.outputPath("ballast-project-connections.png") });
+    await captureThemes(page, "project-connections", async () => {
+      await expect(page.getByTestId("connection-row").first()).toBeVisible();
+    });
     expect(ui.windows().length).toBe(windowsBefore);
     await page.getByTestId("project-back").click();
     await page.waitForURL(new RegExp("#/projects/" + encodeURIComponent(projectId) + "$"));
@@ -502,6 +581,47 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       fullPage: true,
     });
 
+    // Switching to a project another window shows focuses that window.
+    await secondPage.getByTestId("project-switcher").click();
+    await secondPage
+      .locator(`[data-testid="project-switcher-row"][data-project-id="${projectId}"] button`)
+      .first()
+      .click();
+    await expect
+      .poll(() =>
+        ui.evaluate(
+          ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
+        ),
+      )
+      .toMatch(new RegExp("/projects/" + encodeURIComponent(projectId) + "$"));
+    expect(secondPage.url()).toMatch(new RegExp("/projects/" + encodeURIComponent(secondProjectId) + "$"));
+    await expect.poll(() => secondPage.title()).toBe("E2E Second — Ballast");
+    expect(ui.windows().length).toBe(2);
+
+    // Switching to a project no window shows re-scopes this window in place.
+    await secondPage.getByTestId("project-switcher").click();
+    await secondPage
+      .locator(`[data-testid="project-switcher-row"][data-project-id="${thirdProjectId}"] button`)
+      .first()
+      .click();
+    await secondPage.waitForURL(new RegExp("#/projects/" + encodeURIComponent(thirdProjectId) + "$"));
+    await expect.poll(() => secondPage.title()).toBe("E2E Third — Ballast");
+    await expect(secondPage.getByTestId("project-switcher")).toContainText("E2E Third");
+    await expect.poll(() =>
+      ui.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((window) => window.getTitle()).sort()),
+    ).toEqual(["E2E Third — Ballast", "E2E Tick — Ballast"]);
+    expect(ui.windows().length).toBe(2);
+    // The re-scoped window now owns the third project: asking for it focuses it.
+    await bridgeOpenProject(page, thirdProjectId, true);
+    await expect
+      .poll(() =>
+        ui.evaluate(
+          ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
+        ),
+      )
+      .toContain(encodeURIComponent(thirdProjectId));
+    expect(ui.windows().length).toBe(2);
+
     // Pop an artifact into its own window; reopening focuses it.
     await bridgeOpenArtifact(page, projectId, "dashboard");
     const artifactWindow = await artifactPage(ui, projectId, "dashboard");
@@ -512,6 +632,13 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     await expect(
       artifactWindow.frameLocator("iframe").getByText("E2E artifact"),
     ).toBeVisible({ timeout: 20_000 });
+    await expect(artifactWindow.getByTestId("top-bar")).toHaveAttribute("data-variant", "artifact");
+    await expect(artifactWindow.getByTestId("top-bar").locator("button")).toHaveCount(0);
+    await captureThemes(artifactWindow, "artifact-popout", async () => {
+      await expect(artifactWindow.frameLocator("iframe").getByText("E2E artifact")).toBeVisible({
+        timeout: 20_000,
+      });
+    });
     await bridgeOpenArtifact(page, projectId, "dashboard");
     const focusedArtifact = await ui.evaluate(
       ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
@@ -542,7 +669,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       },
       {
         firstId: projectId,
-        secondId: secondProjectId,
+        secondId: thirdProjectId,
         first: firstBounds,
         second: secondBounds,
       },
@@ -575,11 +702,15 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       ui !== undefined && ui.windows().length >= 3 ? true : undefined,
     );
     const restoredFirst = await projectPage(ui, projectId);
-    const restoredSecond = await projectPage(ui, secondProjectId);
+    const restoredSecond = await projectPage(ui, thirdProjectId);
     const restoredArtifact = await artifactPage(ui, projectId, "dashboard");
     await expect.poll(() => restoredFirst.title()).toBe("E2E Tick — Ballast");
     await expect(restoredFirst.getByTestId("project-navigator")).toBeVisible();
-    await expect.poll(() => restoredSecond.title()).toBe("E2E Second — Ballast");
+    // The re-scoped window comes back with its new project.
+    await expect.poll(() => restoredSecond.title()).toBe("E2E Third — Ballast");
+    expect(
+      ui.windows().some((window) => window.url().includes("/projects/" + encodeURIComponent(secondProjectId))),
+    ).toBe(false);
     await expect.poll(() => restoredArtifact.title()).toBe(
       "Stream dashboard — E2E Tick — Ballast",
     );
@@ -596,7 +727,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     );
     const secondRestored = restoredBounds.find(
       (entry) =>
-        entry.url.includes("/projects/" + encodeURIComponent(secondProjectId)) &&
+        entry.url.includes("/projects/" + encodeURIComponent(thirdProjectId)) &&
         !entry.url.includes("/artifacts/"),
     );
     expect(firstRestored?.bounds).toEqual(firstBounds);

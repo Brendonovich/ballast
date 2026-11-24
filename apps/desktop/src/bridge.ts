@@ -10,7 +10,7 @@
 // not yet a workspace dependency of @ballast/desktop). No service token is ever
 // part of this contract.
 
-export const BRIDGE_VERSION = 3 as const;
+export const BRIDGE_VERSION = 4 as const;
 
 export const BRIDGE_CHANNELS = {
   serviceStatus: "ballast:service:status",
@@ -30,6 +30,7 @@ export const BRIDGE_CHANNELS = {
   windowsContext: "ballast:windows:context",
   windowsOpenProject: "ballast:windows:open-project",
   windowsOpenArtifact: "ballast:windows:open-artifact",
+  windowsRescopeProject: "ballast:windows:rescope-project",
   windowsOpenHome: "ballast:windows:open-home",
   projectsSetMenu: "ballast:projects:set-menu",
   serviceStatusEvent: "ballast:event:service-status",
@@ -134,6 +135,17 @@ export interface OpenProjectWindowOptions {
   readonly newWindow?: boolean;
 }
 
+/**
+ * `rescoped`: this window now shows the project; navigate in place.
+ * `focused`: another window already showed it and was focused instead.
+ */
+export interface RescopeResult {
+  readonly outcome: "rescoped" | "focused";
+}
+
+/** `inset`: the page's top bar is the macOS title bar (draggable, traffic lights inset). */
+export type TitleBarMode = "inset" | "native";
+
 /** A project name for the File and tray menus. */
 export interface ProjectMenuItem {
   readonly id: string;
@@ -143,6 +155,7 @@ export interface ProjectMenuItem {
 /** The object exposed as `window.ballast` in every Ballast window. */
 export interface BallastBridge {
   readonly version: typeof BRIDGE_VERSION;
+  readonly titleBar: TitleBarMode;
   readonly service: {
     status(): Promise<ServiceStatus>;
     /** Start the shipped service, or replace a running one of another version. */
@@ -172,6 +185,11 @@ export interface BallastBridge {
       projectId: string,
       options?: OpenProjectWindowOptions,
     ): Promise<void>;
+    /**
+     * Switch this window to another project, or focus the window that already
+     * shows it. Main tracks the window's project for its title and restore.
+     */
+    rescopeProject(projectId: string): Promise<RescopeResult>;
     /** Focus an artifact window, or open it in a new one. */
     openArtifactWindow(projectId: string, artifact: string): Promise<void>;
     /** Focus a home window at a service-wide route, opening it when needed. */

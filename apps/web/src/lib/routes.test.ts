@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   artifactFromPath,
-  homeSectionPath,
   projectIdFromPath,
   projectPath,
   projectSectionFromPath,
@@ -19,10 +18,5 @@ describe("routes", () => {
     expect(projectSectionFromPath(projectPath("p"))).toBeUndefined();
     expect(projectSectionFromPath("/projects/p/artifacts/connections")).toBeUndefined();
     expect(artifactFromPath("/projects/p/artifacts/dash%20board")).toBe("dash board");
-  });
-
-  it("uses the service-wide routes in a plain browser", () => {
-    expect(homeSectionPath("settings")).toBe("/settings");
-    expect(homeSectionPath("connections", "proj_main")).toBe("/connections?from=proj_main");
   });
 });

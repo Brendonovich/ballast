@@ -45,7 +45,7 @@ export const ArtifactWindowScreen = (): JSX.Element => {
   });
 
   return (
-    <div class="h-full min-h-0 p-2">
+    <div class="h-full min-h-0">
       <Show
         when={artifact()}
         fallback={
@@ -69,6 +69,7 @@ export const ArtifactWindowScreen = (): JSX.Element => {
             projectId={projectId()}
             artifact={current()}
             fullscreen
+            bare
           />
         )}
       </Show>

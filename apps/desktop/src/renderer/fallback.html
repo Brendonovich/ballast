@@ -33,9 +33,12 @@
       button.primary { background: #24406f; border-color: #35588f; }
       button:hover { filter: brightness(1.12); }
       #error { color: #ff9f9f; margin-top: 12px; white-space: pre-wrap; }
+      /* macOS hides the native title bar; keep the window draggable from the top. */
+      .drag { position: fixed; inset: 0 0 auto 0; height: 40px; -webkit-app-region: drag; }
     </style>
   </head>
   <body>
+    <div class="drag" aria-hidden="true"></div>
     <main>
       <div class="card">
         <h1><span class="spinner"></span>Starting Ballast…</h1>

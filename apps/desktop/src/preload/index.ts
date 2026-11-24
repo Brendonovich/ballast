@@ -3,6 +3,7 @@ import { BRIDGE_CHANNELS, BRIDGE_VERSION, type BallastBridge, type ServiceStatus
 
 const bridge: BallastBridge = {
   version: BRIDGE_VERSION,
+  titleBar: process.platform === "darwin" ? "inset" : "native",
   service: {
     status: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceStatus),
     start: () => ipcRenderer.invoke(BRIDGE_CHANNELS.serviceStart),
@@ -23,6 +24,8 @@ const bridge: BallastBridge = {
       projectId: string,
       options?: { readonly newWindow?: boolean },
     ) => ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenProject, projectId, options),
+    rescopeProject: (projectId: string) =>
+      ipcRenderer.invoke(BRIDGE_CHANNELS.windowsRescopeProject, projectId),
     openArtifactWindow: (projectId: string, artifact: string) =>
       ipcRenderer.invoke(BRIDGE_CHANNELS.windowsOpenArtifact, projectId, artifact),
     openHome: (route?: string) =>

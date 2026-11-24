@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   BRIDGE_CHANNELS,
   type HomeRoute,
+  type RescopeResult,
   type ServiceStatus,
   type UpdateState,
   type WindowContext,
@@ -17,6 +18,7 @@ import {
   type RestoredWindows,
   type StoredBounds,
 } from "./window-state.ts";
+import { planRescope, titleBarOptions } from "./window-scope.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const preloadPath = path.resolve(here, "../preload/index.cjs");
@@ -65,6 +67,8 @@ export interface WindowController {
   ): Promise<void>;
   /** Focus an existing artifact window, otherwise open a new one. */
   openArtifactWindow(projectId: string, artifact: string): Promise<void>;
+  /** Switch the sender's window to a project, or focus the one showing it. */
+  rescopeProject(projectId: string, sender: WebContents): RescopeResult;
   /** Focus an existing project window, otherwise open a new one. */
   focusOrOpen(projectId: string): Promise<void>;
   openHome(route?: HomeRoute): Promise<void>;
@@ -386,6 +390,7 @@ export function createWindowController(options: WindowControllerOptions): Window
       title: "Ballast",
       backgroundColor: "#0b0d10",
       autoHideMenuBar: process.platform !== "darwin",
+      ...titleBarOptions(process.platform),
       webPreferences: {
         preload: preloadPath,
         contextIsolation: true,
@@ -521,6 +526,45 @@ export function createWindowController(options: WindowControllerOptions): Window
     await openProjectInNewWindow(projectId);
   };
 
+  // The renderer navigates in place after a re-scope, so only the record and
+  // its load key change; a later status sync then sees nothing to reload.
+  const rescopeProject = (projectId: string, sender: WebContents): RescopeResult => {
+    const source = recordFor(sender);
+    const plan = planRescope(
+      records
+        .filter((record) => !record.window.isDestroyed())
+        .map((record) => ({
+          id: record.window.id,
+          kind: record.kind,
+          ...(record.projectId === undefined ? {} : { projectId: record.projectId }),
+        })),
+      source?.window.id,
+      projectId,
+    );
+    if (plan.action === "reject" || source === undefined) {
+      throw new Error("cannot switch project: " + (plan.action === "reject" ? plan.reason : ""));
+    }
+    if (plan.action === "focus") {
+      const target = records.find((record) => record.window.id === plan.id);
+      if (target !== undefined) focus(target);
+      return { outcome: "focused" };
+    }
+    if (plan.action === "rescope") {
+      source.kind = "project";
+      source.projectId = projectId;
+      if (source.mode === "service") {
+        source.loadedKey = [source.loadedOrigin, source.loadedPid ?? "none", routeHash(source)].join("|");
+      } else if (source.mode === "dev" && config.uiUrl !== undefined) {
+        const target = new URL(config.uiUrl);
+        const hash = routeHash(source);
+        if (hash !== "") target.hash = hash;
+        source.loadedKey = target.toString();
+      }
+      scheduleSave();
+    }
+    return { outcome: "rescoped" };
+  };
+
   const focusOrOpen = async (projectId: string): Promise<void> => {
     const existing = findProjectWindow(projectId);
     if (existing !== undefined) {
@@ -565,6 +609,7 @@ export function createWindowController(options: WindowControllerOptions): Window
     },
     openProjectWindow,
     openArtifactWindow,
+    rescopeProject,
     focusOrOpen,
     openHome,
     contextFor: (sender) => {

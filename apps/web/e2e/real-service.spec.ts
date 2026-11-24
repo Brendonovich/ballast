@@ -128,9 +128,10 @@ const applyTheme = async (page: Page, theme: "dark" | "light"): Promise<void> =>
 };
 
 const goHome = async (page: Page): Promise<void> => {
-  const compact = page.getByTestId("project-nav-projects");
-  if (await compact.isVisible().catch(() => false)) {
-    await compact.click();
+  const switcher = page.getByTestId("project-switcher");
+  if (await switcher.isVisible().catch(() => false)) {
+    await switcher.click();
+    await page.getByTestId("project-switcher-all").click();
   } else {
     await page.getByTestId("nav-projects").click();
   }
