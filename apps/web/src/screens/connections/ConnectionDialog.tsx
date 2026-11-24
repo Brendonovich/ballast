@@ -182,7 +182,14 @@ export const ConnectionDialog = (props: {
   const cloudLinkUrl = (): string | undefined => {
     const url = store.cloud()?.cloudUrl;
     if (url === undefined) return undefined;
-    return `${url.replace(/\/$/, "")}/oauth/twitch/start`;
+    const base = `${url.replace(/\/$/, "")}/oauth/twitch/start`;
+    const current = active();
+    const scopes = [
+      ...new Set([...(current?.scopes.granted ?? []), ...(current?.scopes.required ?? [])]),
+    ];
+    return scopes.length === 0
+      ? base
+      : `${base}?scopes=${encodeURIComponent(scopes.join(","))}`;
   };
 
   const cloudSelectionReady = (): boolean => {

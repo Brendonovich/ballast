@@ -4,6 +4,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  on,
   onCleanup,
   onMount,
   untrack,
@@ -12,6 +13,7 @@ import type { JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import type {
   ArtifactSummary,
+  ProjectFile,
   ProjectRequirement,
   TimerSummary,
   UnitSummary,
@@ -31,7 +33,21 @@ import type { IssueTarget } from "../lib/project-health.ts";
 import { flash, pendingProjectIntent, takeProjectIntent } from "../lib/project-intent.ts";
 import type { ProjectIntent } from "../lib/project-intent.ts";
 import {
+  EMPTY_TABS,
+  activateTab,
+  activeTab,
+  closeTab,
+  defaultTabs,
+  openTab,
+  parseTabs,
+  tabKey,
+  tabsStorageKey,
+} from "../lib/project-tabs.ts";
+import type { ProjectTab, TabsState } from "../lib/project-tabs.ts";
+import {
   AlertIcon,
+  MaximizeIcon,
+  MinimizeIcon,
   PanelRightIcon,
   PlayIcon,
   StopIcon,
@@ -40,15 +56,20 @@ import {
   Button,
   ConfirmDialog,
   EmptyState,
+  IconButton,
   Spinner,
+  cx,
+  surface,
 } from "../ui/primitives.tsx";
 import { LogsPanel } from "./project/LogsPanel.tsx";
 import { TopBarActions } from "../layout/top-bar-slot.tsx";
 import { ProjectSidebar } from "./project/ProjectSidebar.tsx";
-import { SourcePanel } from "./project/SourcePanel.tsx";
-import type { SourceJump } from "./project/SourcePanel.tsx";
+import { FileView } from "./project/FileView.tsx";
+import type { SourceJump } from "./project/FileView.tsx";
 import { ProjectNavigator } from "./project/ProjectNavigator.tsx";
-import { buildOutline, unitKey } from "../lib/outline.ts";
+import { TabStrip } from "./project/TabStrip.tsx";
+import { TopicEventsView } from "./project/TopicEventsView.tsx";
+import { buildOutline } from "../lib/outline.ts";
 import type { OutlineItem } from "../lib/outline.ts";
 import {
   DEFAULT_LOGS_LAYOUT,
@@ -57,10 +78,13 @@ import {
   parseLogsLayout,
 } from "../lib/logs-layout.ts";
 import type { LogsLayout } from "../lib/logs-layout.ts";
+import { leftSidebarHidden } from "../state/left-sidebar.ts";
 import { ConnectionDialog } from "./connections/ConnectionDialog.tsx";
 import { ArtifactPanel } from "./project/ArtifactPanel.tsx";
 
 const SIDEBAR_KEY = "ballast.projectSidebarCollapsed";
+/** The tab strip's height, which is all the tab area keeps while logs are maximized. */
+const STRIP_HEIGHT = 40;
 
 const safeDecode = (value: string): string => {
   try {
@@ -86,6 +110,22 @@ const writeLogsLayout = (projectId: string, layout: LogsLayout): void => {
   }
 };
 
+const readTabs = (projectId: string): TabsState | undefined => {
+  try {
+    return parseTabs(window.localStorage.getItem(tabsStorageKey(projectId)));
+  } catch {
+    return undefined;
+  }
+};
+
+const writeTabs = (projectId: string, state: TabsState): void => {
+  try {
+    window.localStorage.setItem(tabsStorageKey(projectId), JSON.stringify(state));
+  } catch {
+    // Non-critical.
+  }
+};
+
 const readSidebar = (): boolean => {
   if (typeof window === "undefined") return false;
   try {
@@ -102,6 +142,8 @@ const writeSidebar = (collapsed: boolean): void => {
     // Non-critical.
   }
 };
+
+const fileName = (path: string): string => path.split("/").at(-1) ?? path;
 
 export const ProjectScreen = (props: { readonly projectId: string }): JSX.Element => {
   const store = useAgent();
@@ -125,35 +167,110 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   /** Gutter markers for a change that did not apply. Summary issues are canonical. */
   const markers = createMemo(() => sourceMarkers(summary()?.issues ?? []));
 
-  // The screen remounts per project, so the layout is read once for it.
-  const initialLogs = readLogsLayout(safeDecode(props.projectId));
+  // The screen remounts per project, so per-project state is read once.
+  const initialProject = safeDecode(props.projectId);
+  const initialLogs = readLogsLayout(initialProject);
   const [split, setSplit] = createSignal(initialLogs.split);
   const [logsCollapsed, setLogsCollapsed] = createSignal(initialLogs.collapsed);
   const saveLogsLayout = (): void =>
     writeLogsLayout(projectId(), { collapsed: logsCollapsed(), split: split() });
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(readSidebar());
-  const [maximized, setMaximized] = createSignal<"source" | "logs">();
+  const [maximized, setMaximized] = createSignal<"tabs" | "logs">();
   const [selectedUnit, setSelectedUnit] = createSignal<UnitSummary>();
   const [jump, setJump] = createSignal<SourceJump>();
   const [timers, setTimers] = createSignal<ReadonlyArray<TimerSummary>>([]);
-  const [selectedArtifactName, setSelectedArtifactName] = createSignal<string>();
-  const [selectedOutlineKey, setSelectedOutlineKey] = createSignal<string>();
   const outline = createMemo(() =>
     buildOutline(detail(), (connectionId) => store.connection(connectionId)?.label),
   );
   const [reveal, setReveal] = createSignal<{ readonly key: string; readonly token: number }>();
   const [artifactFullscreen, setArtifactFullscreen] = createSignal(false);
-  const selectedArtifact = createMemo(() => {
-    const name = selectedArtifactName();
-    return name === undefined
-      ? undefined
-      : artifacts().find((artifact) => artifact.name === name);
-  });
   const [addingConnection, setAddingConnection] = createSignal<ProjectRequirement>();
   const [pendingBinding, setPendingBinding] = createSignal<PendingBinding>();
   const permission = useAccessibilityPermission();
   let jumpToken = 0;
   let splitArea: HTMLDivElement | undefined;
+
+  // Tabs: restored per project window; nothing stored opens the entry file.
+  const storedTabs = readTabs(initialProject);
+  const [tabs, setTabsState] = createSignal<TabsState>(storedTabs ?? EMPTY_TABS);
+  let tabsReady = storedTabs !== undefined;
+  const setTabs = (next: TabsState): void => {
+    tabsReady = true;
+    setTabsState(next);
+    writeTabs(projectId(), next);
+  };
+  createEffect(() => {
+    const entry = summary()?.entry;
+    if (tabsReady || entry === undefined) return;
+    untrack(() => setTabs(defaultTabs(entry)));
+  });
+  const current = createMemo(() => activeTab(tabs()));
+  const activeFile = createMemo(() => {
+    const tab = current();
+    return tab?.kind === "file" ? tab.path : undefined;
+  });
+  const activeTopic = createMemo(() => {
+    const tab = current();
+    return tab?.kind === "topic" ? tab.name : undefined;
+  });
+  /** Open artifact tabs stay mounted (hidden) so their pages keep state. */
+  const artifactTabs = createMemo(
+    () => tabs().tabs.flatMap((tab) => (tab.kind === "artifact" ? [tab.name] : [])),
+    undefined,
+    { equals: (left, right) => left.length === right.length && left.every((name, index) => name === right[index]) },
+  );
+  const artifactNamed = (name: string): ArtifactSummary | undefined =>
+    artifacts().find((artifact) => artifact.name === name);
+  const topicTitle = (name: string): string =>
+    units().find((unit) => unit.kind === "topic" && unit.name === name)?.title ?? name;
+
+  const tabLabel = (tab: ProjectTab): string => {
+    switch (tab.kind) {
+      case "file":
+        return fileName(tab.path);
+      case "artifact": {
+        const artifact = artifactNamed(tab.name);
+        return artifact?.title ?? tab.name;
+      }
+      case "topic":
+        return topicTitle(tab.name);
+    }
+  };
+
+  const tabTitle = (tab: ProjectTab): string => {
+    switch (tab.kind) {
+      case "file":
+        return tab.path;
+      case "artifact":
+        return `Artifact · ${tab.name}`;
+      case "topic":
+        return `Events · ${tab.name}`;
+    }
+  };
+
+  // Files: the tree for the sidebar, reloaded when files change on disk.
+  const [files, setFiles] = createSignal<ReadonlyArray<ProjectFile>>([]);
+  const [filesError, setFilesError] = createSignal<string>();
+  const loadTree = async (): Promise<void> => {
+    const pid = projectId();
+    const tree = await store.listProjectFiles(pid);
+    if (pid !== projectId()) return;
+    if (tree === undefined) {
+      setFilesError(store.lastActionError() ?? "Could not list the project files.");
+      return;
+    }
+    setFilesError(undefined);
+    setFiles(tree.files);
+  };
+  createEffect(
+    on(
+      () => [projectId(), store.projectFileRevision(projectId()), store.info()?.startedAt] as const,
+      ([pid, , started]) => {
+        if (pid === "" || started === undefined) return;
+        void loadTree();
+      },
+    ),
+  );
 
   const refreshTimers = async (): Promise<void> => {
     const pid = projectId();
@@ -183,17 +300,6 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     void logCount;
     const handle = window.setTimeout(() => void refreshTimers(), 250);
     onCleanup(() => window.clearTimeout(handle));
-  });
-
-  createEffect(() => {
-    const pid = projectId();
-    setSelectedUnit(undefined);
-    setSelectedOutlineKey(undefined);
-    setSelectedArtifactName(undefined);
-    setArtifactFullscreen(false);
-    setJump(undefined);
-    setTimers([]);
-    void pid;
   });
 
   onMount(() => {
@@ -231,7 +337,13 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     writeSidebar(next);
   };
 
-  const toggleMaximize = (pane: "source" | "logs"): void => {
+  const openSidebar = (): void => {
+    if (!sidebarCollapsed()) return;
+    setSidebarCollapsed(false);
+    writeSidebar(false);
+  };
+
+  const toggleMaximize = (pane: "tabs" | "logs"): void => {
     // Maximizing collapsed logs opens them; the split is unchanged underneath.
     if (pane === "logs" && logsCollapsed()) {
       setLogsCollapsed(false);
@@ -239,20 +351,16 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
       setMaximized("logs");
       return;
     }
-    setMaximized((current) => (current === pane ? undefined : pane));
+    setMaximized((value) => (value === pane ? undefined : pane));
   };
 
-  /** Logs show only their header while collapsed or while source is maximized. */
-  const logsHidden = (): boolean => maximized() === "source" || logsCollapsed();
+  /** Logs show only their header while collapsed or while the tabs are maximized. */
+  const logsHidden = (): boolean => maximized() === "tabs" || logsCollapsed();
 
   const toggleLogsCollapsed = (): void => {
-    if (logsHidden()) {
-      setMaximized(undefined);
-      setLogsCollapsed(false);
-    } else {
-      setMaximized(undefined);
-      setLogsCollapsed(true);
-    }
+    const hidden = logsHidden();
+    setMaximized(undefined);
+    setLogsCollapsed(!hidden);
     saveLogsLayout();
   };
 
@@ -264,40 +372,82 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     navigate("/projects");
   };
 
+  /** Show a tab, leaving full screen and maximized logs so it can be seen. */
+  const showTab = (tab: ProjectTab): void => {
+    setTabs(openTab(tabs(), tab));
+    if (tab.kind !== "artifact" || current()?.kind !== "artifact") setArtifactFullscreen(false);
+    if (maximized() === "logs") setMaximized(undefined);
+  };
+
+  const openFile = (path: string): void => showTab({ kind: "file", path });
+
+  /** Open a file at a line, highlighted; the code icons and issues use this. */
   const openSource = (file: string, line: number): void => {
-    setSelectedArtifactName(undefined);
-    setArtifactFullscreen(false);
     jumpToken += 1;
     setJump({ file, line, token: jumpToken });
-    if (maximized() === "logs") setMaximized(undefined);
+    showTab({ kind: "file", path: file });
   };
 
-  const openArtifact = (artifact: ArtifactSummary): void => {
-    setSelectedArtifactName(artifact.name);
-    setArtifactFullscreen(false);
-    if (maximized() === "logs") setMaximized(undefined);
-  };
+  const openArtifact = (artifact: ArtifactSummary): void =>
+    showTab({ kind: "artifact", name: artifact.name });
 
-  const closeArtifact = (): void => {
-    setSelectedArtifactName(undefined);
+  const selectTab = (key: string): void => {
+    setTabs(activateTab(tabs(), key));
     setArtifactFullscreen(false);
   };
 
-  // Opening an outline item shows its declaration and, for units, its logs.
-  const selectOutlineItem = (item: OutlineItem): void => {
-    setSelectedOutlineKey(item.key);
-    setSelectedUnit(item.unit);
-    if (item.source !== undefined) {
-      openSource(item.source.file, item.source.line);
-    } else {
-      closeArtifact();
+  const dismissTab = (key: string): void => {
+    setTabs(closeTab(tabs(), key));
+    if (tabs().active !== key) setArtifactFullscreen(false);
+  };
+
+  /** After the DOM reflects a state change (sidebar opened, outline expanded). */
+  const afterRender = (run: () => void): void => {
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  };
+
+  /** A param's field in the Project panel, focused. */
+  const showParam = (name: string): void => {
+    openSidebar();
+    afterRender(() => {
+      const field = document.querySelector(`[data-testid="project-param-${CSS.escape(name)}"]`);
+      flash(field);
+      const input =
+        field instanceof HTMLInputElement || field instanceof HTMLSelectElement
+          ? field
+          : field?.querySelector("input, select, textarea");
+      if (input instanceof HTMLElement) input.focus();
+    });
+  };
+
+  /** A timer's pending fires in the Project panel, or the timers list when none are pending. */
+  const showTimer = (name: string): void => {
+    openSidebar();
+    void refreshTimers();
+    afterRender(() => {
+      const row = document.querySelector(`[data-testid="timer-row"][data-timer="${CSS.escape(name)}"]`);
+      flash(row ?? document.querySelector('[data-testid="project-sidebar-section"][data-section="timers"]'));
+    });
+  };
+
+  const openItem = (item: OutlineItem): void => {
+    const target = item.open;
+    if (target === undefined) return;
+    switch (target.kind) {
+      case "topic":
+        showTab({ kind: "topic", name: target.name });
+        return;
+      case "param":
+        showParam(target.name);
+        return;
+      case "timer":
+        showTimer(target.name);
+        return;
     }
-    if (item.unit !== undefined && maximized() === "source") setMaximized(undefined);
   };
 
   const filterLogs = (unit: UnitSummary | undefined): void => {
     setSelectedUnit(unit);
-    setSelectedOutlineKey(unit === undefined ? undefined : unitKey(unit));
   };
 
   const popOutArtifact = (artifact: ArtifactSummary): void => {
@@ -349,11 +499,6 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     await store.restartProject(projectId());
   };
 
-  /** After the DOM reflects a state change (sidebar opened, outline expanded). */
-  const afterRender = (run: () => void): void => {
-    requestAnimationFrame(() => requestAnimationFrame(run));
-  };
-
   /**
    * The requirement row for a slot, matched by integration and slot. Without
    * a slot (Set up…) the first unbound requirement is shown.
@@ -362,10 +507,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     readonly integration: string | undefined;
     readonly slot: string | undefined;
   }): void => {
-    if (sidebarCollapsed()) {
-      setSidebarCollapsed(false);
-      writeSidebar(false);
-    }
+    openSidebar();
     afterRender(() => {
       const rows = [...document.querySelectorAll('[data-testid="project-requirement"]')].filter(
         (element) => element instanceof HTMLElement,
@@ -407,14 +549,17 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
         openSource(target.source.file, target.source.line);
         return;
       case "unit": {
+        // A failed unit: point at it in the outline, show its logs and its declaration.
         const item = outline()
           .flatMap((group) => group.items)
           .find((entry) => entry.unit?.name === target.unit);
-        if (item !== undefined) {
-          selectOutlineItem(item);
-          setReveal({ key: item.key, token: (reveal()?.token ?? 0) + 1 });
+        if (item !== undefined) setReveal({ key: item.key, token: (reveal()?.token ?? 0) + 1 });
+        if (item?.unit !== undefined) {
+          setSelectedUnit(item.unit);
+          if (maximized() === "tabs") setMaximized(undefined);
         }
-        if (target.source !== undefined) openSource(target.source.file, target.source.line);
+        const source = target.source ?? item?.source;
+        if (source !== undefined) openSource(source.file, source.line);
         return;
       }
       case "connection":
@@ -492,13 +637,13 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     const pending = pendingBinding();
     if (pending === undefined) return;
     setPendingBinding(undefined);
-    const detail = await store.setProjectBinding(
+    const result = await store.setProjectBinding(
       projectId(),
       pending.requirement.integration,
       pending.requirement.slot,
       pending.instanceId,
     );
-    pending.resolve(detail !== undefined);
+    pending.resolve(result !== undefined);
   };
 
   const cancelBinding = (): void => {
@@ -507,11 +652,11 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     setPendingBinding(undefined);
   };
 
-  const sourceStyle = (): JSX.CSSProperties => {
-    if (maximized() === "source" || (logsCollapsed() && maximized() !== "logs")) {
+  const tabsStyle = (): JSX.CSSProperties => {
+    if (artifactFullscreen() || maximized() === "tabs" || (logsCollapsed() && maximized() !== "logs")) {
       return { flex: "1 1 0%" };
     }
-    if (maximized() === "logs") return { height: "32px", flex: "0 0 32px" };
+    if (maximized() === "logs") return { height: `${STRIP_HEIGHT}px`, flex: `0 0 ${STRIP_HEIGHT}px` };
     return { "flex-grow": split(), "flex-basis": "0%", "min-height": "96px" };
   };
 
@@ -519,6 +664,11 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     if (maximized() === "logs") return { flex: "1 1 0%" };
     if (logsHidden()) return { height: "32px", flex: "0 0 32px" };
     return { "flex-grow": 1 - split(), "flex-basis": "0%", "min-height": "96px" };
+  };
+
+  const jumpFor = (path: string): SourceJump | undefined => {
+    const value = jump();
+    return value?.file === path ? value : undefined;
   };
 
   return (
@@ -551,7 +701,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
       }
     >
       {(project) => (
-        <div class="flex h-full min-h-0 flex-col gap-2 overflow-hidden px-5 pb-4 pt-3">
+        <div class="flex h-full min-h-0 flex-col gap-2 overflow-hidden p-2" data-testid="project-workspace">
           {/* The top bar's switcher shows the name; keep a heading for assistive tech. */}
           <h1 class="sr-only">{project().name}</h1>
           <TopBarActions>
@@ -602,7 +752,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
             {(consent) => (
               <div
                 data-testid="project-consent"
-                class="shrink-0 rounded-md border border-[var(--v2-state-border-warning)] bg-[var(--v2-state-bg-warning)] px-3 py-2"
+                class="shrink-0 rounded-[10px] border border-[var(--v2-state-border-warning)] bg-[var(--v2-state-bg-warning)] px-3 py-2"
               >
                 <div class="flex items-center gap-2.5">
                   <AlertIcon size={13} class="shrink-0 text-warning" />
@@ -647,87 +797,151 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
             )}
           </Show>
 
-          <div class="flex min-h-0 flex-1 gap-3">
-            <Show when={!artifactFullscreen()}>
+          <div class="flex min-h-0 flex-1 gap-2">
+            <Show when={!artifactFullscreen() && !leftSidebarHidden()}>
               <ProjectNavigator
                 projectId={projectId()}
+                files={files()}
+                filesError={filesError()}
+                activeTab={tabs().active}
+                onOpenFile={openFile}
                 artifacts={artifacts()}
-                selectedArtifact={selectedArtifact()?.name}
                 onOpenArtifact={openArtifact}
-                onViewSource={closeArtifact}
                 outline={outline()}
-                selectedItem={selectedOutlineKey()}
-                onSelectItem={selectOutlineItem}
+                onOpenItem={openItem}
                 onOpenSource={openSource}
                 reveal={reveal()}
               />
             </Show>
 
             <div ref={splitArea} class="flex min-h-0 min-w-0 flex-1 flex-col">
-              <Show
-                when={selectedArtifact()}
-                fallback={
-                  <>
-                    <div class="min-h-0" style={sourceStyle()}>
-                      <SourcePanel
-                        projectId={projectId()}
-                        jump={jump()}
-                        markers={markers()}
-                        collapsed={maximized() === "logs"}
-                        maximized={maximized() === "source"}
-                        onToggleMaximize={() => toggleMaximize("source")}
-                      />
-                    </div>
-                    <Show when={maximized() === undefined && !logsCollapsed()}>
-                      <div
-                        role="separator"
-                        aria-orientation="horizontal"
-                        aria-label="Resize source and logs"
-                        data-testid="project-splitter"
-                        class="group flex h-1.5 shrink-0 cursor-row-resize touch-none items-center justify-center"
-                        onPointerDown={beginResize}
-                        onDblClick={resetSplit}
-                      >
-                        <span class="h-px w-10 rounded bg-[var(--v2-border-border-base)] transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
-                      </div>
-                    </Show>
-                    <div class="min-h-0" style={logsStyle()}>
-                      <LogsPanel
-                        projectId={projectId()}
-                        units={units()}
-                        selected={selectedUnit()}
-                        onSelect={filterLogs}
-                        collapsed={logsHidden()}
-                        onToggleCollapsed={toggleLogsCollapsed}
-                        maximized={maximized() === "logs"}
-                        onToggleMaximize={() => toggleMaximize("logs")}
-                      />
-                    </div>
-                  </>
-                }
+              <section
+                data-testid="tab-area"
+                class={cx("flex min-h-0 flex-col overflow-hidden", surface)}
+                style={tabsStyle()}
               >
-                {(artifact) => (
-                  <div class="min-h-0 flex-1">
-                    <ArtifactPanel
-                      projectId={projectId()}
-                      artifact={artifact()}
-                      fullscreen={artifactFullscreen()}
-                      onToggleFullscreen={() =>
-                        setArtifactFullscreen((current) => !current)
-                      }
-                      onClose={closeArtifact}
-                      onPopOut={() => popOutArtifact(artifact())}
-                      onOpenSource={openSource}
-                    />
+                <Show when={!artifactFullscreen()}>
+                  <TabStrip
+                    tabs={tabs().tabs}
+                    active={tabs().active}
+                    label={tabLabel}
+                    title={tabTitle}
+                    danger={(tab) => tab.kind === "artifact" && artifactNamed(tab.name)?.status === "error"}
+                    onActivate={selectTab}
+                    onClose={dismissTab}
+                    end={
+                      <IconButton
+                        label={maximized() === "tabs" ? "Restore tabs" : "Maximize tabs"}
+                        size="small"
+                        testId="tabs-maximize"
+                        onClick={() => toggleMaximize("tabs")}
+                      >
+                        <Show when={maximized() === "tabs"} fallback={<MaximizeIcon size={12} />}>
+                          <MinimizeIcon size={12} />
+                        </Show>
+                      </IconButton>
+                    }
+                  />
+                </Show>
+                <div class="relative min-h-0 flex-1">
+                  <For each={artifactTabs()}>
+                    {(name) => (
+                      <div
+                        data-testid="artifact-tab-panel"
+                        data-artifact={name}
+                        class="absolute inset-0"
+                        classList={{ hidden: tabs().active !== tabKey({ kind: "artifact", name }) }}
+                      >
+                        <Show
+                          when={artifactNamed(name)}
+                          fallback={
+                            <div class="grid h-full place-items-center text-[12px] text-faint">
+                              {store.isPending(`project:${projectId()}:artifacts`) ? "Loading…" : `No artifact named ${name}.`}
+                            </div>
+                          }
+                        >
+                          {(artifact) => (
+                            <ArtifactPanel
+                              projectId={projectId()}
+                              artifact={artifact()}
+                              fullscreen={artifactFullscreen()}
+                              onToggleFullscreen={() => setArtifactFullscreen((value) => !value)}
+                              onPopOut={() => popOutArtifact(artifact())}
+                              onOpenSource={openSource}
+                            />
+                          )}
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                  <Show when={activeFile()} keyed>
+                    {(path) => (
+                      <div class="absolute inset-0">
+                        <FileView
+                          projectId={projectId()}
+                          path={path}
+                          jump={jumpFor(path)}
+                          markers={markers()}
+                          onRefreshTree={() => void loadTree()}
+                        />
+                      </div>
+                    )}
+                  </Show>
+                  <Show when={activeTopic()} keyed>
+                    {(name) => (
+                      <div class="absolute inset-0">
+                        <TopicEventsView projectId={projectId()} name={name} title={topicTitle(name)} />
+                      </div>
+                    )}
+                  </Show>
+                  <Show when={tabsReady && current() === undefined}>
+                    <div data-testid="tabs-empty" class="grid h-full place-items-center px-6 text-center">
+                      <div>
+                        <p class="text-[12px] font-medium text-body">No open tabs</p>
+                        <p class="mt-1 text-[11px] text-faint">
+                          Open a file from Files, or an artifact or topic from the Outline.
+                        </p>
+                      </div>
+                    </div>
+                  </Show>
+                </div>
+              </section>
+              <Show when={!artifactFullscreen()}>
+                <Show
+                  when={maximized() === undefined && !logsCollapsed()}
+                  fallback={<div class="h-2 shrink-0" />}
+                >
+                  <div
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize tabs and logs"
+                    data-testid="project-splitter"
+                    class="group flex h-2 shrink-0 cursor-row-resize touch-none items-center justify-center"
+                    onPointerDown={beginResize}
+                    onDblClick={resetSplit}
+                  >
+                    <span class="h-px w-10 rounded bg-transparent transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
                   </div>
-                )}
+                </Show>
+                <div class="min-h-0" style={logsStyle()}>
+                  <LogsPanel
+                    projectId={projectId()}
+                    units={units()}
+                    selected={selectedUnit()}
+                    onSelect={filterLogs}
+                    collapsed={logsHidden()}
+                    onToggleCollapsed={toggleLogsCollapsed}
+                    maximized={maximized() === "logs"}
+                    onToggleMaximize={() => toggleMaximize("logs")}
+                  />
+                </div>
               </Show>
             </div>
 
             <Show when={!artifactFullscreen() && !sidebarCollapsed() && detail()}>
-              {(current) => (
+              {(value) => (
                 <ProjectSidebar
-                  detail={current()}
+                  detail={value()}
                   timers={timers()}
                   onRefreshTimers={() => void refreshTimers()}
                   onCollapse={toggleSidebar}

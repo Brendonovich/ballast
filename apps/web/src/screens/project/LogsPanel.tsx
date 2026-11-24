@@ -18,6 +18,7 @@ import {
   SelectInput,
   StatusDot,
   cx,
+  surface,
 } from "../../ui/primitives.tsx";
 
 const levelClass: Record<LogLevel, string> = {
@@ -125,7 +126,7 @@ export const LogsPanel = (props: {
 
   return (
     <section
-      class="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-edge bg-canvas"
+      class={cx("flex h-full min-h-0 flex-col overflow-hidden", surface)}
       data-testid="log-panel"
     >
       <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5 text-[11px] text-faint">

@@ -5,6 +5,7 @@ import { useAgent } from "../state/context.tsx";
 import { projectPath } from "../lib/routes.ts";
 import type { ProjectSection } from "../lib/routes.ts";
 import { ArrowLeftIcon } from "../ui/icons.tsx";
+import { cx, surface } from "../ui/primitives.tsx";
 import { ConnectionsScreen } from "./ConnectionsScreen.tsx";
 import { SettingsScreen } from "./SettingsScreen.tsx";
 
@@ -28,18 +29,20 @@ const ProjectSectionScreen = (props: { readonly section: ProjectSection }): JSX.
   const name = (): string => store.project(projectId())?.name ?? "project";
 
   return (
-    <div class="h-full overflow-y-auto" data-testid="project-section" data-section={props.section}>
-      <div class="mx-auto w-full max-w-[880px] px-8 pb-8 pt-4">
-        <button
-          type="button"
-          data-testid="project-back"
-          class="-ml-2 mb-4 inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-body"
-          onClick={() => navigate(projectPath(projectId()))}
-        >
-          <ArrowLeftIcon size={13} />
-          <span class="max-w-[320px] truncate">Back to {name()}</span>
-        </button>
-        {props.section === "connections" ? <ConnectionsScreen /> : <SettingsScreen />}
+    <div class="h-full p-2" data-testid="project-section" data-section={props.section}>
+      <div class={cx("h-full overflow-y-auto", surface)}>
+        <div class="mx-auto w-full max-w-[880px] px-8 pb-8 pt-4">
+          <button
+            type="button"
+            data-testid="project-back"
+            class="-ml-2 mb-4 inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-body"
+            onClick={() => navigate(projectPath(projectId()))}
+          >
+            <ArrowLeftIcon size={13} />
+            <span class="max-w-[320px] truncate">Back to {name()}</span>
+          </button>
+          {props.section === "connections" ? <ConnectionsScreen /> : <SettingsScreen />}
+        </div>
       </div>
     </div>
   );

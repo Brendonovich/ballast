@@ -5,12 +5,11 @@ import type { ArtifactSummary, ArtifactView } from "@ballast/agent-protocol";
 import { useAgent } from "../../state/context.tsx";
 import { artifactErrorSource, artifactStatusLabel } from "../../lib/format.ts";
 import {
-  ArrowLeftIcon,
   MaximizeIcon,
   MinimizeIcon,
   MoreIcon,
 } from "../../ui/icons.tsx";
-import { Button, IconButton, Spinner, cx } from "../../ui/primitives.tsx";
+import { Button, IconButton, Spinner } from "../../ui/primitives.tsx";
 import { ArtifactUrlsDialog } from "./ArtifactUrlsDialog.tsx";
 
 /**
@@ -27,7 +26,6 @@ export const ArtifactPanel = (props: {
   /** Pop-out windows: the window's top bar names the artifact, so no header. */
   readonly bare?: boolean;
   readonly onToggleFullscreen?: () => void;
-  readonly onClose?: () => void;
   readonly onPopOut?: () => void;
   readonly onOpenSource?: (file: string, line: number) => void;
 }): JSX.Element => {
@@ -166,18 +164,10 @@ export const ArtifactPanel = (props: {
   return (
     <section
       data-testid="artifact-panel"
-      class={cx(
-        "flex h-full min-h-0 flex-col overflow-hidden bg-canvas",
-        props.bare !== true && "rounded-md border border-edge",
-      )}
+      class="flex h-full min-h-0 flex-col overflow-hidden bg-canvas"
     >
       <Show when={props.bare !== true}>
-        <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5 text-[11px]">
-          <Show when={props.onClose}>
-            <IconButton label="Back to source" size="small" onClick={() => props.onClose?.()}>
-              <ArrowLeftIcon size={13} />
-            </IconButton>
-          </Show>
+        <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-3 text-[11px]">
           <span class="min-w-0 truncate font-medium text-body">
             {props.artifact.title ?? props.artifact.name}
           </span>

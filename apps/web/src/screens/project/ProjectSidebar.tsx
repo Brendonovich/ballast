@@ -22,6 +22,7 @@ import {
   Switch,
   TextInput,
   cx,
+  surface,
 } from "../../ui/primitives.tsx";
 
 const textOf = (value: ParamValue | undefined): string =>
@@ -227,7 +228,11 @@ const Section = (props: {
   readonly action?: JSX.Element;
   readonly children: JSX.Element;
 }): JSX.Element => (
-  <section class="border-b border-edge px-3 py-3 last:border-b-0">
+  <section
+    data-testid="project-sidebar-section"
+    data-section={props.title.toLowerCase()}
+    class="border-b border-edge px-3 py-3 last:border-b-0"
+  >
     <div class="flex h-5 items-center gap-2">
       <h2 class="text-[11px] font-medium text-body">{props.title}</h2>
       <Show when={props.action}>
@@ -316,7 +321,7 @@ export const ProjectSidebar = (props: {
   return (
     <aside
       data-testid="project-sidebar"
-      class="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-md border border-edge bg-canvas"
+      class={cx("flex w-[300px] shrink-0 flex-col overflow-hidden", surface)}
     >
       <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5">
         <span class="text-[11px] font-medium text-body">Project</span>

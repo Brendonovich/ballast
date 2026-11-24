@@ -111,6 +111,13 @@ const dotTone: Record<Tone, string> = {
   info: "bg-info",
 };
 
+/**
+ * A raised pane on the window background, as in OpenCode's desktop app
+ * (packages/app/src/session/session-frame.tsx): 10px corners, the base
+ * background and the raised elevation, which draws the hairline border.
+ */
+export const surface = "rounded-[10px] bg-canvas shadow-[var(--v2-elevation-raised)]";
+
 export const StatusDot = (props: {
   readonly tone: Tone;
   readonly pulse?: boolean;

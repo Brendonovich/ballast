@@ -198,3 +198,30 @@ export const ExternalLinkIcon = (props: IconProps) => (
     <path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
   </Icon>
 );
+
+export const PanelLeftIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+    <path d="M9.5 4.5v15" />
+  </Icon>
+);
+
+export const FileIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10Z" />
+    <path d="M14 3.5v5h5" />
+  </Icon>
+);
+
+export const ArtifactIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+    <path d="M3.5 9h17" />
+  </Icon>
+);
+
+export const EventsIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M3 12h4l2.5-6 5 12 2.5-6h4" />
+  </Icon>
+);

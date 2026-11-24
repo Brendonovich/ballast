@@ -107,11 +107,11 @@ test("the top bar shows one status word and an issues popover without layout shi
   await noPreviousVersionText(page);
 
   const before = await Promise.all(
-    ["project-navigator", "source-panel", "log-panel", "project-sidebar"].map((id) => boxOf(page, id)),
+    ["project-navigator", "tab-area", "log-panel", "project-sidebar"].map((id) => boxOf(page, id)),
   );
   await openIssues(page);
   const after = await Promise.all(
-    ["project-navigator", "source-panel", "log-panel", "project-sidebar"].map((id) => boxOf(page, id)),
+    ["project-navigator", "tab-area", "log-panel", "project-sidebar"].map((id) => boxOf(page, id)),
   );
   expect(after).toEqual(before);
 
@@ -175,13 +175,14 @@ test("each issue takes you to where it can be seen or fixed", async ({ page }) =
   await expect(page.getByTestId("source-marker-tooltip")).toBeVisible();
   await expect(page.getByTestId("source-marker-tooltip")).toContainText("is not assignable");
 
-  // A failed unit: selected in the outline (opened for it), logs filtered.
+  // A failed unit: pointed at in the outline (opened for it), logs filtered.
+  await page.getByTestId("outline-toggle").click();
   await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
   await openIssues(page);
   await issue(page, "unit-failed").click();
   await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
   const redemption = page.locator('[data-testid="outline-row"][data-unit-name="redemption"]');
-  await expect(redemption).toHaveAttribute("data-selected", "true");
+  await expect(redemption).toHaveAttribute("data-flash", "true");
   await expect(redemption).toBeInViewport();
   await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
     "Topic · redemption",
@@ -230,8 +231,8 @@ test("each issue takes you to where it can be seen or fixed", async ({ page }) =
 test("failed and waiting units explain themselves in the outline", async ({ page }) => {
   await useTheme(page, "dark");
   await openMain(page);
-  await page.getByTestId("outline-toggle").click();
-  await expect(page.getByTestId("outline-failed")).toHaveText("1 failed");
+  // The failed redemption topic and the failed overlay artifact build.
+  await expect(page.getByTestId("outline-failed")).toHaveText("2 failed");
   const failed = page.locator('[data-testid="outline-row"][data-unit-name="redemption"]');
   await expect(failed).toHaveAttribute("data-status", "failed");
   await expect(failed).toHaveAttribute(
@@ -247,7 +248,6 @@ test("failed and waiting units explain themselves in the outline", async ({ page
 
   // A topic waiting on an offline connection names it.
   await page.goto("/#/projects/proj_alt");
-  await page.getByTestId("outline-toggle").click();
   const waiting = page.locator('[data-testid="outline-row"][data-unit-name="scene"]');
   await expect(waiting).toHaveAttribute("data-status", "waiting");
   await expect(waiting).toHaveAttribute(

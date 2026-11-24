@@ -8,16 +8,31 @@ import type {
 
 import { unitKindPlural } from "./format.ts";
 
-/** One clickable declaration in the project outline. */
+/**
+ * What clicking an outline row opens. Rows without one are not clickable;
+ * their declaration is still one hover away through the code icon.
+ *  - topic: its events tab;
+ *  - param: its field in the Project panel;
+ *  - timer: its pending fires in the Project panel's timers list.
+ */
+export type OutlineOpen =
+  | { readonly kind: "topic"; readonly name: string }
+  | { readonly kind: "param"; readonly name: string }
+  | { readonly kind: "timer"; readonly name: string };
+
+/** One declaration in the project outline. */
 export interface OutlineItem {
-  /** Stable across refreshes; used for selection. */
+  /** Stable across refreshes; used to find and reveal the row. */
   readonly key: string;
   readonly label: string;
+  /** Muted secondary text after the label. */
+  readonly detail?: string;
   readonly status: UnitStatus;
   readonly source?: SourceLocation;
+  readonly open?: OutlineOpen;
   /** Set for units, whose logs can be filtered. Stores and API have no logs. */
   readonly unit?: UnitSummary;
-  /** Why the unit is failed or waiting, for its tooltip. */
+  /** Why the unit is failed or waiting, or what it lists, for its tooltip. */
   readonly note?: string;
 }
 
@@ -66,17 +81,30 @@ const unitNote = (
     : `Waiting for ${name} (${topic.integration} · ${topic.slot}), which is offline`;
 };
 
+const openFor = (unit: UnitSummary): OutlineOpen | undefined => {
+  switch (unit.kind) {
+    case "topic":
+    case "param":
+    case "timer":
+      return { kind: unit.kind, name: unit.name };
+    default:
+      return undefined;
+  }
+};
+
 const unitItem = (
   unit: UnitSummary,
   detail: ProjectDetail,
   connectionName: ConnectionName,
 ): OutlineItem => {
   const note = unitNote(unit, detail, connectionName);
+  const open = openFor(unit);
   return {
     key: unitKey(unit),
     label: unit.title ?? unit.name,
     status: unit.status,
     ...(unit.source === undefined ? {} : { source: unit.source }),
+    ...(open === undefined ? {} : { open }),
     unit,
     ...(note === undefined ? {} : { note }),
   };
@@ -95,9 +123,10 @@ const unitGroup = (
 });
 
 /**
- * Everything a project declares except artifacts, which have their own list.
- * Units come from the detail's unit rows; the API and stores come from the
- * manifest because they are not units.
+ * Everything a project declares except artifacts, which the outline lists
+ * from the artifact summaries. Units come from the detail's unit rows; the
+ * API and stores come from the manifest because they are not units. The API
+ * is one row: its procedures share one declaration.
  */
 export const buildOutline = (
   detail: ProjectDetail | undefined,
@@ -109,16 +138,22 @@ export const buildOutline = (
   const groups: Array<OutlineGroup> = unitOrder.map((kind) =>
     unitGroup(detail, kind, connectionName),
   );
-  groups.push({
-    id: "api",
-    title: "API",
-    items: (api?.procedures ?? []).map((procedure) => ({
-      key: `api:${procedure.name}`,
-      label: procedure.name,
-      status: "active",
-      ...(api?.source === undefined ? {} : { source: api.source }),
-    })),
-  });
+  if (api !== undefined) {
+    const names = api.procedures.map((procedure) => procedure.name);
+    groups.push({
+      id: "api",
+      title: "API",
+      items: [
+        {
+          key: "api",
+          label: names.length === 1 ? "1 procedure" : `${names.length} procedures`,
+          ...(names.length === 0 ? {} : { detail: names.join(", "), note: names.join("\n") }),
+          status: "active",
+          ...(api.source === undefined ? {} : { source: api.source }),
+        },
+      ],
+    });
+  }
   groups.push({
     id: "store",
     title: "Stores",
@@ -132,39 +167,3 @@ export const buildOutline = (
   groups.push(unitGroup(detail, "database", connectionName));
   return groups.filter((group) => group.items.length > 0);
 };
-
-export interface OutlineLayout {
-  readonly open: boolean;
-  readonly height: number;
-}
-
-export const OUTLINE_MIN_HEIGHT = 120;
-export const OUTLINE_MAX_HEIGHT = 900;
-export const DEFAULT_OUTLINE: OutlineLayout = { open: false, height: 300 };
-
-export const clampOutlineHeight = (height: number): number =>
-  Math.round(Math.min(OUTLINE_MAX_HEIGHT, Math.max(OUTLINE_MIN_HEIGHT, height)));
-
-/** Collapsed by default; a malformed value falls back to the default. */
-export const parseOutlineLayout = (raw: string | null): OutlineLayout => {
-  if (raw === null) return DEFAULT_OUTLINE;
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (typeof value !== "object" || value === null) return DEFAULT_OUTLINE;
-    const open: unknown = Reflect.get(value, "open");
-    const height: unknown = Reflect.get(value, "height");
-    return {
-      open: open === true,
-      height:
-        typeof height === "number" && Number.isFinite(height)
-          ? clampOutlineHeight(height)
-          : DEFAULT_OUTLINE.height,
-    };
-  } catch {
-    return DEFAULT_OUTLINE;
-  }
-};
-
-/** Keyed by project: each window shows one project, so this is per window. */
-export const outlineStorageKey = (projectId: string): string =>
-  `ballast.projectOutline.${projectId}`;

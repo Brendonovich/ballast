@@ -7,6 +7,7 @@ import type {
   CloudStatus,
   CloudTwitchAccount,
   CreateArtifactUrlResult,
+  EventHistorySubscription,
   ConnectionAuth,
   ConnectionIntegration,
   ConnectionMode,
@@ -19,6 +20,8 @@ import type {
   ProjectDetail,
   ProjectFileContent,
   ProjectSummary,
+  QueryEventHistoryRequest,
+  QueryEventHistoryResponse,
   RenewArtifactViewResponse,
   ServiceEvent,
   ServiceInfo,
@@ -159,6 +162,18 @@ export interface AgentStore {
     path: string,
   ) => Promise<ProjectFileContent | undefined>;
   readonly listTimers: (projectId: string) => Promise<ReadonlyArray<TimerSummary> | undefined>;
+  /**
+   * One page of a subscription's durable history, newest first. Quiet: the
+   * topic view polls this, so failures are returned rather than toasted.
+   */
+  readonly queryEventHistory: (
+    request: QueryEventHistoryRequest,
+  ) => Promise<QuietOutcome<QueryEventHistoryResponse>>;
+  /** A project's history subscriptions, optionally just one. Quiet, like the query. */
+  readonly listEventHistorySubscriptions: (
+    projectId: string,
+    subscription?: string,
+  ) => Promise<QuietOutcome<ReadonlyArray<EventHistorySubscription>>>;
   readonly cancelTimer: (
     projectId: string,
     timer: string,
@@ -227,6 +242,10 @@ const removeBy = <A>(
   items: ReadonlyArray<A>,
   predicate: (value: A) => boolean,
 ): ReadonlyArray<A> => items.filter((item) => !predicate(item));
+
+export type QuietOutcome<A> =
+  | { readonly ok: true; readonly value: A }
+  | { readonly ok: false; readonly message: string };
 
 type Outcome<A> =
   | { readonly ok: true; readonly value: A }
@@ -983,6 +1002,32 @@ export const createAgentStore = (
     return outcome.ok ? outcome.value.timers : undefined;
   };
 
+  const quiet = async <A, E>(effect: Effect.Effect<A, E>): Promise<QuietOutcome<A>> => {
+    try {
+      return { ok: true, value: await runtime.run(effect) };
+    } catch (error) {
+      return { ok: false, message: errorMessage(error) };
+    }
+  };
+
+  const queryEventHistory = (
+    request: QueryEventHistoryRequest,
+  ): Promise<QuietOutcome<QueryEventHistoryResponse>> =>
+    quiet(runtime.client.QueryEventHistory(request));
+
+  const listEventHistorySubscriptions = async (
+    projectId: string,
+    subscription?: string,
+  ): Promise<QuietOutcome<ReadonlyArray<EventHistorySubscription>>> => {
+    const outcome = await quiet(
+      runtime.client.ListEventHistorySubscriptions({
+        projectId,
+        ...(subscription === undefined ? {} : { subscription }),
+      }),
+    );
+    return outcome.ok ? { ok: true, value: outcome.value.subscriptions } : outcome;
+  };
+
   const cancelTimer = async (
     projectId: string,
     timer: string,
@@ -1240,6 +1285,8 @@ export const createAgentStore = (
     listProjectFiles,
     readProjectFile,
     listTimers,
+    queryEventHistory,
+    listEventHistorySubscriptions,
     cancelTimer,
     setProjectBinding,
     createConnection,

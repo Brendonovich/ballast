@@ -98,6 +98,20 @@ const artifactEntry = `export default (root: HTMLElement) => {
 };
 `;
 
+const tickBundle = (title: string): string => `import * as Ballast from "@ballast/core";
+import * as Fake from "@ballast/fake";
+import { Effect } from "effect";
+
+export const title = "${title}";
+
+export default Effect.gen(function* () {
+  const fake = yield* Fake.Connection("main");
+  // Fake ticks keep no history by default; chat messages do.
+  yield* Fake.Tick.subscribe("tick", fake, (tick) => Effect.log(\`tick \${tick.n}\`));
+  yield* Fake.Chat.subscribe("chat", fake, (message) => Effect.log(\`chat \${message.text}\`));
+}) satisfies Ballast.Project;
+`;
+
 const writeBundle = async (
   projectsDir: string,
   projectName: string,
@@ -264,7 +278,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     const mainName = "E2E Project";
     await createProject(page, mainName);
     await writeBundle(info.projectsDir, mainName, projectBundle(mainName));
-    await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
+    await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
     await openOutline(page);
     await expect(unit(page, "alpha")).toBeVisible({ timeout: 20_000 });
     await expect(unit(page, "beta")).toBeVisible();
@@ -379,18 +393,14 @@ test("real service: connection instances, project bindings, workers, logs, sourc
         await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
       }
 
-      await page
-        .getByTestId("artifact-panel")
-        .getByRole("button", { name: "Back to source" })
-        .click();
       await expect(unit(page, "alpha")).toBeVisible();
 
-      // One click on an outline item filters its logs and shows its declaration.
-      await unit(page, "alpha").click();
-      await expect(unit(page, "alpha")).toHaveAttribute("data-selected", "true");
-      await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
-        "Run · alpha",
-      );
+      // Runs are not clickable; the code icon shows the declaration, and the
+      // logs panel filters by unit.
+      await expect(unit(page, "alpha")).toHaveAttribute("data-clickable", "false");
+      await unit(page, "alpha").hover();
+      await unit(page, "alpha").getByTestId("outline-source").click();
+      await page.getByTestId("log-unit-filter").selectOption({ label: "Run · alpha" });
       await expect(
         page.getByTestId("log-line").filter({ hasText: "hello from alpha" }).first(),
       ).toBeVisible();
@@ -589,4 +599,69 @@ test("real service: connection instances, project bindings, workers, logs, sourc
   } finally {
     await obs.close();
   }
+});
+
+test("real service: a topic tab lists the events a running project records", async ({ page }) => {
+  test.slow();
+  const info = readRealServiceInfo();
+  test.skip(info === undefined, "real service was not started by globalSetup");
+  if (info === undefined) return;
+  const errors: Array<string> = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+
+  await page.goto(`${info.url}/?token=${encodeURIComponent(info.token)}`);
+  await page.evaluate(() => localStorage.setItem("ballast.theme", "dark"));
+  await page.reload();
+  await appReady(page);
+
+  // A fake connection: its local driver emits a tick a second and a chat
+  // message every few seconds.
+  await goConnections(page);
+  await page.getByTestId("add-connection").click();
+  await page.getByTestId("connection-integration").selectOption("fake");
+  await page.getByTestId("connection-label").fill("E2E Fake");
+  await page.getByTestId("create-connection-submit").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Connected", { exact: true })).toBeVisible({ timeout: 20_000 });
+  await dialog.getByRole("button", { name: "Done" }).click();
+
+  const name = "E2E Ticks";
+  await createProject(page, name);
+  await writeBundle(info.projectsDir, name, tickBundle(name));
+  const tick = unit(page, "tick");
+  await expect(tick).toBeVisible({ timeout: 20_000 });
+
+  // Set up (consent for the proposed binding) or Start, then wait for ticks.
+  const action = page.getByTestId("toggle-project");
+  await expect(action).toHaveText(/Set up…|Start/, { timeout: 20_000 });
+  if ((await action.textContent())?.includes("Set up") === true) {
+    await action.click();
+    await expect(page.getByTestId("approve-project-consent")).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("approve-project-consent").click();
+  } else {
+    await action.click();
+  }
+  await expect(page.getByTestId("project-status")).toHaveText("Running", { timeout: 20_000 });
+
+  await tick.getByRole("button").first().click();
+  const view = page.getByTestId("topic-events");
+  await expect(view).toHaveAttribute("data-state", "off", { timeout: 20_000 });
+  await expect(page.getByTestId("topic-events-off")).toContainText("History is off for this topic");
+
+  await unit(page, "chat").getByRole("button").first().click();
+  await expect(view).toHaveAttribute("data-topic", "chat");
+  await expect(view).toHaveAttribute("data-state", "on", { timeout: 20_000 });
+  const rows = page.getByTestId("topic-event");
+  await expect(rows.first()).toBeVisible({ timeout: 20_000 });
+  // New messages arrive while the tab is open.
+  const seen = await rows.count();
+  await expect.poll(() => rows.count(), { timeout: 15_000 }).toBeGreaterThan(seen);
+  await rows.first().click();
+  await expect(page.getByTestId("topic-event-json")).toContainText('"text"');
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: "screenshots/real-dark-12-topic-events.png" });
+  expect(errors).toEqual([]);
 });

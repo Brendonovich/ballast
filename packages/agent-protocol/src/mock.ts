@@ -888,6 +888,117 @@ const initialLogs = (): ReadonlyArray<LogEntry> => [
   },
 ];
 
+/**
+ * Durable subscription history for the mock's topics, newest first. Main
+ * Channel's redemptions span more than one page; its cheers have history
+ * turned off; Second Channel's ticks fit one page and its scene topic has
+ * nothing recorded yet.
+ */
+interface MockHistory {
+  readonly subscription: EventHistorySubscription;
+  readonly entries: ReadonlyArray<EventHistoryEntry>;
+}
+
+const mockHistoryPolicy = { maxEntries: 1000, retentionMs: 7 * 24 * HOUR };
+
+const mockRewards = ["Hydrate", "Scene: BRB", "Scene: Game", "Highlight my message", "Stretch"];
+const mockViewers = [
+  ["pixel_pal", "Pixel Pal"],
+  ["generous_goblin", "Generous Goblin"],
+  ["lofi_lurker", "lofi_lurker"],
+  ["speedrun_sam", "SpeedrunSam"],
+  ["cozy_corvid", "CozyCorvid"],
+] as const;
+
+const mockHistory = (): ReadonlyMap<string, ReadonlyArray<MockHistory>> => {
+  const now = Date.now();
+  const redemptions: Array<EventHistoryEntry> = [];
+  for (let index = 0; index < 64; index += 1) {
+    const at = now - 4 * MINUTE - index * 7 * MINUTE;
+    const viewer = mockViewers[index % mockViewers.length] ?? mockViewers[0];
+    const reward = mockRewards[index % mockRewards.length] ?? "Hydrate";
+    redemptions.push({
+      cursor: "redemption-" + String(64 - index),
+      receivedAt: at,
+      fingerprint: "mock",
+      event: {
+        id: "f1c2" + String(1000 + index),
+        broadcaster_user_login: "streamer",
+        user_login: viewer[0],
+        user_name: viewer[1],
+        user_input: index % 4 === 0 ? "gg!" : "",
+        status: "unfulfilled",
+        reward: { id: "reward-" + String(index % mockRewards.length), title: reward, cost: 100 * ((index % 5) + 1) },
+        redeemed_at: new Date(at).toISOString(),
+      },
+    });
+  }
+  const ticks: Array<EventHistoryEntry> = [];
+  for (let index = 0; index < 18; index += 1) {
+    ticks.push({
+      cursor: "tick-" + String(18 - index),
+      receivedAt: now - 20_000 - index * 30_000,
+      fingerprint: "mock",
+      event: { n: 120 - index },
+    });
+  }
+  return new Map([
+    [
+      mainProject.id,
+      [
+        {
+          subscription: {
+            name: "redemption",
+            integration: "twitch",
+            slot: "broadcaster",
+            topic: "twitch/channel.channel_points_custom_reward_redemption.add",
+            history: true,
+            ...mockHistoryPolicy,
+          },
+          entries: redemptions,
+        },
+        {
+          subscription: {
+            name: "cheer",
+            integration: "twitch",
+            slot: "broadcaster",
+            topic: "twitch/channel.cheer",
+            history: false,
+          },
+          entries: [],
+        },
+      ],
+    ],
+    [
+      altProject.id,
+      [
+        {
+          subscription: {
+            name: "tick",
+            integration: "fake",
+            slot: "main",
+            topic: "fake/tick",
+            history: true,
+            ...mockHistoryPolicy,
+          },
+          entries: ticks,
+        },
+        {
+          subscription: {
+            name: "scene",
+            integration: "obs",
+            slot: "secondary",
+            topic: "obs/CurrentProgramSceneChanged",
+            history: true,
+            ...mockHistoryPolicy,
+          },
+          entries: [],
+        },
+      ],
+    ],
+  ]);
+};
+
 const initialEvents = (): ReadonlyArray<EventRecord> => [
   {
     seq: 1,
@@ -1266,6 +1377,7 @@ export const MockAgentStoreLive = Layer.effect(
 
 const handlers = Effect.gen(function* () {
   const store = yield* MockStore;
+  const history = mockHistory();
 
   const allProjects = (state: MockState): ReadonlyArray<ProjectSummary> =>
     state.projectOrder.flatMap((id) => {
@@ -2409,23 +2521,11 @@ const handlers = Effect.gen(function* () {
         if (!state.projects.has(request.projectId)) {
           return yield* fail(agentError("not-found", "No project " + request.projectId));
         }
-        const nameOf = (record: EventRecord): string =>
-          record.unitName ?? record.integration + "/" + record.topic;
-        const rows: ReadonlyArray<EventHistoryEntry> = state.events
-          .filter(
-            (record) =>
-              record.projectId === request.projectId &&
-              record.direction === "inbound" &&
-              record.dropped !== true &&
-              nameOf(record) === request.subscription,
-          )
-          .sort((left, right) => right.at - left.at)
-          .map((record) => ({
-            cursor: String(record.seq),
-            receivedAt: record.at,
-            fingerprint: "mock",
-            event: record.payload,
-          }));
+        const found = history
+          .get(request.projectId)
+          ?.find((entry) => entry.subscription.name === request.subscription);
+        const rows =
+          found === undefined || !found.subscription.history ? [] : found.entries;
         const start =
           request.before === undefined
             ? 0
@@ -2435,7 +2535,7 @@ const handlers = Effect.gen(function* () {
         const next = page[page.length - 1];
         return {
           entries: page,
-          ...(page.length < limit || next === undefined
+          ...(start + limit >= rows.length || next === undefined
             ? {}
             : { nextCursor: next.cursor }),
         };
@@ -2450,29 +2550,14 @@ const handlers = Effect.gen(function* () {
         if (!state.projects.has(request.projectId)) {
           return yield* fail(agentError("not-found", "No project " + request.projectId));
         }
-        const subscriptions = new Map<string, EventHistorySubscription>();
-        for (const record of state.events) {
-          if (record.projectId !== request.projectId) continue;
-          if (record.direction !== "inbound" || record.dropped === true) continue;
-          const name = record.unitName ?? record.integration + "/" + record.topic;
-          if (subscriptions.has(name)) continue;
-          if (
-            request.subscription !== undefined &&
-            request.subscription !== name
-          ) {
-            continue;
-          }
-          subscriptions.set(name, {
-            name,
-            integration: record.integration,
-            slot: record.connectionId?.split("/")[1] ?? "main",
-            topic: record.topic,
-            history: true,
-            maxEntries: 1000,
-            retentionMs: 7 * 24 * 60 * 60 * 1000,
-          });
-        }
-        return { subscriptions: [...subscriptions.values()] };
+        return {
+          subscriptions: (history.get(request.projectId) ?? [])
+            .map((entry) => entry.subscription)
+            .filter(
+              (subscription) =>
+                request.subscription === undefined || subscription.name === request.subscription,
+            ),
+        };
       }),
 
     WatchService: () =>

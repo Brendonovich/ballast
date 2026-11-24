@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import type { RouteSectionProps } from "@solidjs/router";
@@ -12,7 +12,9 @@ import { focusConnection, requestProjectIntent } from "../lib/project-intent.ts"
 import type { ProjectIssue } from "@ballast/agent-protocol";
 import { ProjectStatusButton } from "./IssuesPopover.tsx";
 import { TRAFFIC_LIGHT_INSET, insetTitleBar } from "../lib/titlebar.ts";
-import { ConnectionsIcon, ProjectsIcon, SettingsIcon } from "../ui/icons.tsx";
+import { ConnectionsIcon, PanelLeftIcon, ProjectsIcon, SettingsIcon } from "../ui/icons.tsx";
+import { isSidebarShortcut } from "../lib/sidebar-layout.ts";
+import { leftSidebarHidden, toggleLeftSidebar } from "../state/left-sidebar.ts";
 import {
   artifactFromPath,
   projectIdFromPath,
@@ -96,6 +98,21 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   const artifactName = (): string | undefined => artifactFromPath(location.pathname);
   const section = (): ProjectSection | undefined => projectSectionFromPath(location.pathname);
   const projectWindow = (): boolean => projectId() !== undefined;
+  /** The project view itself, where the left sidebar lives. */
+  const projectView = (): boolean =>
+    projectWindow() && section() === undefined && artifactName() === undefined;
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+  const shortcutLabel = mac ? "⌘B" : "Ctrl+B";
+
+  onMount(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!projectView() || !isSidebarShortcut(event, mac)) return;
+      event.preventDefault();
+      toggleLeftSidebar();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    onCleanup(() => document.removeEventListener("keydown", onKeyDown));
+  });
 
   createEffect(() => {
     // Artifact windows only show the artifact; they do not need project logs.
@@ -222,9 +239,12 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
     return `Service ${state.toLowerCase()} (${where})${cloudLabel}`;
   };
 
-  const barClass = (): string =>
+  // The project window's bar sits on the window background with no rule
+  // under it; the panes below are raised surfaces (as in OpenCode's desktop app).
+  const barClass = (variant: "project" | "artifact"): string =>
     cx(
-      "flex h-[40px] shrink-0 items-center gap-2 border-b border-edge bg-rail pr-2",
+      "flex h-[40px] shrink-0 items-center gap-2 bg-rail pr-2",
+      variant === "artifact" && "border-b border-edge",
       inset ? "titlebar-drag" : "pl-2",
     );
   const barStyle = (): JSX.CSSProperties | undefined =>
@@ -260,7 +280,10 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   );
 
   return (
-    <div class="flex h-full min-h-0 bg-canvas text-body" data-testid="app-shell">
+    <div
+      class={cx("flex h-full min-h-0 text-body", projectWindow() && artifactName() === undefined ? "bg-rail" : "bg-canvas")}
+      data-testid="app-shell"
+    >
       <Show
         when={projectWindow()}
         fallback={
@@ -340,7 +363,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
             when={artifactName() === undefined}
             fallback={
               // Pop-out artifact windows only name what they show.
-              <header data-testid="top-bar" data-variant="artifact" class={barClass()} style={barStyle()}>
+              <header data-testid="top-bar" data-variant="artifact" class={barClass("artifact")} style={barStyle()}>
                 <span class="min-w-0 truncate text-[12px] font-medium text-strong" data-testid="top-bar-artifact">
                   {store.artifacts(projectId() ?? "").find((entry) => entry.name === artifactName())
                     ?.title ?? artifactName()}
@@ -352,7 +375,23 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
               </header>
             }
           >
-            <header data-testid="top-bar" data-variant="project" class={barClass()} style={barStyle()}>
+            <header data-testid="top-bar" data-variant="project" class={barClass("project")} style={barStyle()}>
+              <button
+                type="button"
+                data-testid="toggle-left-sidebar"
+                aria-label={leftSidebarHidden() ? "Show sidebar" : "Hide sidebar"}
+                aria-pressed={!leftSidebarHidden()}
+                aria-keyshortcuts={mac ? "Meta+B" : "Control+B"}
+                title={`${leftSidebarHidden() ? "Show sidebar" : "Hide sidebar"} (${shortcutLabel})`}
+                class={cx(
+                  "grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-body",
+                  !projectView() && "invisible",
+                )}
+                tabIndex={projectView() ? 0 : -1}
+                onClick={toggleLeftSidebar}
+              >
+                <PanelLeftIcon size={15} />
+              </button>
               <ProjectSwitcher
                 projectId={projectId() ?? ""}
                 canOpenWindows={bridge !== undefined}

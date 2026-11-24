@@ -2,15 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectDetail } from "@ballast/agent-protocol";
 import { emptyProjectManifest } from "@ballast/agent-protocol";
 
-import {
-  DEFAULT_OUTLINE,
-  OUTLINE_MAX_HEIGHT,
-  OUTLINE_MIN_HEIGHT,
-  buildOutline,
-  outlineStorageKey,
-  parseOutlineLayout,
-  unitKey,
-} from "./outline.ts";
+import { buildOutline, unitKey } from "./outline.ts";
 
 const detail: ProjectDetail = {
   summary: {
@@ -30,7 +22,10 @@ const detail: ProjectDetail = {
     stores: [{ name: "count", kind: "counter", source: { file: "ballast.ts", line: 9, column: 3 } }],
     api: {
       source: { file: "ballast.ts", line: 12, column: 3 },
-      procedures: [{ name: "Snapshot", kind: "query", stream: false }],
+      procedures: [
+        { name: "Snapshot", kind: "query", stream: false },
+        { name: "ResetCounters", kind: "action", stream: false },
+      ],
     },
   },
   requirements: [],
@@ -38,6 +33,7 @@ const detail: ProjectDetail = {
   units: [
     { kind: "database", name: "main", status: "active" },
     { kind: "param", name: "greeting", title: "Greeting", status: "active" },
+    { kind: "run", name: "loop", status: "active" },
     {
       kind: "topic",
       name: "chat",
@@ -52,6 +48,7 @@ describe("outline", () => {
     const groups = buildOutline(detail);
     expect(groups.map((group) => group.title)).toEqual([
       "Topics",
+      "Runs",
       "Params",
       "API",
       "Stores",
@@ -61,12 +58,43 @@ describe("outline", () => {
     expect(topic?.key).toBe(unitKey({ kind: "topic", name: "chat" }));
     expect(topic?.source?.line).toBe(4);
     expect(topic?.unit?.name).toBe("chat");
-    expect(groups[1]?.items[0]?.label).toBe("Greeting");
-    // API and stores jump to source but have no unit, so they do not filter logs.
-    expect(groups[2]?.items[0]?.unit).toBeUndefined();
-    expect(groups[2]?.items[0]?.source?.line).toBe(12);
-    expect(groups[3]?.items[0]?.key).toBe("store:count");
+    expect(groups[2]?.items[0]?.label).toBe("Greeting");
+    // API and stores have a declaration but no unit, so they do not filter logs.
+    expect(groups[3]?.items[0]?.unit).toBeUndefined();
+    expect(groups[3]?.items[0]?.source?.line).toBe(12);
+    expect(groups[4]?.items[0]?.key).toBe("store:count");
     expect(buildOutline(undefined)).toEqual([]);
+  });
+
+  it("shows the API as one row listing its procedures", () => {
+    const api = buildOutline(detail).find((group) => group.id === "api");
+    expect(api?.items).toEqual([
+      {
+        key: "api",
+        label: "2 procedures",
+        detail: "Snapshot, ResetCounters",
+        note: "Snapshot\nResetCounters",
+        status: "active",
+        source: { file: "ballast.ts", line: 12, column: 3 },
+      },
+    ]);
+    const { api: _api, ...withoutApi } = detail.manifest;
+    expect(buildOutline({ ...detail, manifest: withoutApi }).some((group) => group.id === "api")).toBe(false);
+  });
+
+  it("opens topics, params and timers; other rows only show their declaration", () => {
+    const items = buildOutline({
+      ...detail,
+      units: [...detail.units, { kind: "timer", name: "cooldown", status: "active" }],
+    }).flatMap((group) => group.items);
+    const open = (key: string) => items.find((item) => item.key === key)?.open;
+    expect(open("unit:topic:chat")).toEqual({ kind: "topic", name: "chat" });
+    expect(open("unit:param:greeting")).toEqual({ kind: "param", name: "greeting" });
+    expect(open("unit:timer:cooldown")).toEqual({ kind: "timer", name: "cooldown" });
+    expect(open("unit:run:loop")).toBeUndefined();
+    expect(open("unit:database:main")).toBeUndefined();
+    expect(open("api")).toBeUndefined();
+    expect(open("store:count")).toBeUndefined();
   });
 
   it("explains failed units and topics waiting on an offline connection", () => {
@@ -124,24 +152,11 @@ describe("outline", () => {
     expect(fallback.find((item) => item.unit?.name === "chat")?.note).toBe(
       "Waiting: Twitch (broadcaster) offline",
     );
-    expect(buildOutline(detail).flatMap((group) => group.items).every((item) => item.note === undefined)).toBe(true);
-  });
-
-  it("is collapsed by default and restores a stored layout", () => {
-    expect(parseOutlineLayout(null)).toEqual(DEFAULT_OUTLINE);
-    expect(DEFAULT_OUTLINE.open).toBe(false);
-    expect(parseOutlineLayout("not json")).toEqual(DEFAULT_OUTLINE);
-    expect(parseOutlineLayout(JSON.stringify({ open: true, height: 240 }))).toEqual({
-      open: true,
-      height: 240,
-    });
-    expect(parseOutlineLayout(JSON.stringify({ open: true, height: 4 })).height).toBe(
-      OUTLINE_MIN_HEIGHT,
-    );
-    expect(parseOutlineLayout(JSON.stringify({ open: "yes", height: 99_999 }))).toEqual({
-      open: false,
-      height: OUTLINE_MAX_HEIGHT,
-    });
-    expect(outlineStorageKey("proj_main")).not.toBe(outlineStorageKey("proj_alt"));
+    expect(
+      buildOutline(detail)
+        .flatMap((group) => group.items)
+        .filter((item) => item.unit !== undefined)
+        .every((item) => item.note === undefined),
+    ).toBe(true);
   });
 });

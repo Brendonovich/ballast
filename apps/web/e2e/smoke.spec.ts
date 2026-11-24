@@ -138,38 +138,42 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await expect(page.getByTestId("source-panel")).toContainText('Ballast.Database("main")');
   await expect(page.getByTestId("log-line").first()).toBeVisible();
 
-  // View source is the default view; the outline starts collapsed.
-  await expect(page.getByTestId("view-source")).toHaveAttribute("data-selected", "true");
-  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
-  await expect(page.getByTestId("outline-row")).toHaveCount(0);
+  // The entry file is the default tab; Files and the Outline start open.
+  await expect(page.getByTestId("project-tab")).toHaveCount(1);
+  await expect(page.getByTestId("project-tab")).toHaveAttribute("data-tab", "file:ballast.ts");
+  await expect(page.getByTestId("files-panel")).toHaveAttribute("data-open", "true");
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
+  await expect(page.getByTestId("view-source")).toHaveCount(0);
   expect(await cursorOf(page.getByTestId("outline-toggle"))).toBe("default");
-  expect(await cursorOf(page.getByTestId("view-source"))).toBe("default");
+  expect(await cursorOf(page.getByTestId("project-tab").first())).toBe("default");
 
-  // Artifacts come first in the left column; opening one replaces source and logs.
+  // Artifacts lead the outline; opening one adds a tab, logs stay underneath.
   const artifactRow = page
     .getByTestId("artifact-row")
     .filter({ hasText: "Stream dashboard" });
   await expect(artifactRow).toHaveAttribute("data-status", "ready");
-  await expect(artifactRow).toContainText("Ready · dashboard");
-  await expect(artifactRow.getByTestId("artifact-source")).toContainText(/ballast\.ts:\d+/);
+  await expect(artifactRow.getByTestId("artifact-source")).toHaveAttribute("title", /ballast\.ts:\d+/);
   expect(await cursorOf(artifactRow.getByRole("button").first())).toBe("default");
   await artifactRow.getByRole("button").first().click();
   await expect(page.getByTestId("artifact-panel")).toBeVisible();
   await expect(artifactRow).toHaveAttribute("data-selected", "true");
-  await expect(page.getByTestId("view-source")).not.toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("project-tab")).toHaveCount(2);
   await expect(page.getByTestId("source-panel")).toHaveCount(0);
-  await expect(page.getByTestId("log-panel")).toHaveCount(0);
+  await expect(page.getByTestId("log-panel")).toBeVisible();
   await expect(
     page.frameLocator("iframe").getByRole("heading", { name: "Stream dashboard" }),
   ).toBeVisible();
 
-  // Full screen hides both side panels, and Esc restores them.
+  // Full screen hides the sidebars, tabs and logs, and Esc restores them.
   await page.getByTestId("artifact-fullscreen").click();
   await expect(page.getByTestId("project-navigator")).toHaveCount(0);
   await expect(page.getByTestId("project-sidebar")).toHaveCount(0);
+  await expect(page.getByTestId("project-tabs")).toHaveCount(0);
+  await expect(page.getByTestId("log-panel")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("project-navigator")).toBeVisible();
   await expect(page.getByTestId("project-sidebar")).toBeVisible();
+  await expect(page.getByTestId("project-tabs")).toBeVisible();
 
   // Persistent URLs sit behind the overflow menu; action URLs need approval.
   await page.getByTestId("artifact-menu").click();
@@ -201,35 +205,7 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
     .toContain("mock-action-token");
   await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
 
-  // Back returns to source and logs.
-  await page
-    .getByTestId("artifact-panel")
-    .getByRole("button", { name: "Back to source" })
-    .click();
-  await expect(page.getByTestId("source-panel")).toBeVisible();
-  await expect(page.getByTestId("log-panel")).toBeVisible();
-  await expect(page.getByTestId("artifact-panel")).toHaveCount(0);
-
-  // A failed build links its file:line to the source viewer.
-  const failedArtifact = page
-    .getByTestId("artifact-row")
-    .filter({ hasText: "Alert overlay" });
-  await expect(failedArtifact).toHaveAttribute("data-status", "error");
-  await expect(failedArtifact.getByTestId("artifact-error-source")).toContainText(
-    "main.ts:9",
-  );
-  await failedArtifact.getByRole("button").first().click();
-  await expect(page.getByTestId("artifact-panel")).toContainText("Artifact build failed");
-  await expect(page.getByTestId("artifact-panel")).toContainText("Expected a closing tag");
-  await expect(page.getByTestId("artifact-panel-error-source")).toContainText("main.ts:9");
-  await page
-    .getByTestId("artifact-panel")
-    .getByRole("button", { name: "Back to source" })
-    .click();
-  await expect(page.getByTestId("source-panel")).toBeVisible();
-
   // A plain browser opens the artifact route in its own tab.
-  await artifactRow.getByRole("button").first().click();
   await page.getByTestId("artifact-menu").click();
   const popupPromise = page.waitForEvent("popup");
   await page.getByTestId("artifact-popout").click();
@@ -238,90 +214,47 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await expect(popup.getByTestId("artifact-panel")).toBeVisible();
   await expect(popup).toHaveTitle("Stream dashboard — Main Channel — Ballast");
   await popup.close();
-  await page.getByTestId("artifact-panel").getByRole("button", { name: "Back to source" }).click();
 
-  // View source switches the main area back from an open artifact.
-  await artifactRow.getByRole("button").first().click();
-  await expect(page.getByTestId("artifact-panel")).toBeVisible();
-  await page.getByTestId("view-source").click();
-  await expect(page.getByTestId("artifact-panel")).toHaveCount(0);
-  await expect(page.getByTestId("source-panel")).toBeVisible();
-  await expect(page.getByTestId("log-panel")).toBeVisible();
-  await expect(page.getByTestId("view-source")).toHaveAttribute("data-selected", "true");
+  // A failed build: a red dot on its tab, and its file:line opens the source.
+  const failedArtifact = page
+    .getByTestId("artifact-row")
+    .filter({ hasText: "Alert overlay" });
+  await expect(failedArtifact).toHaveAttribute("data-status", "error");
+  await expect(failedArtifact.getByTestId("artifact-error-source")).toHaveAttribute("title", /main\.ts:9/);
+  await failedArtifact.getByRole("button").first().click();
+  const failedPanel = page.locator('[data-testid="artifact-tab-panel"][data-artifact="overlay"]');
+  await expect(failedPanel.getByTestId("artifact-panel")).toContainText("Artifact build failed");
+  await expect(failedPanel.getByTestId("artifact-panel")).toContainText("Expected a closing tag");
+  await expect(failedPanel.getByTestId("artifact-panel-error-source")).toContainText("main.ts:9");
+  await failedPanel.getByTestId("artifact-panel-error-source").click();
+  // The mock serves a one-line placeholder for files other than ballast.ts.
+  await expect(page.getByTestId("source-panel")).toHaveAttribute("data-path", "artifacts/overlay/main.ts");
+  await expect(page.getByTestId("project-tab")).toHaveCount(4);
 
-  // Expanding the outline lists everything else the project declares.
-  await page.getByTestId("outline-toggle").click();
-  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
-  await expect(page.getByTestId("outline-toggle")).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator('[data-testid="outline-group"]')).toHaveCount(5);
-  for (const group of ["topic", "param", "api", "store", "database"]) {
+  // The outline lists artifacts first, then everything else the project declares.
+  await expect(page.locator('[data-testid="outline-group"]')).toHaveCount(6);
+  for (const group of ["artifact", "topic", "param", "api", "store", "database"]) {
     await expect(page.locator(`[data-testid="outline-group"][data-group="${group}"]`)).toBeVisible();
   }
   const allLines = await page.getByTestId("log-line").count();
 
-  // An outline item opens the source view, highlights its line and filters logs,
-  // even from an open artifact.
-  await artifactRow.getByRole("button").first().click();
-  await expect(page.getByTestId("artifact-panel")).toBeVisible();
-  const redemption = page.locator(
-    '[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="redemption"]',
-  );
-  await redemption.click();
-  await expect(page.getByTestId("artifact-panel")).toHaveCount(0);
-  await expect(redemption).toHaveAttribute("data-selected", "true");
-  await expect(page.locator('[data-highlighted="true"]')).toContainText(
-    'subscribe("redemption"',
-  );
-  await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
-    "Topic · redemption",
-  );
+  // The log filter is the logs panel's own; a topic tab does not change it.
+  await page.getByTestId("log-unit-filter").selectOption({ label: "Topic · redemption" });
   await expect(page.getByTestId("log-line")).toHaveCount(2);
   expect(allLines).toBeGreaterThan(2);
   await expect(page.getByTestId("log-line").first()).toContainText("subscription created");
-
-  // A param highlights its declaration too.
-  await page
-    .locator('[data-testid="outline-row"][data-unit-kind="param"][data-unit-name="holdSeconds"]')
-    .click();
-  await expect(page.locator('[data-highlighted="true"]')).toContainText(
-    'Param.number("holdSeconds"',
-  );
-  await expect(page.getByTestId("log-line")).toHaveCount(0);
-
-  // The visible clear control drops the filter.
   await page.getByTestId("log-filter-clear").click();
   await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
     "All units",
   );
   await expect(page.getByTestId("log-line")).toHaveCount(allLines);
   await expect(page.getByTestId("log-filter-clear")).toHaveCount(0);
-  await expect(page.locator('[data-testid="outline-row"][data-selected="true"]')).toHaveCount(0);
-
-  // Resize the outline; open state and height persist for this project's window.
-  const outlineBefore = await boxOf(page.getByTestId("outline-panel"));
-  const outlineSplitter = await boxOf(page.getByTestId("outline-splitter"));
-  await page.mouse.move(outlineSplitter.x + outlineSplitter.width / 2, outlineSplitter.y + 3);
-  await page.mouse.down();
-  await page.mouse.move(outlineSplitter.x + outlineSplitter.width / 2, outlineSplitter.y - 80, {
-    steps: 5,
-  });
-  await page.mouse.up();
-  const outlineAfter = await boxOf(page.getByTestId("outline-panel"));
-  expect(outlineAfter.height).toBeGreaterThan(outlineBefore.height + 40);
-  await page.reload();
-  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
-  expect(Math.abs((await boxOf(page.getByTestId("outline-panel"))).height - outlineAfter.height))
-    .toBeLessThan(3);
-  await page.getByTestId("outline-toggle").click();
-  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
-  await page.reload();
-  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
-  await expect(page.getByTestId("source-panel")).toBeVisible();
 
   // Drag the splitter and check the ratio is persisted.
+  await page.getByTestId("source-file").first().click();
   const splitter = page.getByTestId("project-splitter");
   const splitterBox = await boxOf(splitter);
-  const sourceBefore = await boxOf(page.getByTestId("source-panel"));
+  const tabsBefore = await boxOf(page.getByTestId("tab-area"));
   await page.mouse.move(splitterBox.x + splitterBox.width / 2, splitterBox.y + splitterBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(
@@ -330,8 +263,8 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
     { steps: 5 },
   );
   await page.mouse.up();
-  const sourceAfter = await boxOf(page.getByTestId("source-panel"));
-  expect(sourceAfter.height).toBeGreaterThan(sourceBefore.height + 40);
+  const tabsAfter = await boxOf(page.getByTestId("tab-area"));
+  expect(tabsAfter.height).toBeGreaterThan(tabsBefore.height + 40);
   const storedLogs = await page.evaluate(() => localStorage.getItem("ballast.projectLogs.proj_main"));
   const storedSplit: unknown = storedLogs === null ? null : JSON.parse(storedLogs);
   expect(
@@ -339,25 +272,25 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   ).toBeGreaterThan(0.58);
 
   // Maximize/restore each pane; Esc restores.
-  await page.getByTestId("source-maximize").click();
+  await page.getByTestId("tabs-maximize").click();
   await expect.poll(async () => (await boxOf(page.getByTestId("log-panel"))).height).toBeLessThan(50);
-  expect((await boxOf(page.getByTestId("source-panel"))).height).toBeGreaterThan(400);
+  expect((await boxOf(page.getByTestId("tab-area"))).height).toBeGreaterThan(400);
   await page.keyboard.press("Escape");
   await expect.poll(async () => (await boxOf(page.getByTestId("log-panel"))).height).toBeGreaterThan(90);
 
   await page.getByTestId("logs-maximize").click();
-  await expect.poll(async () => (await boxOf(page.getByTestId("source-panel"))).height).toBeLessThan(50);
+  await expect.poll(async () => (await boxOf(page.getByTestId("tab-area"))).height).toBeLessThan(50);
   expect((await boxOf(page.getByTestId("log-panel"))).height).toBeGreaterThan(400);
   await page.keyboard.press("Escape");
-  await expect.poll(async () => (await boxOf(page.getByTestId("source-panel"))).height).toBeGreaterThan(90);
+  await expect.poll(async () => (await boxOf(page.getByTestId("tab-area"))).height).toBeGreaterThan(90);
 
   // Collapse and expand the project sidebar.
   await page.getByTestId("toggle-project-sidebar").click();
   await expect(page.getByTestId("project-sidebar")).toHaveCount(0);
-  const collapsedSource = await boxOf(page.getByTestId("source-panel"));
+  const collapsedSource = await boxOf(page.getByTestId("tab-area"));
   await page.getByTestId("toggle-project-sidebar").click();
   await expect(page.getByTestId("project-sidebar")).toBeVisible();
-  const expandedSource = await boxOf(page.getByTestId("source-panel"));
+  const expandedSource = await boxOf(page.getByTestId("tab-area"));
   expect(expandedSource.width).toBeLessThan(collapsedSource.width);
 
   // Create a project in a plain browser: no native picker, just the path field.
@@ -445,11 +378,13 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
   await openProject(page, "Main Channel");
-  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
   await expect(page.getByTestId("source-panel")).toContainText("Ballast.Database");
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-03-project.png` });
+  await page.getByTestId("outline-toggle").click();
+  await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-13-outline-collapsed.png` });
+  await page.getByTestId("outline-toggle").click();
   await expect(page.locator('[data-testid="code-view"][data-highlight="tokens"]')).toBeVisible();
   await page.screenshot({ path: `screenshots/${theme}-16-top-bar.png` });
   await page.screenshot({ path: `screenshots/${theme}-20-source-highlight.png` });
@@ -522,22 +457,17 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-12-artifact-url-confirm.png` });
   await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
-  await page
-    .getByTestId("artifact-panel")
-    .getByRole("button", { name: "Back to source" })
-    .click();
 
-  // Outline expanded with an item selected: its line highlighted, logs filtered.
-  await page.getByTestId("outline-toggle").click();
+  // A topic picked in the outline opens its events tab.
   await page
     .locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="redemption"]')
+    .getByRole("button")
+    .first()
     .click();
-  await expect(page.locator('[data-highlighted="true"]')).toBeVisible();
-  await expect(page.getByTestId("log-line")).toHaveCount(2);
+  await expect(page.getByTestId("topic-event").first()).toBeVisible();
   await page.waitForTimeout(200);
   await page.screenshot({ path: `screenshots/${theme}-14-outline-selected.png` });
-  await page.getByTestId("log-filter-clear").click();
-  await page.getByTestId("outline-toggle").click();
+  await page.locator('[data-testid="project-tab"][data-tab="file:ballast.ts"]').click();
 
   // Connections reached from the top bar of a project window.
   await page.getByTestId("project-nav-connections").click();
@@ -559,7 +489,7 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await popout.screenshot({ path: `screenshots/${theme}-18-artifact-popout.png` });
   await popout.close();
 
-  await page.getByTestId("source-maximize").click();
+  await page.getByTestId("tabs-maximize").click();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-04-source.png` });
   await page.keyboard.press("Escape");
@@ -721,11 +651,10 @@ test("source highlighting is consistent and keeps line jumps", async ({ page }) 
   expect(one("title:")).toBe(one("entry:"));
   expect(one("title:")).not.toBe(one("yield*"));
 
-  // The outline still highlights and scrolls to a declaration.
-  await page.getByTestId("outline-toggle").click();
-  await page
-    .locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="cheer"]')
-    .click();
+  // The outline's code icon still highlights and scrolls to a declaration.
+  const cheer = page.locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="cheer"]');
+  await cheer.hover();
+  await cheer.getByTestId("outline-source").click();
   const target = page.locator('[data-highlighted="true"]');
   await expect(target).toContainText('subscribe("cheer"');
   await expect(target).toBeInViewport();
@@ -755,7 +684,7 @@ test("the logs panel collapses to its header and counts new lines", async ({ pag
   const toggle = page.getByTestId("logs-collapse-toggle");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(await cursorOf(toggle)).toBe("default");
-  const sourceOpen = await boxOf(page.getByTestId("source-panel"));
+  const sourceOpen = await boxOf(page.getByTestId("tab-area"));
 
   // Collapse: only the header bar stays, the source pane takes the height.
   await toggle.click();
@@ -763,7 +692,7 @@ test("the logs panel collapses to its header and counts new lines", async ({ pag
   await expect(page.getByTestId("log-line")).toHaveCount(0);
   await expect(page.getByTestId("project-splitter")).toHaveCount(0);
   await expect.poll(async () => (await boxOf(logs)).height).toBeLessThan(40);
-  expect((await boxOf(page.getByTestId("source-panel"))).height).toBeGreaterThan(
+  expect((await boxOf(page.getByTestId("tab-area"))).height).toBeGreaterThan(
     sourceOpen.height + 150,
   );
   await expect(logs).toContainText("Live");
@@ -781,11 +710,9 @@ test("the logs panel collapses to its header and counts new lines", async ({ pag
   await expect(page.getByTestId("logs-new-lines")).toHaveText("4 new");
   await expect(page.getByTestId("logs-new-lines")).toHaveAttribute("data-level", "error");
 
-  // An outline item filters the logs without opening them; the header shows the filter.
-  await page.getByTestId("outline-toggle").click();
-  await page
-    .locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="redemption"]')
-    .click();
+  // A failed unit's issue filters the logs without opening them; the header shows the filter.
+  await page.getByTestId("project-status").click();
+  await page.locator('[data-testid="project-issue"][data-issue-kind="unit-failed"]').click();
   await expect(page.locator('[data-highlighted="true"]')).toContainText('subscribe("redemption"');
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
@@ -807,7 +734,7 @@ test("the logs panel collapses to its header and counts new lines", async ({ pag
   await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByTestId("project-splitter")).toBeVisible();
   await expect
-    .poll(async () => Math.abs((await boxOf(page.getByTestId("source-panel"))).height - sourceOpen.height))
+    .poll(async () => Math.abs((await boxOf(page.getByTestId("tab-area"))).height - sourceOpen.height))
     .toBeLessThan(4);
   await expect(page.getByTestId("log-line").first()).toBeVisible();
   await expect(page.getByTestId("logs-new-lines")).toHaveCount(0);
@@ -818,22 +745,22 @@ test("the logs panel collapses to its header and counts new lines", async ({ pag
   await page.mouse.down();
   await page.mouse.move(splitter.x + splitter.width / 2, splitter.y - 120, { steps: 5 });
   await page.mouse.up();
-  const resized = await boxOf(page.getByTestId("source-panel"));
+  const resized = await boxOf(page.getByTestId("tab-area"));
   expect(resized.height).toBeLessThan(sourceOpen.height - 60);
   await page.getByTestId("logs-collapse-toggle").click();
   await page.getByTestId("logs-collapse-toggle").click();
   await expect
-    .poll(async () => Math.abs((await boxOf(page.getByTestId("source-panel"))).height - resized.height))
+    .poll(async () => Math.abs((await boxOf(page.getByTestId("tab-area"))).height - resized.height))
     .toBeLessThan(4);
 
   // Maximize still works, including straight from collapsed.
   await page.getByTestId("logs-collapse-toggle").click();
   await page.getByTestId("logs-maximize").click();
   await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "true");
-  await expect.poll(async () => (await boxOf(page.getByTestId("source-panel"))).height).toBeLessThan(50);
+  await expect.poll(async () => (await boxOf(page.getByTestId("tab-area"))).height).toBeLessThan(50);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("project-splitter")).toBeVisible();
-  await page.getByTestId("source-maximize").click();
+  await page.getByTestId("tabs-maximize").click();
   await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "false");
   await page.getByTestId("logs-collapse-toggle").click();
   await expect(page.getByTestId("project-splitter")).toBeVisible();
