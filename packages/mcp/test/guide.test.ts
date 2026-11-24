@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GUIDE } from "../src/guide.ts";
 
 const roots: Array<string> = [];
-const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+// Resolve guide imports the way the real agent does: its dependency set has
+// @ballast/* and Solid 2, while packages/mcp itself has no Solid dependency.
+const resolveRoot = fileURLToPath(new URL("../../../apps/agent", import.meta.url));
 
 afterEach(async () => {
   for (const root of roots.splice(0)) {
@@ -66,7 +68,7 @@ describe("guide code samples", () => {
       const planned = await Effect.runPromise(
         planProject(root, {
           projectId: "guide-" + index,
-          resolveDir: packageRoot,
+          resolveDir: resolveRoot,
         }).pipe(
           Effect.mapError((error) => new Error("guide sample " + sample.name + ": " + error.message)),
         ),
