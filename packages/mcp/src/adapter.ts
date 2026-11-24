@@ -418,7 +418,7 @@ const unitDetail = (unit: UnitSummary, manifest: ProjectManifest | undefined): s
             (param.default === undefined ? "" : " · default " + JSON.stringify(param.default));
     }
     case "run":
-      return "non-durable run loop";
+      return "run (non-durable)";
     case "database":
       return "local SQLite · .ballast/db/" + unit.name + ".sqlite";
   }

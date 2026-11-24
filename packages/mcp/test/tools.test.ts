@@ -193,6 +193,28 @@ describe("ballast_apply", () => {
 });
 
 describe("checkText", () => {
+  it("labels a run as non-durable without implying a loop", () => {
+    const manifest = {
+      ...emptyProjectManifest("proj_test", "ballast.ts"),
+      runs: [{ name: "ready", source: { file: "ballast.ts", line: 10, column: 2 } }],
+    };
+    const text = checkText(
+      baseCheck({
+        manifest,
+        units: [
+          {
+            kind: "run",
+            name: "ready",
+            status: "active",
+            source: { file: "ballast.ts", line: 10, column: 2 },
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("run ready @ ballast.ts:10 — run (non-durable)");
+    expect(text).not.toContain("run loop");
+  });
+
   it("prints file:line:column and the TS code", () => {
     const text = checkText(
       baseCheck({
