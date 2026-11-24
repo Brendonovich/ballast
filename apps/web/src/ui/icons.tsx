@@ -127,6 +127,20 @@ export const AlertIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const ErrorIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5v5.5" />
+    <path d="M12 16.4v.1" />
+  </Icon>
+);
+
+export const CheckIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </Icon>
+);
+
 export const TrashIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M4 7h16" />

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ConnectionSummary, ProjectSummary, UnitSummary } from "@ballast/agent-protocol";
+import type { ConnectionSummary, UnitSummary } from "@ballast/agent-protocol";
 
 import {
   artifactErrorSource,
@@ -9,25 +9,9 @@ import {
   connectionStatusLabel,
   paramValueLabel,
   plural,
-  projectStatusLabel,
-  projectStatusTone,
-  projectWorkerRunning,
   unitStatusLabel,
   unitStatusTone,
 } from "./format.ts";
-
-const project = (overrides: Partial<ProjectSummary> = {}): ProjectSummary => ({
-  id: "proj_main",
-  name: "Main Channel",
-  root: "/Users/streamer/Ballast/main",
-  entry: "ballast.ts",
-  enabled: false,
-  status: "stopped",
-  unitCount: 2,
-  createdAt: 1_764_000_000_000,
-  updatedAt: 1_764_000_000_000,
-  ...overrides,
-});
 
 const unit = (overrides: Partial<UnitSummary> = {}): UnitSummary => ({
   kind: "run",
@@ -52,39 +36,14 @@ const connection = (overrides: Partial<ConnectionSummary> = {}): ConnectionSumma
   ...overrides,
 });
 
-describe("project presentation", () => {
-  it("labels stopped, running and consent states", () => {
-    expect(projectStatusLabel(project())).toBe("Stopped");
-    expect(projectStatusTone(project())).toBe("neutral");
-    expect(projectStatusLabel(project({ status: "running", enabled: true }))).toBe("Running");
-    expect(projectStatusTone(project({ status: "running", enabled: true }))).toBe("success");
-    expect(projectStatusLabel(project({ status: "needs-consent" }))).toBe("Needs consent");
-    expect(projectStatusTone(project({ status: "needs-consent" }))).toBe("warning");
-  });
-
-  it("distinguishes a failed reload from a stopped project with an error", () => {
-    expect(
-      projectStatusLabel(
-        project({ status: "error", enabled: true, lastError: "ballast.ts:3:1 — nope" }),
-      ),
-    ).toBe("Running previous version");
-    expect(projectStatusLabel(project({ status: "error" }))).toBe("Error");
-    expect(projectStatusTone(project({ status: "error" }))).toBe("danger");
-    expect(projectWorkerRunning(project({ status: "error", enabled: true }))).toBe(true);
-    expect(projectWorkerRunning(project({ status: "error", enabled: false }))).toBe(false);
-    expect(projectWorkerRunning(project({ status: "running", enabled: true }))).toBe(true);
-    expect(projectWorkerRunning(project({ status: "stopped" }))).toBe(false);
-  });
-});
-
 describe("unit presentation", () => {
   it("labels unit states", () => {
     expect(unitStatusLabel(unit({ status: "active" }).status)).toBe("Active");
     expect(unitStatusLabel(unit({ status: "waiting" }).status)).toBe("Waiting");
-    expect(unitStatusLabel(unit({ status: "error" }).status)).toBe("Error");
+    expect(unitStatusLabel(unit({ status: "failed" }).status)).toBe("Failed");
     expect(unitStatusTone("active")).toBe("success");
     expect(unitStatusTone("waiting")).toBe("neutral");
-    expect(unitStatusTone("error")).toBe("danger");
+    expect(unitStatusTone("failed")).toBe("danger");
   });
 });
 

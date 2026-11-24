@@ -480,23 +480,24 @@ export const ArtifactGatewayLive = Layer.effect(
             const generation = yield* runtime.generation(project.id).pipe(
               Effect.map((value) => value ?? 0),
             );
+            const error = detail.issues.find((issue) => issue.severity === "error");
             const value: ArtifactProject = {
               id: project.id,
               name: project.name,
               entry: detail.summary.entry ?? detail.manifest.project.entry,
               status: detail.summary.status,
               generation,
-              ...(detail.summary.lastError === undefined
+              ...(error === undefined
                 ? {}
                 : {
                     lastError: {
-                      message: detail.summary.lastError,
-                      ...(detail.lastErrorSource === undefined
+                      message: error.detail ?? error.title,
+                      ...(error.source === undefined
                         ? {}
                         : {
-                            file: detail.lastErrorSource.file,
-                            line: detail.lastErrorSource.line,
-                            column: detail.lastErrorSource.column,
+                            file: error.source.file,
+                            line: error.source.line,
+                            column: error.source.column,
                           }),
                     },
                   }),

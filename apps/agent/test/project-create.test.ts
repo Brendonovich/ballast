@@ -143,6 +143,7 @@ describe("project scaffolding and checks", () => {
         client.CheckProject({ projectId: created.summary.id }),
       );
       expect(needsConsent.requiresConsent).toBe(true);
+      expect(needsConsent.summary.status).toBe("needs-user");
       expect(needsConsent.missingScopes).toContain("fake:read");
       expect(needsConsent.changes.some((change) => change.kind === "topic" && change.change === "added")).toBe(true);
       expect(needsConsent.appliedManifest?.topics).toEqual([]);
@@ -151,6 +152,7 @@ describe("project scaffolding and checks", () => {
         client.PlanProject({ projectId: created.summary.id }),
       );
       expect(planned.pendingConsent).toBeDefined();
+      expect(planned.summary.status).toBe("needs-user");
       const health = yield* call(root, (client) => client.GetHealth());
       expect(health.projects.needsConsent).toBe(1);
       expect((yield* call(root, (client) => client.ListProjectConsents({ projectId: created.summary.id }))).consents).toHaveLength(1);
@@ -173,8 +175,10 @@ describe("project scaffolding and checks", () => {
       const withPlanError = yield* call(root, (client) =>
         client.GetProject({ projectId: created.summary.id }),
       );
-      expect(withPlanError.summary.lastError).toBeDefined();
-      expect(withPlanError.summary.status).toBe("error");
+      expect(
+        withPlanError.summary.issues.some((issue) => issue.kind === "change-not-applied"),
+      ).toBe(true);
+      expect(withPlanError.summary.status).toBe("needs-user");
 
       yield* Effect.promise(() =>
         writeFile(
@@ -187,8 +191,10 @@ describe("project scaffolding and checks", () => {
         client.CheckProject({ projectId: created.summary.id }),
       );
       expect(repaired.ok).toBe(true);
-      expect(repaired.summary.lastError).toBeUndefined();
-      expect(repaired.summary.status).not.toBe("error");
+      expect(
+        repaired.summary.issues.some((issue) => issue.kind === "change-not-applied"),
+      ).toBe(false);
+      expect(repaired.summary.status).toBe("needs-user");
     }),
     120_000,
   );

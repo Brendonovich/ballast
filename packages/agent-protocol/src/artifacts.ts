@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 import { ParamValue } from "./common.ts";
 import { LogLevel } from "./logs.ts";
-import { SourceLocation, UnitKind } from "./project.ts";
+import { ProjectStatus, SourceLocation, UnitKind } from "./project.ts";
 
 /** Artifact tokens are read-only unless the user creates an action URL. */
 export const ArtifactScope = Schema.Literals(["read", "action"]);
@@ -182,7 +182,7 @@ export const ArtifactProject = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   entry: Schema.String,
-  status: Schema.Literals(["stopped", "running", "needs-consent", "error"]),
+  status: ProjectStatus,
   generation: Schema.Number,
   startedAt: Schema.optionalKey(Schema.Number),
   lastError: Schema.optionalKey(

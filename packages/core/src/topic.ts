@@ -121,7 +121,7 @@ export interface Topic<
   readonly subscribe: (
     name: string,
     connection: ConnectionRef<Integration>,
-    handler: (event: A) => Effect.Effect<void, never, Runtime>,
+    handler: (event: A) => Effect.Effect<void, unknown, Runtime>,
     options?: SubscribeOptions<Options>,
   ) => Effect.Effect<TopicSubscription<A>, never, EventHost>;
 }
@@ -248,7 +248,7 @@ export const topicSchemaFingerprint = schemaFingerprint;
 export interface SubscribeTopicInput<A, Integration extends string> {
   readonly topic: TopicMetadata<A, Integration>;
   readonly connection: ConnectionRef<Integration>;
-  readonly handler: (event: A) => Effect.Effect<void, never, Runtime>;
+  readonly handler: (event: A) => Effect.Effect<void, unknown, Runtime>;
   readonly name: string;
   readonly source: DeclarationSource | undefined;
   readonly history: HistoryPolicy | false;
@@ -360,7 +360,7 @@ export interface EventHostService {
   readonly subscribe: <A, Integration extends string>(
     topic: TopicMetadata<A, Integration>,
     connection: ConnectionRef<Integration>,
-    handler: (event: A) => Effect.Effect<void, never, never>,
+    handler: (event: A) => Effect.Effect<void, unknown, never>,
     name: string,
     source: DeclarationSource | undefined,
     history: HistoryPolicy | false,
@@ -396,11 +396,12 @@ const subscribeAtRuntime = <A, Integration extends string>(
   bus: Option.Option<EventBusService>,
   topic: TopicMetadata<A, Integration>,
   connection: ConnectionRef<Integration>,
-  handler: (event: A) => Effect.Effect<void, never, never>,
+  name: string,
+  handler: (event: A) => Effect.Effect<void, unknown, never>,
 ): Effect.Effect<void> =>
   Option.match(bus, {
     onNone: () => Effect.die(new Error("EventHost.subscribe was called at runtime without an EventBus")),
-    onSome: (service) => service.subscribe(topic.key(connection), handler),
+    onSome: (service) => service.subscribe(topic.key(connection), name, handler),
   });
 
 /**
@@ -437,8 +438,8 @@ export const EventHostRuntime: Layer.Layer<EventHost> = Layer.effect(
     const bus = yield* Effect.serviceOption(EventBus);
 
     return EventHost.of({
-      subscribe: (topic, connection, handler) =>
-        subscribeAtRuntime(bus, topic, connection, handler),
+      subscribe: (topic, connection, handler, name) =>
+        subscribeAtRuntime(bus, topic, connection, name, handler),
     });
   }),
 );

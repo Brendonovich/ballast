@@ -2858,8 +2858,8 @@ export const subscriptionMaskForTopics = (topics: ReadonlyArray<string>): number
 
 export type ObsRequestMethod<K extends RequestName> =
   {} extends ObsRequests[K]["input"]
-    ? (input?: ObsRequests[K]["input"]) => Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime>
-    : (input: ObsRequests[K]["input"]) => Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime>;
+    ? (input?: ObsRequests[K]["input"]) => Effect.Effect<ObsRequests[K]["output"], Ballast.ConnectionRequestError, Ballast.Runtime>
+    : (input: ObsRequests[K]["input"]) => Effect.Effect<ObsRequests[K]["output"], Ballast.ConnectionRequestError, Ballast.Runtime>;
 
 export type ObsClient = Ballast.ConnectionRef<typeof INTEGRATION> & {
   readonly [K in RequestName]: ObsRequestMethod<K>;
@@ -2870,7 +2870,7 @@ const call = <K extends RequestName>(
   connection: Ballast.ConnectionRef<typeof INTEGRATION>,
   name: K,
   input: ObsRequests[K]["input"],
-): Effect.Effect<ObsRequests[K]["output"], never, Ballast.Runtime> => {
+): Effect.Effect<ObsRequests[K]["output"], Ballast.ConnectionRequestError, Ballast.Runtime> => {
   const schemas = RequestSchemas[name];
   return host.granted<ObsRequests[K]["input"], ObsRequests[K]["output"]>({
     integration: INTEGRATION,

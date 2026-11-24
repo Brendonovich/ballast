@@ -51,6 +51,8 @@ export const ProjectNavigator = (props: {
   readonly selectedItem: string | undefined;
   readonly onSelectItem: (item: OutlineItem) => void;
   readonly onOpenSource: (file: string, line: number) => void;
+  /** Open the outline and scroll this item into view (from an issue). */
+  readonly reveal?: { readonly key: string; readonly token: number } | undefined;
 }): JSX.Element => {
   const [layout, setLayout] = createSignal<OutlineLayout>(DEFAULT_OUTLINE);
   let column: HTMLDivElement | undefined;
@@ -68,6 +70,30 @@ export const ProjectNavigator = (props: {
   };
 
   const toggleOutline = (): void => update({ ...layout(), open: !layout().open });
+
+  createEffect(
+    on(
+      () => props.reveal?.token,
+      () => {
+        const target = props.reveal;
+        if (target === undefined) return;
+        if (!layout().open) update({ ...layout(), open: true });
+        requestAnimationFrame(() => {
+          const row = column?.querySelector(
+            `[data-testid="outline-row"][data-key="${CSS.escape(target.key)}"]`,
+          );
+          if (row instanceof HTMLElement) row.scrollIntoView({ block: "nearest" });
+        });
+      },
+      { defer: true },
+    ),
+  );
+
+  const failedCount = (): number =>
+    props.outline.reduce(
+      (total, group) => total + group.items.filter((item) => item.status === "failed").length,
+      0,
+    );
 
   const beginResize = (event: PointerEvent): void => {
     if (column === undefined) return;
@@ -246,6 +272,15 @@ export const ProjectNavigator = (props: {
             class={cx("shrink-0 text-faint transition-transform", !layout().open && "-rotate-90")}
           />
           <span class="text-[11px] font-medium text-body">Outline</span>
+          <Show when={failedCount() > 0}>
+            <span
+              data-testid="outline-failed"
+              class="tabular text-[10px] text-danger"
+              title={failedCount() === 1 ? "1 unit failed" : `${failedCount()} units failed`}
+            >
+              {failedCount()} failed
+            </span>
+          </Show>
           <span class="tabular ml-auto text-[10px] text-faint">{itemCount()}</span>
         </button>
         <Show when={layout().open}>
@@ -269,11 +304,15 @@ export const ProjectNavigator = (props: {
                             data-unit-kind={item.unit?.kind}
                             data-unit-name={item.unit?.name}
                             data-selected={selected() ? "true" : undefined}
-                            title={
+                            data-status={item.status}
+                            title={[
                               item.source === undefined
                                 ? item.label
-                                : `${item.label} · ${item.source.file}:${item.source.line}`
-                            }
+                                : `${item.label} · ${item.source.file}:${item.source.line}`,
+                              item.note,
+                            ]
+                              .filter((part) => part !== undefined)
+                              .join("\n")}
                             class={cx(
                               "flex h-6 w-full items-center gap-2 rounded px-1.5 text-left",
                               selected() ? "bg-layer-2" : "hover:bg-hover",
@@ -284,7 +323,11 @@ export const ProjectNavigator = (props: {
                             <span
                               class={cx(
                                 "min-w-0 flex-1 truncate text-[12px]",
-                                selected() ? "text-strong" : "text-body",
+                                item.status === "failed"
+                                  ? "text-danger"
+                                  : selected()
+                                    ? "text-strong"
+                                    : "text-body",
                               )}
                             >
                               {item.label}

@@ -7,6 +7,7 @@ import type {
   HealthStatus,
   ProjectConsentRequest,
   ProjectDetail,
+  ProjectIssue,
   ProjectSummary,
 } from "@ballast/agent-protocol";
 
@@ -38,6 +39,7 @@ const summary: ProjectSummary = {
   unitCount: 2,
   createdAt: 0,
   updatedAt: 0,
+  issues: [],
 };
 
 const detail = (overrides: Partial<ProjectDetail> = {}): ProjectDetail => ({
@@ -45,13 +47,23 @@ const detail = (overrides: Partial<ProjectDetail> = {}): ProjectDetail => ({
   manifest: emptyProjectManifest("proj_test", "ballast.ts"),
   requirements: [],
   units: [],
+  issues: [],
   ...overrides,
 });
 
 const health: HealthStatus = {
   ok: true,
   uptimeMs: 1,
-  projects: { total: 1, running: 0, needsConsent: 0, error: 0 },
+  projects: {
+    total: 1,
+    stopped: 1,
+    starting: 0,
+    running: 0,
+    needsUser: 0,
+    failed: 0,
+    needsConsent: 0,
+    error: 0,
+  },
   connections: { total: 0, connected: 0, error: 0 },
   cloud: "unlinked",
   lastLogSeq: 0,
@@ -572,8 +584,27 @@ describe("requirement views", () => {
 describe("status vocabulary", () => {
   it("uses waiting_for_user with a reason for pending consent", () => {
     expect(
-      statusState({ ...summary, status: "needs-consent" }, detail({ pendingConsent: consent })),
+      statusState({ ...summary, status: "needs-user" }, detail({ pendingConsent: consent })),
     ).toEqual({ state: "waiting_for_user", reason: "consent" });
+  });
+
+  it("separates failed projects from a failed change over a live worker", () => {
+    expect(statusState({ ...summary, status: "failed" }, detail())).toEqual({
+      state: "error",
+    });
+    const changeIssue: ProjectIssue = {
+      id: "change-not-applied",
+      kind: "change-not-applied",
+      severity: "error",
+      title: "Latest change not applied",
+      at: 0,
+    };
+    expect(
+      statusState(
+        { ...summary, status: "running", issues: [changeIssue] },
+        detail({ issues: [changeIssue] }),
+      ),
+    ).toEqual({ state: "previous_version_running_latest_failed" });
   });
 
   it("uses waiting_for_user with reason connections for an unbound requirement", () => {
@@ -597,10 +628,10 @@ describe("status vocabulary", () => {
 describe("catalog", () => {
   it("is an index by default and does not dump every topic", () => {
     const selection = selectCatalog({});
-    expect(selection.integrations).toHaveLength(8);
+    expect(selection.integrations).toHaveLength(9);
     expect(selection.integrations.every((integration) => integration.topics.length === 0)).toBe(true);
     expect(selection.integrations.every((integration) => integration.requests.length === 0)).toBe(true);
-    expect(selection.connectionKinds).toHaveLength(5);
+    expect(selection.connectionKinds).toHaveLength(4);
   });
 
   it("lists topics and requests for one integration", () => {
@@ -621,7 +652,7 @@ describe("catalog", () => {
 
   it("filters to connection kinds", () => {
     const selection = selectCatalog({ kind: "connections" });
-    expect(selection.connectionKinds).toHaveLength(5);
+    expect(selection.connectionKinds).toHaveLength(4);
     expect(selection.integrations.every((integration) => integration.topics.length === 0)).toBe(true);
     expect(selection.integrations.every((integration) => integration.requests.length === 0)).toBe(true);
   });

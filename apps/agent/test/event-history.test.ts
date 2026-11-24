@@ -74,6 +74,7 @@ describe("subscription event history", () => {
           generation: 1,
           subscriptions: new Set(["fake/main/tick"]),
           ready: Effect.void,
+          exitReason: Effect.succeed(undefined),
           deliver: () => {
             fileDuringDelivery = readFileSync(
               join(root, ".ballast", "history", "ticks.jsonl"),

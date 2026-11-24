@@ -293,7 +293,7 @@ describe("obs driver", () => {
           const invalid = yield* driver
             .request("SetCurrentProgramScene", { sceneName: 42 })
             .pipe(Effect.flip);
-          expect(invalid).toContain("Invalid SetCurrentProgramScene input");
+          expect(invalid.message).toContain("Invalid SetCurrentProgramScene input");
 
           yield* Effect.sync(() => {
             server.emit("CurrentProgramSceneChanged", {
@@ -311,6 +311,29 @@ describe("obs driver", () => {
       ),
     10_000,
   );
+
+  it.live(
+    "fails requests with a typed ConnectionUnavailable while disconnected",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* startObsDriver({
+            slot: "main",
+            url: "ws://127.0.0.1:1",
+            topics: [],
+            publish: () => {},
+          });
+          const error = yield* driver.request("GetSceneList", {}).pipe(Effect.flip);
+          expect(error._tag).toBe("ConnectionUnavailable");
+          if (error._tag === "ConnectionUnavailable") {
+            expect(error.integration).toBe("obs");
+            expect(error.slot).toBe("main");
+          }
+        }),
+      ).pipe(Effect.provide(NodeCrypto.layer)),
+    10_000,
+  );
+
   it.live(
     "reports disconnected between retries, recovers and publishes state once",
     () =>

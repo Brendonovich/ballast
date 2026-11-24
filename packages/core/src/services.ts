@@ -14,6 +14,7 @@ import type {
   UnresolvedManifest,
   WorkflowManifest,
 } from "./manifest.ts";
+import type { ConnectionRequestError } from "./errors.ts";
 import type { RequestRef } from "./request.ts";
 import type { DeclarationSource } from "./source.ts";
 
@@ -69,7 +70,8 @@ export class Settings extends Context.Service<Settings, SettingsService>()("Ball
 export interface EventBusService {
   readonly subscribe: <A>(
     topicKey: string,
-    handler: (event: A) => Effect.Effect<void, never, never>,
+    unitName: string,
+    handler: (event: A) => Effect.Effect<void, unknown, never>,
   ) => Effect.Effect<void>;
 }
 
@@ -82,7 +84,7 @@ export class EventBus extends Context.Service<EventBus, EventBusService>()("Ball
 export interface RequestClientsService {
   readonly client: <A, B>(
     request: RequestRef<A, B>,
-  ) => Effect.Effect<(input: A) => Effect.Effect<B>>;
+  ) => Effect.Effect<(input: A) => Effect.Effect<B, ConnectionRequestError>>;
 }
 
 export class RequestClients extends Context.Service<RequestClients, RequestClientsService>()(
@@ -93,11 +95,27 @@ export class RequestClients extends Context.Service<RequestClients, RequestClien
 export interface ScriptRunnerService {
   readonly run: (
     name: string,
-    effect: Effect.Effect<void, never, never>,
+    effect: Effect.Effect<void, unknown, never>,
+    source?: DeclarationSource,
   ) => Effect.Effect<void>;
 }
 
 export class ScriptRunner extends Context.Service<ScriptRunner, ScriptRunnerService>()(
   "Ballast/ScriptRunner",
+) {}
+
+export interface UnitFailure {
+  readonly unit: string;
+  readonly error: string;
+  readonly source?: DeclarationSource;
+}
+
+/** Runtime-only sink for contained unit failures. Planning has no reporter. */
+export interface UnitReporterService {
+  readonly failed: (failure: UnitFailure) => Effect.Effect<void>;
+}
+
+export class UnitReporter extends Context.Service<UnitReporter, UnitReporterService>()(
+  "Ballast/UnitReporter",
 ) {}
 

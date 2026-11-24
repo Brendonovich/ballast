@@ -12,7 +12,7 @@ import { ScriptPhase } from "./phase.ts";
 import { makeRuntimeRpcClient } from "./runtime-rpc.ts";
 import type { SettingValue } from "./runtime-rpc.ts";
 import { evaluateScript } from "./script.ts";
-import { EventBus, RequestClients, Settings } from "./services.ts";
+import { EventBus, RequestClients, Settings, UnitReporter } from "./services.ts";
 import type {
   EventBusService,
   RequestClientsService,
@@ -20,6 +20,7 @@ import type {
 } from "./services.ts";
 import { TimerRuntime } from "./timer.ts";
 import { DatabaseRuntime, makeDatabaseRuntime, sqlErrorFromWire } from "./database.ts";
+import { connectionRequestErrorFromWire } from "./errors.ts";
 import type { DatabaseRuntimeService } from "./database.ts";
 import { makeStoreHostRuntime, StoreHost } from "./store.ts";
 import { EventHistoryHost, makeEventHistoryHostRuntime } from "./history.ts";
@@ -59,7 +60,7 @@ interface RuntimeTimerMessage {
 interface TimerRegistration {
   readonly handler: (
     fire: TimerFire<unknown>,
-  ) => Effect.Effect<void, never, never>;
+  ) => Effect.Effect<void, unknown, never>;
 }
 
 const plainLogger = Logger.make<unknown, void>(({ message, cause, fiber }) => {
@@ -186,18 +187,24 @@ const runtimeProgram = (
     );
     const handlers = new Map<
       string,
-      Set<(event: unknown) => Effect.Effect<void, never, never>>
+      Set<{
+        readonly unit: string;
+        readonly handler: (
+          event: unknown,
+        ) => Effect.Effect<void, unknown, never>;
+      }>
     >();
 
     const eventBus: EventBusService = {
-      subscribe: (key, handler) =>
+      subscribe: (key, unit, handler) =>
         Effect.gen(function* () {
           const dispatch = (event: unknown) => handler(event as Parameters<typeof handler>[0]);
+          const registration = { unit, handler: dispatch };
           const existing = handlers.get(key);
           if (existing === undefined) {
-            handlers.set(key, new Set([dispatch]));
+            handlers.set(key, new Set([registration]));
           } else {
-            existing.add(dispatch);
+            existing.add(registration);
           }
           yield* client.RegisterTopic({ key }).pipe(Effect.orDie);
         }),
@@ -208,7 +215,9 @@ const runtimeProgram = (
     const timerRuntime: TimerRuntimeService = {
       subscribe: (timer, handler) =>
         Effect.gen(function* () {
-          const dispatch = (fire: TimerFire<unknown>): Effect.Effect<void> =>
+          const dispatch = (
+            fire: TimerFire<unknown>,
+          ): Effect.Effect<void, unknown> =>
             Effect.suspend(() =>
               withUnit(
                 timer.name,
@@ -270,7 +279,8 @@ const runtimeProgram = (
                 input,
               })
               .pipe(
-                Effect.orDie,
+                Effect.catchTag("RpcClientError", (error) => Effect.die(error)),
+                Effect.mapError(connectionRequestErrorFromWire),
                 Effect.flatMap((value) => {
                   if (outputSchema === undefined) {
                     return Effect.die(
@@ -307,12 +317,25 @@ const runtimeProgram = (
             if (isRuntimeEventMessage(message)) {
               const subscribed = handlers.get(message.key);
               if (subscribed === undefined) return;
-              for (const handler of subscribed) {
+              for (const registration of subscribed) {
                 Effect.runForkWith(context)(
-                  handler(message.payload).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logError(`Event handler failed for ${message.key}`, cause),
-                    ),
+                  registration.handler(message.payload).pipe(
+                    Effect.catchCause((cause) => {
+                      const failure = Cause.squash(cause);
+                      const error =
+                        failure instanceof Error ? failure.message : String(failure);
+                      return client
+                        .UnitFailed({ unit: registration.unit, error })
+                        .pipe(
+                          Effect.andThen(
+                            Effect.logError(
+                              `Event handler failed for ${message.key}`,
+                              cause,
+                            ).pipe(Effect.annotateLogs("unit", registration.unit)),
+                          ),
+                          Effect.orDie,
+                        );
+                    }),
                   ),
                 );
               }
@@ -334,12 +357,22 @@ const runtimeProgram = (
             for (const registration of subscribed) {
               Effect.runForkWith(context)(
                 registration.handler(fire).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logError(
-                      `Timer handler failed for ${message.name}`,
-                      cause,
-                    ),
-                  ),
+                  Effect.catchCause((cause) => {
+                    const failure = Cause.squash(cause);
+                    const error =
+                      failure instanceof Error ? failure.message : String(failure);
+                    return client
+                      .UnitFailed({ unit: message.name, error })
+                      .pipe(
+                        Effect.andThen(
+                          Effect.logError(
+                            `Timer handler failed for ${message.name}`,
+                            cause,
+                          ).pipe(Effect.annotateLogs("unit", message.name)),
+                        ),
+                        Effect.orDie,
+                      );
+                  }),
                 ),
               );
             }
@@ -379,6 +412,13 @@ const runtimeProgram = (
       Effect.provideService(StoreHost, makeStoreHostRuntime(client)),
       Effect.provideService(EventHistoryHost, eventHistory),
       Effect.provideService(DatabaseRuntime, databaseRuntime),
+      Effect.provideService(
+        UnitReporter,
+        UnitReporter.of({
+          failed: (failure) =>
+            client.UnitFailed(failure).pipe(Effect.orDie),
+        }),
+      ),
     );
   });
 

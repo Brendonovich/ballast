@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -8,13 +9,21 @@ import type { RequestHost } from "./request.ts";
 import { EventHostPlan, EventHostRuntime } from "./topic.ts";
 import type { EventHost } from "./topic.ts";
 import { ManifestRecorder, ScriptRunner } from "./services.ts";
-import type { EventBus, RequestClients, ScriptRunnerService, Settings } from "./services.ts";
+import { UnitReporter } from "./services.ts";
+import type {
+  EventBus,
+  RequestClients,
+  ScriptRunnerService,
+  Settings,
+  UnitReporterService,
+} from "./services.ts";
 import { TimerHost, TimerHostPlan, TimerHostRuntime } from "./timer.ts";
 import { DatabaseHost, DatabaseHostPlan, DatabaseHostRuntime } from "./database.ts";
 import { ApiHost, makeApiHostPlan, makeApiHostRuntime } from "./api.ts";
 import type { ApiHostService, ApiStart } from "./api.ts";
 import { provideRuntime, Runtime } from "./runtime.ts";
 import { captureSource } from "./source.ts";
+import type { DeclarationSource } from "./source.ts";
 import { withUnit } from "./unit.ts";
 
 export interface ScriptRuntimeContext {
@@ -79,24 +88,55 @@ interface ScriptRunnerState {
  * Collect the loops a script registers with `Ballast.run`. Plan never evaluates
  * `exports`; the runtime worker does, once init has declared everything.
  */
-const makeScriptRunner = (): ScriptRunnerState => {
+const makeScriptRunner = (
+  reporter: Option.Option<UnitReporterService>,
+): ScriptRunnerState => {
   const loops: Array<{
     readonly name: string;
-    readonly effect: Effect.Effect<void, never, never>;
+    readonly effect: Effect.Effect<void, unknown, never>;
+    readonly source?: DeclarationSource;
   }> = [];
 
   return {
     service: {
-      run: (name, effect) =>
+      run: (name, effect, source) =>
         Effect.sync(() => {
-          loops.push({ name, effect });
+          loops.push({ name, effect, ...(source === undefined ? {} : { source }) });
         }),
     },
     exports: Effect.sync(() => ({
-      program: Effect.all(
-        loops.map((loop) => withUnit(loop.name, loop.effect)),
-        { concurrency: "unbounded" },
-      ),
+      program: Effect.gen(function* () {
+        for (const loop of loops) {
+          yield* Effect.forkChild(
+            withUnit(loop.name, loop.effect).pipe(
+              Effect.catchCause((cause) => {
+                const failure = Cause.squash(cause);
+                const message =
+                  failure instanceof Error ? failure.message : String(failure);
+                return Option.match(reporter, {
+                  onNone: () =>
+                    Effect.logError(`Run "${loop.name}" failed: ${message}`),
+                  onSome: (unitReporter) =>
+                    unitReporter
+                      .failed({
+                        unit: loop.name,
+                        error: message,
+                        ...(loop.source === undefined ? {} : { source: loop.source }),
+                      })
+                      .pipe(
+                        Effect.andThen(
+                          Effect.logError(
+                            `Run "${loop.name}" failed: ${message}`,
+                          ).pipe(Effect.annotateLogs("unit", loop.name)),
+                        ),
+                      ),
+                });
+              }),
+            ),
+          );
+        }
+        yield* Effect.never;
+      }),
     })),
   };
 };
@@ -150,7 +190,8 @@ export const evaluateScript = <E, R extends ScriptHostServices>(
   phase: Phase,
 ): Effect.Effect<ScriptRuntime, E, Exclude<R, ScriptProvidedServices>> =>
   Effect.gen(function* () {
-    const runner = makeScriptRunner();
+    const reporter = yield* Effect.serviceOption(UnitReporter);
+    const runner = makeScriptRunner(reporter);
     const apiHost =
       phase === "plan"
         ? makeApiHostPlan(yield* Effect.serviceOption(ManifestRecorder))
@@ -175,7 +216,7 @@ export const evaluateScript = <E, R extends ScriptHostServices>(
  */
 export const run = (
   name: string,
-  effect: Effect.Effect<void, never, Runtime>,
+  effect: Effect.Effect<void, unknown, Runtime>,
 ): Effect.Effect<void, never, ScriptRunner> => {
   const source = captureSource(2);
   return Effect.gen(function* () {
@@ -191,7 +232,7 @@ export const run = (
       return;
     }
     const runner = yield* ScriptRunner;
-    yield* runner.run(name, provideRuntime(effect));
+    yield* runner.run(name, provideRuntime(effect), source);
   });
 };
 

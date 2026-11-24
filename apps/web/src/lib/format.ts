@@ -4,7 +4,6 @@ import type {
   ConnectionSummary,
   ParamValue,
   ProjectRequirement,
-  ProjectSummary,
   UnitKind,
   UnitStatus,
 } from "@ballast/agent-protocol";
@@ -73,10 +72,12 @@ export const integrationName = (integration: string): string => {
       return "Keyboard";
     case "midi":
       return "MIDI";
-    case "websocket":
-      return "WebSocket";
+    case "websocket-client":
+      return "WebSocket client";
+    case "websocket-server":
+      return "WebSocket server";
     case "http":
-      return "HTTP";
+      return "HTTP webhooks";
     default:
       return integration;
   }
@@ -89,31 +90,6 @@ export const paramValueLabel = (value: ParamValue | undefined): string => {
   return String(value);
 };
 
-export const projectStatusLabel = (project: ProjectSummary): string => {
-  if (project.status === "error") {
-    return project.enabled ? "Running previous version" : "Error";
-  }
-  switch (project.status) {
-    case "running":
-      return "Running";
-    case "needs-consent":
-      return "Needs consent";
-    case "stopped":
-      return "Stopped";
-  }
-};
-
-/**
- * A project with a live worker. A failed reload keeps the previous worker
- * running, while a stopped project with an error has no worker. The protocol
- * does not expose the session directly, so `enabled` distinguishes those two
- * error cases.
- */
-export const projectWorkerRunning = (project: ProjectSummary): boolean =>
-  project.status === "running" ||
-  project.status === "needs-consent" ||
-  (project.status === "error" && project.enabled);
-
 /** Requirements that block Start: no explicit binding and no sole-instance proposal. */
 export const blockingRequirements = (
   requirements: ReadonlyArray<ProjectRequirement>,
@@ -123,19 +99,6 @@ export const blockingRequirements = (
       requirement.boundInstanceId === undefined &&
       requirement.proposedInstanceId === undefined,
   );
-
-export const projectStatusTone = (project: ProjectSummary): Tone => {
-  switch (project.status) {
-    case "running":
-      return "success";
-    case "needs-consent":
-      return "warning";
-    case "error":
-      return "danger";
-    case "stopped":
-      return "neutral";
-  }
-};
 
 const unitKindLabelValue: Record<UnitKind, string> = {
   topic: "Topic",
@@ -165,8 +128,8 @@ export const unitStatusLabel = (status: UnitStatus): string => {
       return "Active";
     case "waiting":
       return "Waiting";
-    case "error":
-      return "Error";
+    case "failed":
+      return "Failed";
   }
 };
 
@@ -176,7 +139,7 @@ export const unitStatusTone = (status: UnitStatus): Tone => {
       return "success";
     case "waiting":
       return "neutral";
-    case "error":
+    case "failed":
       return "danger";
   }
 };

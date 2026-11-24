@@ -96,12 +96,6 @@ export const connectionKinds: ReadonlyArray<ConnectionKind> = [
     description:
       "The user pastes a per-connection URL into a provider such as Ko-fi or Streamlabs. The agent verifies and delivers the webhook locally, or receives it through the cloud relay.",
   },
-  {
-    id: "request-only",
-    title: "Request only",
-    description:
-      "No event stream: the script only calls requests, for example an outgoing HTTP client.",
-  },
 ];
 
 const humanize = (name: string): string =>
@@ -342,9 +336,9 @@ const keyboardRequests: ReadonlyArray<CatalogRequest> = [
   },
 ];
 
-const websocketRequests: ReadonlyArray<CatalogRequest> = [
+const websocketClientRequests: ReadonlyArray<CatalogRequest> = [
   {
-    integration: "websocket",
+    integration: "websocket-client",
     name: "websocket/connect",
     description: "Declare permission for the client slot to connect to its configured URL.",
     scopes: ["ws:connect:<host>"],
@@ -352,15 +346,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     input: { type: "object", properties: {} },
   },
   {
-    integration: "websocket",
-    name: "websocket/listen",
-    description: "Declare permission for the server slot to listen on its configured host and port.",
-    scopes: ["ws:listen:<host>:<port><path>"],
-    grantedBy: "WebSocket.Server(slot, { host?, port?, path? })",
-    input: { type: "object", properties: {} },
-  },
-  {
-    integration: "websocket",
+    integration: "websocket-client",
     name: "websocket/send",
     description: "Send a text, binary (base64) or JSON frame on a client slot.",
     scopes: [],
@@ -374,8 +360,19 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
       ],
     },
   },
+];
+
+const websocketServerRequests: ReadonlyArray<CatalogRequest> = [
   {
-    integration: "websocket",
+    integration: "websocket-server",
+    name: "websocket/listen",
+    description: "Declare permission for the server slot to listen on its configured port.",
+    scopes: ["ws:listen:127.0.0.1:<port><path>"],
+    grantedBy: "WebSocket.Server(slot, { port?, path? })",
+    input: { type: "object", properties: {} },
+  },
+  {
+    integration: "websocket-server",
     name: "websocket/sendToClient",
     description: "Send a frame to one connected client of a server slot.",
     scopes: [],
@@ -387,7 +384,7 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     },
   },
   {
-    integration: "websocket",
+    integration: "websocket-server",
     name: "websocket/broadcast",
     description: "Broadcast a frame to every connected client of a server slot.",
     scopes: [],
@@ -396,43 +393,6 @@ const websocketRequests: ReadonlyArray<CatalogRequest> = [
     output: {
       type: "object",
       properties: { delivered: { type: "number" }, failed: { type: "number" } },
-    },
-  },
-];
-
-const httpRequests: ReadonlyArray<CatalogRequest> = [
-  {
-    integration: "http",
-    name: "http/request",
-    description:
-      "Send an HTTP request to a host the connection is allowed to reach. Hosts become http:host:<host> scopes.",
-    scopes: ["http:host:<host>"],
-    grantedBy: "Http.Client(slot, { hosts })",
-    input: {
-      type: "object",
-      properties: {
-        method: { enum: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
-        path: { type: "string" },
-        query: { type: "object", additionalProperties: true },
-        headers: { type: "object", additionalProperties: { type: "string" } },
-        body: {
-          oneOf: [
-            { type: "object", properties: { json: {} }, required: ["json"] },
-            { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-            { type: "object", properties: { binary: { type: "string" }, contentType: { type: "string" } }, required: ["binary"] },
-          ],
-        },
-      },
-      required: ["method", "path"],
-    },
-    output: {
-      type: "object",
-      properties: {
-        status: { type: "number" },
-        headers: { type: "object" },
-        text: { type: "string" },
-        url: { type: "string" },
-      },
     },
   },
 ];
@@ -539,27 +499,46 @@ const integrationCatalog: ReadonlyArray<CatalogIntegrationInput> = [
     requests: midiRequests,
   },
   {
-    id: "websocket",
+    id: "websocket-client",
     package: "@ballast/module-websocket",
-    title: "WebSocket",
+    title: "WebSocket client",
     description:
-      "A WebSocket client slot and a local WebSocket server slot, with text/binary/JSON frames and connection lifecycle events.",
+      "A WebSocket client slot with text/binary/JSON frames and connection lifecycle events.",
     connectionKinds: ["local-socket"],
-    connection: { location: "local", auth: "none", notes: "URL for clients; host/port/path for servers." },
-    topics: topicsFromModule("websocket", WebSocket),
-    requests: websocketRequests,
+    connection: { location: "local", auth: "none", notes: "The client URL." },
+    topics: topicsFromModule("websocket-client", {
+      Message: WebSocket.Message,
+      Open: WebSocket.Open,
+      Close: WebSocket.Close,
+    }),
+    requests: websocketClientRequests,
+  },
+  {
+    id: "websocket-server",
+    package: "@ballast/module-websocket",
+    title: "WebSocket server",
+    description:
+      "A local WebSocket server slot with text/binary/JSON frames and client lifecycle events.",
+    connectionKinds: ["local-socket"],
+    connection: { location: "local", auth: "none", notes: "The server port." },
+    topics: topicsFromModule("websocket-server", {
+      ServerMessage: WebSocket.ServerMessage,
+      ClientConnected: WebSocket.ClientConnected,
+      ClientDisconnected: WebSocket.ClientDisconnected,
+    }),
+    requests: websocketServerRequests,
   },
   {
     id: "http",
     package: "@ballast/module-http",
-    title: "HTTP and webhooks",
+    title: "HTTP webhooks",
     description:
-      "Outgoing HTTP requests with per-host scopes, plus local or cloud webhooks for providers such as Ko-fi and Streamlabs.",
-    connectionKinds: ["request-only", "cloud-webhook"],
+      "Local or cloud webhooks for providers such as Ko-fi and Streamlabs. Outbound HTTP uses Effect's HttpClient.",
+    connectionKinds: ["cloud-webhook"],
     connection: {
       location: "either",
       auth: "none",
-      notes: "HTTP client base URL and allowed hosts; webhook slots get a generated URL.",
+      notes: "Webhook slots get a generated URL; outbound HTTP needs no connection.",
     },
     topics: [
       {
@@ -573,7 +552,7 @@ const integrationCatalog: ReadonlyArray<CatalogIntegrationInput> = [
         maxAgeMs: 60_000,
       },
     ],
-    requests: httpRequests,
+    requests: [],
   },
 ];
 

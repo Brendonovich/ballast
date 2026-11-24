@@ -17,6 +17,8 @@ export interface OutlineItem {
   readonly source?: SourceLocation;
   /** Set for units, whose logs can be filtered. Stores and API have no logs. */
   readonly unit?: UnitSummary;
+  /** Why the unit is failed or waiting, for its tooltip. */
+  readonly note?: string;
 }
 
 export interface OutlineGroup {
@@ -30,21 +32,66 @@ const unitOrder: ReadonlyArray<UnitKind> = ["topic", "timer", "workflow", "run",
 export const unitKey = (unit: Pick<UnitSummary, "kind" | "name">): string =>
   `unit:${unit.kind}:${unit.name}`;
 
-const unitItem = (unit: UnitSummary): OutlineItem => ({
-  key: unitKey(unit),
-  label: unit.title ?? unit.name,
-  status: unit.status,
-  ...(unit.source === undefined ? {} : { source: unit.source }),
-  unit,
-});
+/** How the outline names a connection; the service connection label when known. */
+export type ConnectionName = (connectionId: string) => string | undefined;
+
+/**
+ * A failed unit says why; a topic waiting on an offline connection names it.
+ * The connection is found through the topic's slot and the project's
+ * `connection-offline` issues.
+ */
+const unitNote = (
+  unit: UnitSummary,
+  detail: ProjectDetail,
+  connectionName: ConnectionName,
+): string | undefined => {
+  if (unit.status === "failed") {
+    const issue = detail.issues.find(
+      (entry) => entry.kind === "unit-failed" && entry.unit === unit.name,
+    );
+    const reason = unit.lastError ?? issue?.detail;
+    return reason === undefined ? "Failed" : `Failed: ${reason}`;
+  }
+  if (unit.status !== "waiting" || unit.kind !== "topic") return undefined;
+  const topic = detail.manifest.topics.find((entry) => entry.name === unit.name);
+  if (topic === undefined) return undefined;
+  const offline = detail.issues.find(
+    (entry) => entry.kind === "connection-offline" && entry.slot === topic.slot,
+  );
+  if (offline === undefined) return undefined;
+  const name =
+    offline.connectionId === undefined ? undefined : connectionName(offline.connectionId);
+  return name === undefined
+    ? `Waiting: ${offline.title}`
+    : `Waiting for ${name} (${topic.integration} · ${topic.slot}), which is offline`;
+};
+
+const unitItem = (
+  unit: UnitSummary,
+  detail: ProjectDetail,
+  connectionName: ConnectionName,
+): OutlineItem => {
+  const note = unitNote(unit, detail, connectionName);
+  return {
+    key: unitKey(unit),
+    label: unit.title ?? unit.name,
+    status: unit.status,
+    ...(unit.source === undefined ? {} : { source: unit.source }),
+    unit,
+    ...(note === undefined ? {} : { note }),
+  };
+};
 
 const unitGroup = (
-  units: ReadonlyArray<UnitSummary>,
+  detail: ProjectDetail,
   kind: UnitKind,
+  connectionName: ConnectionName,
 ): OutlineGroup => ({
   id: kind,
   title: unitKindPlural(kind),
-  items: units.filter((unit) => unit.kind === kind).map(unitItem),
+  items: detail.units
+    .filter((unit) => unit.kind === kind)
+    .map((unit) => unitItem(unit, detail, connectionName)),
 });
 
 /**
@@ -52,12 +99,16 @@ const unitGroup = (
  * Units come from the detail's unit rows; the API and stores come from the
  * manifest because they are not units.
  */
-export const buildOutline = (detail: ProjectDetail | undefined): ReadonlyArray<OutlineGroup> => {
+export const buildOutline = (
+  detail: ProjectDetail | undefined,
+  connectionName: ConnectionName = () => undefined,
+): ReadonlyArray<OutlineGroup> => {
   if (detail === undefined) return [];
-  const units = detail.units;
   const api = detail.manifest.api;
   const stores = detail.manifest.stores ?? [];
-  const groups: Array<OutlineGroup> = unitOrder.map((kind) => unitGroup(units, kind));
+  const groups: Array<OutlineGroup> = unitOrder.map((kind) =>
+    unitGroup(detail, kind, connectionName),
+  );
   groups.push({
     id: "api",
     title: "API",
@@ -78,7 +129,7 @@ export const buildOutline = (detail: ProjectDetail | undefined): ReadonlyArray<O
       ...(store.source === undefined ? {} : { source: store.source }),
     })),
   });
-  groups.push(unitGroup(units, "database"));
+  groups.push(unitGroup(detail, "database", connectionName));
   return groups.filter((group) => group.items.length > 0);
 };
 

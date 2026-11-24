@@ -261,32 +261,29 @@ export const midiFields: ReadonlyArray<ConnectionField> = [
   textField("output", "Output port", "Default output for send requests."),
 ];
 
-export const websocketFields: ReadonlyArray<ConnectionField> = [
-  selectField("mode", "Mode", ["auto", "client", "server"]),
-  textField("url", "Client URL", "ws:// or wss://; required for a client slot."),
-  textField("headers", "Headers (JSON)", 'For example {"authorization":"Bearer ..."}'),
-  secretField("headersSecret", "Secret headers (JSON)", "Merged over the plain headers."),
-  textField("subprotocols", "Subprotocols (comma separated)"),
-  textField("serverHost", "Server host", "Defaults to 127.0.0.1."),
-  textField("serverPort", "Server port", "Required for a server slot."),
-  textField("serverPath", "Server path", "Defaults to every path."),
+export const websocketClientFields: ReadonlyArray<ConnectionField> = [
+  {
+    key: "url",
+    label: "URL",
+    kind: "url",
+    required: true,
+    placeholder: "ws://127.0.0.1:8080",
+  },
+];
+
+export const websocketServerFields: ReadonlyArray<ConnectionField> = [
+  {
+    key: "port",
+    label: "Port",
+    kind: "text",
+    required: false,
+    placeholder: "8080",
+    description:
+      "Used by scripts that do not declare a port; a script's declared port wins.",
+  },
 ];
 
 export const httpFields: ReadonlyArray<ConnectionField> = [
-  textField("baseUrl", "Base URL", "Required for HTTP client requests."),
-  textField("headers", "Default headers (JSON)"),
-  secretField("headersSecret", "Secret headers (JSON)", "Merged over the plain headers."),
-  selectField("authType", "Auth", ["none", "bearer", "basic", "header"]),
-  secretField("authToken", "Bearer token"),
-  textField("authUsername", "Basic auth username"),
-  secretField("authPassword", "Basic auth password"),
-  textField("authHeaderName", "Auth header name"),
-  secretField("authHeaderValue", "Auth header value"),
-  textField(
-    "allowedHosts",
-    "Allowed hosts (comma separated)",
-    "The manifest host scopes are always enforced too.",
-  ),
   selectField("webhookTransport", "Webhook transport", ["local", "cloud"]),
   textField("webhookHookId", "Cloud hook id", "Optional stable id; generated from the slot otherwise."),
   textField("webhookHost", "Webhook host", "Defaults to 127.0.0.1."),
@@ -400,22 +397,31 @@ export const connectionIntegrations: ReadonlyArray<ConnectionIntegration> = [
     description: "MIDI input/output ports for note, control and program messages.",
   },
   {
-    integration: "websocket",
-    title: "WebSocket",
+    integration: "websocket-client",
+    title: "WebSocket client",
     location: "local",
     modes: ["local-app"],
     requiresAuth: false,
-    fields: websocketFields,
-    description: "A WebSocket client connection or a local WebSocket server.",
+    fields: websocketClientFields,
+    description: "Connects out to a WebSocket server.",
+  },
+  {
+    integration: "websocket-server",
+    title: "WebSocket server",
+    location: "local",
+    modes: ["local-app"],
+    requiresAuth: false,
+    fields: websocketServerFields,
+    description: "Accepts local WebSocket clients on a port.",
   },
   {
     integration: "http",
-    title: "HTTP",
+    title: "HTTP webhooks",
     location: "either",
     modes: ["auto", "local-app", "cloud"],
     requiresAuth: false,
     fields: httpFields,
-    description: "HTTP requests and verified local or cloud webhooks.",
+    description: "Verified local or cloud webhooks; outbound HTTP uses Effect's HttpClient.",
   },
 ];
 

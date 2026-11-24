@@ -1,17 +1,20 @@
-import { For, Show, createEffect, createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import type { ProjectDetail, ProjectSummary } from "@ballast/agent-protocol";
 
 import { useAgent } from "../state/context.tsx";
 import { getDesktopBridge } from "../bridge.ts";
+import { plural } from "../lib/format.ts";
 import {
-  blockingRequirements,
-  plural,
-  projectStatusLabel,
-  projectStatusTone,
-  projectWorkerRunning,
-} from "../lib/format.ts";
+  actionLabel,
+  issueSummary,
+  projectAction,
+  sortIssues,
+  statusTone,
+  statusWord,
+} from "../lib/project-health.ts";
+import { requestProjectIntent } from "../lib/project-intent.ts";
 import {
   Button,
   Dialog,
@@ -21,15 +24,11 @@ import {
   Status,
   StatusDot,
   TextInput,
+  cx,
 } from "../ui/primitives.tsx";
 
 const projectHref = (projectId: string): string =>
   `/projects/${encodeURIComponent(projectId)}`;
-
-const statusLabelFor = (project: ProjectSummary): string => {
-  if (project.status === "error" && project.enabled) return "Running previous version";
-  return projectStatusLabel(project);
-};
 
 export const ProjectsScreen = (): JSX.Element => {
   const store = useAgent();
@@ -37,17 +36,6 @@ export const ProjectsScreen = (): JSX.Element => {
   const bridge = getDesktopBridge();
   const [newOpen, setNewOpen] = createSignal(false);
   const [addOpen, setAddOpen] = createSignal(false);
-  const requested = new Map<string, number>();
-
-  createEffect(() => {
-    for (const project of store.projects()) {
-      const revision = store.projectRevision(project.id);
-      const detail = store.projectDetail(project.id);
-      if (detail !== undefined && requested.get(project.id) === revision) continue;
-      requested.set(project.id, revision);
-      void store.fetchProject(project.id, true);
-    }
-  });
 
   const open = (projectId: string, options?: { readonly newWindow?: boolean }): void => {
     if (bridge !== undefined) {
@@ -65,44 +53,27 @@ export const ProjectsScreen = (): JSX.Element => {
     navigate(projectHref(projectId));
   };
 
-  const needsConsent = (project: ProjectSummary): boolean =>
-    store.projectConsent(project.id) !== undefined;
-  const needsConnections = (project: ProjectSummary): boolean => {
-    const detail = store.projectDetail(project.id);
-    return detail !== undefined && blockingRequirements(detail.requirements).length > 0;
-  };
-  const statusLabel = (project: ProjectSummary): string => {
-    if (needsConnections(project)) return "Needs connections";
-    if (needsConsent(project)) return "Needs consent";
-    return statusLabelFor(project);
-  };
-  const statusTone = (project: ProjectSummary): "warning" | "success" | "danger" | "neutral" | "info" => {
-    if (needsConsent(project) || needsConnections(project)) return "warning";
-    return projectStatusTone(project);
-  };
-
   const toggle = async (project: ProjectSummary): Promise<void> => {
-    if (
-      project.status === "needs-consent" ||
-      needsConsent(project) ||
-      needsConnections(project)
-    ) {
-      open(project.id);
-      return;
-    }
-    if (projectWorkerRunning(project)) {
-      await store.stopProject(project.id);
-    } else {
-      await store.startProject(project.id);
+    switch (projectAction(project.status)) {
+      case "set-up":
+        // The project view owns the binding and consent flow.
+        requestProjectIntent(project.id, { kind: "set-up" });
+        open(project.id);
+        return;
+      case "stop":
+        await store.stopProject(project.id);
+        return;
+      case "start":
+        await store.startProject(project.id);
+        return;
     }
   };
 
-  const actionLabel = (project: ProjectSummary): string => {
-    if (project.status === "needs-consent" || needsConsent(project) || needsConnections(project)) {
-      return "Review";
-    }
-    return projectWorkerRunning(project) ? "Stop" : "Start";
-  };
+  /** One line per issue for the row's tooltip. */
+  const issuesTooltip = (project: ProjectSummary): string =>
+    sortIssues(project.issues)
+      .map((issue) => issue.title)
+      .join("\n");
 
   return (
     <div>
@@ -145,13 +116,7 @@ export const ProjectsScreen = (): JSX.Element => {
               <div
                 data-testid="project-row"
                 data-project-id={project.id}
-                data-status={
-                  needsConnections(project)
-                    ? "needs-connections"
-                    : needsConsent(project)
-                      ? "needs-consent"
-                      : project.status
-                }
+                data-status={project.status}
                 class="group flex min-h-14 items-center gap-3 border-b border-edge py-2"
               >
                 <StatusDot tone={statusTone(project)} class="ml-1" />
@@ -175,21 +140,34 @@ export const ProjectsScreen = (): JSX.Element => {
                 <span class="hidden text-[11px] text-faint sm:block">
                   {plural(project.unitCount, "unit")}
                 </span>
-                <Status tone={statusTone(project)}>{statusLabel(project)}</Status>
+                <Show when={project.issues.length > 0}>
+                  <span
+                    data-testid="project-issue-count"
+                    title={issuesTooltip(project)}
+                    class={cx(
+                      "shrink-0 text-[11px]",
+                      project.issues.some((issue) => issue.severity === "error")
+                        ? "text-danger"
+                        : "text-warning",
+                    )}
+                  >
+                    {issueSummary(project.issues)}
+                  </span>
+                </Show>
+                <Status tone={statusTone(project)}>
+                  <span data-testid="project-status-word">{statusWord(project.status)}</span>
+                </Status>
                 <Button
                   size="small"
-                  variant={
-                    projectWorkerRunning(project) || project.status === "needs-consent"
-                      ? "outline"
-                      : "neutral"
-                  }
+                  variant={projectAction(project.status) === "start" ? "neutral" : "outline"}
+                  data-testid="project-action"
                   loading={
                     store.isPending(`project:${project.id}:start`) ||
                     store.isPending(`project:${project.id}:stop`)
                   }
                   onClick={() => void toggle(project)}
                 >
-                  {actionLabel(project)}
+                  {actionLabel(projectAction(project.status))}
                 </Button>
               </div>
             )}

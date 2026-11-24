@@ -152,9 +152,14 @@ The catalog is the single source of truth. It produces:
 | **Local socket** | OBS, VTube Studio, Streamer.bot, Voicemod, GoXLR, MIDI | Agent holds the connection | Agent calls directly |
 | **Cloud push** | Twitch EventSub, YouTube (polling), Kick webhooks | Cloud ingress → relay → agent | Agent calls the API directly with a short-lived token from the vault |
 | **Cloud webhook (manual setup)** | Ko-fi, Streamlabs, StreamElements | User pastes a per-connection URL that Ballast generates | As above |
-| **Request-only** | OpenAI, ElevenLabs, Discord REST, HTTP | — | Agent calls directly |
+| **Request-only** | OpenAI, ElevenLabs, Discord REST, any HTTP API | — | Agent calls directly (HTTP uses `effect/http`) |
 
 Twitch's EventSub over WebSocket can also run on the agent with no cloud involved. It's useful as a fallback or for testing, but cloud webhooks (or a conduit) are the default for reliability and to receive events while the PC restarts.
+
+Outgoing HTTP needs no integration, connection or permission scope. Scripts call
+Effect's `HttpClient` with `FetchHttpClient.layer` directly from a handler (or
+any `Ballast.Runtime` context), exactly like any other Effect service. Only
+incoming webhooks use `@ballast/module-http`.
 
 ### 5.3 Port from MacroGraph, don't depend on it
 

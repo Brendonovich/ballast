@@ -39,8 +39,11 @@ describe("stream dashboard artifact", () => {
                 path: project,
                 name: "Stream dashboard",
               });
-              if (added.summary.lastError !== undefined) {
-                return yield* Effect.fail(new Error(added.summary.lastError));
+              const addError = added.summary.issues.find(
+                (issue) => issue.severity === "error",
+              );
+              if (addError !== undefined) {
+                return yield* Effect.fail(new Error(addError.detail ?? addError.title));
               }
               const id = added.summary.id;
               yield* client.SetProjectBinding({

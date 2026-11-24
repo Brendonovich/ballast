@@ -43,7 +43,7 @@ export interface RuntimeSessionOptions {
     request: string,
     slot: string,
     input: unknown,
-  ) => Effect.Effect<unknown, string>;
+  ) => Effect.Effect<unknown, import("@ballast/core").ConnectionRequestError>;
   /** Timer RPCs; optional so non-service hosts keep working. */
   readonly registerTimer?: (name: string) => Effect.Effect<void>;
   readonly scheduleTimer?: (input: RuntimeTimerSchedule) => Effect.Effect<void, string>;
@@ -56,6 +56,9 @@ export interface RuntimeSessionOptions {
   readonly eventHistoryRecord?: RuntimeHostHandlers["eventHistoryRecord"];
   readonly eventHistoryQuery?: RuntimeHostHandlers["eventHistoryQuery"];
   readonly databaseExecute?: RuntimeHostHandlers["databaseExecute"];
+  readonly unitFailed?: RuntimeHostHandlers["unitFailed"];
+  /** Called once if the worker exits after starting, for any reason. */
+  readonly onExit?: (reason: string) => void;
 }
 
 export interface RuntimeTimerSchedule {
@@ -74,6 +77,8 @@ export interface RuntimeSession {
   /** Host end of the worker's artifact RPC channel, once the worker starts. */
   readonly artifactPort?: MessagePort;
   readonly ready: Effect.Effect<void, Error>;
+  /** `undefined` while the worker is alive, the reason once it exits. */
+  readonly exitReason: Effect.Effect<string | undefined>;
   readonly deliver: (topicKey: string, payload: unknown) => void;
   /** Post one durable timer fire to the worker. */
   readonly deliverTimer: (fire: RuntimeTimerFire) => void;
@@ -110,6 +115,8 @@ export const startRuntimeSession = (
 
     let worker: Worker | undefined;
     let closed = false;
+    let exitReported = false;
+    let exitReason: string | undefined;
 
     const handlers: RuntimeHostHandlers = {
       ready: ({ generation }) =>
@@ -163,6 +170,7 @@ export const startRuntimeSession = (
       ...(options.databaseExecute === undefined
         ? {}
         : { databaseExecute: options.databaseExecute }),
+      ...(options.unitFailed === undefined ? {} : { unitFailed: options.unitFailed }),
     };
 
     const onLog =
@@ -184,6 +192,7 @@ export const startRuntimeSession = (
       subscriptions,
       artifactPort: artifactChannel.port1,
       ready: Deferred.await(ready),
+      exitReason: Effect.sync(() => exitReason),
       deliver: (topicKey, payload) => {
         if (closed || worker === undefined) {
           onLog({
@@ -335,12 +344,15 @@ export const startRuntimeSession = (
             }
           };
           const onExit = (code: number) => {
-            if (closed) return;
+            if (closed || exitReported) return;
+            exitReported = true;
+            exitReason = `exit code ${code}`;
             const error = new Error(
               `Worker ${options.generation} exited with code ${code}`,
             );
             Deferred.doneUnsafe(ready, Exit.fail(error));
             console.error(`[run] ${error.message}`);
+            options.onExit?.(exitReason);
           };
           worker?.on("error", onError);
           worker?.on("exit", onExit);

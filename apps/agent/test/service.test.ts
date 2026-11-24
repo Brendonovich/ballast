@@ -232,7 +232,7 @@ describe("ballast serve", () => {
         ).pipe(Effect.timeout("20 seconds"));
 
         const integrations = yield* call((client) => client.ListIntegrations());
-        expect(integrations.integrations.length).toBe(8);
+        expect(integrations.integrations.length).toBe(9);
         const connection = yield* call((client) => client.ListConnections());
         expect(connection.connections.some((entry) => entry.integration === "fake")).toBe(true);
 

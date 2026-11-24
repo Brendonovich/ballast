@@ -302,7 +302,7 @@ not only at runtime:
   that require it and provide it at their boundary. Declarations do not require
   it.
 - `Param<A>` is `Effect<A, never, Ballast.Runtime>`. Request clients (OBS and
-  the other generated/local clients, HTTP, `account.helix` calls) and timer
+  the other generated/local clients, `account.helix` calls) and timer
   `after`/`cancel` and workflow `execute`/`resolve` carry the same requirement.
   `Connection`, `Account`, `helix(name)`, `Param.*`, `subscribe`,
   `Timer.subscribe`, `Workflow.make` and `run` itself do not.

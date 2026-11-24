@@ -3,7 +3,7 @@ import type { JSX } from "solid-js";
 
 import { useAgent } from "../state/context.tsx";
 import { insetTitleBar } from "../lib/titlebar.ts";
-import { projectDisplayStatus } from "../lib/project-status.ts";
+import { issueSummary, statusTone, statusWord } from "../lib/project-health.ts";
 import { ChevronDownIcon, ExternalLinkIcon, PlusIcon, ProjectsIcon } from "../ui/icons.tsx";
 import { IconButton, StatusDot, cx } from "../ui/primitives.tsx";
 
@@ -25,9 +25,12 @@ export const ProjectSwitcher = (props: {
 
   const statusOf = (projectId: string) => {
     const project = store.project(projectId);
-    return project === undefined
-      ? undefined
-      : projectDisplayStatus(project, store.projectDetail(projectId), store.projectConsent(projectId));
+    if (project === undefined) return undefined;
+    const word = statusWord(project.status);
+    return {
+      tone: statusTone(project),
+      label: project.issues.length === 0 ? word : `${word} · ${issueSummary(project.issues)}`,
+    };
   };
 
   const current = () => store.project(props.projectId);
@@ -68,14 +71,7 @@ export const ProjectSwitcher = (props: {
           "flex h-7 max-w-[280px] items-center gap-2 rounded-md px-2 text-left transition-colors",
           open() ? "bg-hover" : "hover:bg-hover",
         )}
-        onClick={() => {
-          const next = !open();
-          setOpen(next);
-          // Rows show the same status as the projects list, which needs details.
-          if (next) {
-            for (const project of store.projects()) void store.fetchProject(project.id);
-          }
-        }}
+        onClick={() => setOpen((value) => !value)}
       >
         <StatusDot tone={statusOf(props.projectId)?.tone ?? "neutral"} />
         <span class="min-w-0 truncate text-[13px] font-medium text-strong">

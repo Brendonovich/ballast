@@ -31,6 +31,8 @@ export interface MockCloudServer {
   readonly emitRedemption: (title: string) => boolean;
   /** Drop the relay socket so the agent has to reconnect and replay. */
   readonly dropRelay: () => void;
+  /** Fail GET /api/connections to simulate the cloud being unreachable. */
+  readonly setFailConnections: (fail: boolean) => void;
   readonly close: () => Promise<void>;
 }
 
@@ -112,6 +114,7 @@ export const startMockCloudServer = async (
   const sockets = new Set<WebSocket>();
   const queued: Array<RelayServerMessage> = [];
   let nextSeq = 1;
+  let failConnections = false;
 
   const sendRelay = (message: RelayServerMessage): void => {
     const encoded = JSON.stringify(message);
@@ -175,6 +178,10 @@ export const startMockCloudServer = async (
       }
 
       if (request.method === "GET" && url.pathname === "/api/connections") {
+        if (failConnections) {
+          json(response, 503, { error: { tag: "unavailable", message: "cloud offline" } });
+          return;
+        }
         json(response, 200, {
           connections: [
             {
@@ -354,6 +361,9 @@ export const startMockCloudServer = async (
     machineToken,
     reconciled: () => [...reconciled],
     acks: () => [...acks],
+    setFailConnections: (fail) => {
+      failConnections = fail;
+    },
     relayConnections: () => connections,
     emitRedemption: (title: string): boolean => {
       sendRelay({

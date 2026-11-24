@@ -17,6 +17,7 @@ import {
   agentError,
   type AgentError,
   type CancelTimerRequest,
+  type ConnectionSummary,
   type ListTimersRequest,
   type ManifestConnection,
   type ManifestDiff,
@@ -25,6 +26,7 @@ import {
   type ProjectCheckResult,
   type ProjectConsentRequest,
   type ProjectDetail,
+  type ProjectIssue,
   type ProjectDiagnostic,
   type ProjectFile,
   type ProjectFileContent,
@@ -78,9 +80,8 @@ interface ProjectRuntimeRecord {
   readonly enabled: boolean;
   readonly generation: number;
   readonly updatedAt: number;
-  readonly lastError: string | undefined;
-  readonly lastErrorKind: "plan" | "runtime" | undefined;
-  readonly lastErrorSource: ProjectDetail["lastErrorSource"];
+  /** Structured problems; connection-offline is added when the detail is read. */
+  readonly issues: ReadonlyArray<ProjectIssue>;
   readonly pendingConsent: ProjectConsentRequest | undefined;
   readonly params: Readonly<Record<string, ParamValue>>;
   /** Artifact entry content hashes; artifact-only edits keep the worker. */
@@ -136,7 +137,16 @@ export interface ProjectRuntimeService {
   /** Seed the live event ring from durable subscription history after restart. */
   readonly hydrateEvents: Effect.Effect<void>;
   readonly closeAll: () => Effect.Effect<void>;
-  readonly counts: Effect.Effect<{ readonly total: number; readonly running: number; readonly needsConsent: number; readonly error: number }>;
+  readonly counts: Effect.Effect<{
+    readonly total: number;
+    readonly stopped: number;
+    readonly starting: number;
+    readonly running: number;
+    readonly needsUser: number;
+    readonly failed: number;
+    readonly needsConsent: number;
+    readonly error: number;
+  }>;
   readonly generation: (projectId: string) => Effect.Effect<number | undefined>;
   readonly artifactPort: (projectId: string) => Effect.Effect<MessagePort | undefined>;
 }
@@ -673,34 +683,67 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       },
     });
 
-    const units = (record: ProjectRuntimeRecord, timerRows: ReadonlyArray<TimerSummary>): ReadonlyArray<UnitSummary> => {
+    const unitIssue = (
+      issues: ReadonlyArray<ProjectIssue>,
+      name: string,
+    ): ProjectIssue | undefined =>
+      issues.find((issue) => issue.kind === "unit-failed" && issue.unit === name);
+
+    const boundConnection = (
+      record: ProjectRuntimeRecord,
+      connectionsById: ReadonlyMap<string, ConnectionSummary>,
+      integration: string,
+      slot: string,
+    ): ConnectionSummary | undefined => {
+      const id = record.bindings[integration + "/" + slot];
+      return id === undefined ? undefined : connectionsById.get(id);
+    };
+
+    const units = (
+      record: ProjectRuntimeRecord,
+      timerRows: ReadonlyArray<TimerSummary>,
+      connectionsById: ReadonlyMap<string, ConnectionSummary>,
+      issues: ReadonlyArray<ProjectIssue>,
+    ): ReadonlyArray<UnitSummary> => {
       const manifest = record.manifest;
       if (manifest === undefined) return [];
       const active = record.session !== undefined;
-      const topicUnits: ReadonlyArray<UnitSummary> = manifest.topics.map((topic) => ({
-        kind: "topic",
-        name: topic.name,
-        status: active ? "active" : "waiting",
-        ...(topic.source === undefined ? {} : { source: topic.source }),
-      }));
+      const topicUnits: ReadonlyArray<UnitSummary> = manifest.topics.map((topic) => {
+        const failed = unitIssue(issues, topic.name);
+        const connection = boundConnection(record, connectionsById, topic.integration, topic.slot);
+        const connected = connection?.status === "connected";
+        return {
+          kind: "topic",
+          name: topic.name,
+          status: failed === undefined ? (active && connected ? "active" : "waiting") : "failed",
+          ...(failed?.detail === undefined ? {} : { lastError: failed.detail }),
+          ...(topic.source === undefined ? {} : { source: topic.source }),
+        };
+      });
       const timerUnits: ReadonlyArray<UnitSummary> = manifest.timers.map((timer) => {
         const pending = timerRows.find((row) => row.timer === timer.name && row.state === "pending");
+        const failed = unitIssue(issues, timer.name);
         return {
           kind: "timer",
           name: timer.name,
           ...(timer.title === undefined ? {} : { title: timer.title }),
-          status: pending === undefined ? "waiting" : "active",
+          status: failed === undefined ? (pending === undefined ? "waiting" : "active") : "failed",
+          ...(failed?.detail === undefined ? {} : { lastError: failed.detail }),
           ...(timer.source === undefined ? {} : { source: timer.source }),
           ...(pending === undefined ? {} : { lastActivityAt: pending.dueAt }),
         };
       });
-      const workflowUnits: ReadonlyArray<UnitSummary> = manifest.workflows.map((workflow) => ({
-        kind: "workflow",
-        name: workflow.name,
-        ...(workflow.title === undefined ? {} : { title: workflow.title }),
-        status: "waiting",
-        ...(workflow.source === undefined ? {} : { source: workflow.source }),
-      }));
+      const workflowUnits: ReadonlyArray<UnitSummary> = manifest.workflows.map((workflow) => {
+        const failed = unitIssue(issues, workflow.name);
+        return {
+          kind: "workflow",
+          name: workflow.name,
+          ...(workflow.title === undefined ? {} : { title: workflow.title }),
+          status: failed === undefined ? "waiting" : "failed",
+          ...(failed?.detail === undefined ? {} : { lastError: failed.detail }),
+          ...(workflow.source === undefined ? {} : { source: workflow.source }),
+        };
+      });
       const paramUnits: ReadonlyArray<UnitSummary> = manifest.params.map((param) => ({
         kind: "param",
         name: param.key,
@@ -708,12 +751,16 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         status: "active",
         ...(param.source === undefined ? {} : { source: param.source }),
       }));
-      const runUnits: ReadonlyArray<UnitSummary> = manifest.runs.map((run) => ({
-        kind: "run",
-        name: run.name,
-        status: active ? "active" : "waiting",
-        ...(run.source === undefined ? {} : { source: run.source }),
-      }));
+      const runUnits: ReadonlyArray<UnitSummary> = manifest.runs.map((run) => {
+        const failed = unitIssue(issues, run.name);
+        return {
+          kind: "run",
+          name: run.name,
+          status: failed === undefined ? (active ? "active" : "waiting") : "failed",
+          ...(failed?.detail === undefined ? {} : { lastError: failed.detail }),
+          ...(run.source === undefined ? {} : { source: run.source }),
+        };
+      });
       const databaseUnits: ReadonlyArray<UnitSummary> = manifest.databases.map((database) => ({
         kind: "database",
         name: database.name,
@@ -730,22 +777,176 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       ];
     };
 
-    const summaryOf = (record: ProjectRuntimeRecord): ProjectSummary => ({
+    const missingBindings = (
+      record: ProjectRuntimeRecord,
+    ): ReadonlyArray<{ readonly integration: string; readonly slot: string }> => {
+      const manifest = record.manifest ?? record.appliedManifest;
+      if (manifest === undefined) return [];
+      return manifest.connections
+        .filter(
+          (connection) =>
+            record.bindings[connection.integration + "/" + connection.slot] === undefined,
+        )
+        .map((connection) => ({
+          integration: connection.integration,
+          slot: connection.slot,
+        }));
+    };
+
+    const connectionIssues = (
+      record: ProjectRuntimeRecord,
+    ): Effect.Effect<ReadonlyArray<ProjectIssue>, never, never> =>
+      Effect.gen(function* () {
+        const manifest = record.manifest ?? record.appliedManifest;
+        if (manifest === undefined) return [];
+        const all = yield* connections.summaries();
+        const byId = new Map(all.map((connection) => [connection.id, connection]));
+        const issues: Array<ProjectIssue> = [];
+        for (const connection of manifest.connections) {
+          const key = connection.integration + "/" + connection.slot;
+          const instanceId = record.bindings[key];
+          if (instanceId === undefined) {
+            issues.push({
+              id: "needs-binding:" + key,
+              kind: "needs-binding",
+              severity: "warning",
+              title: connection.integration + " (" + connection.slot + ") needs a connection",
+              integration: connection.integration,
+              slot: connection.slot,
+              at: record.updatedAt,
+            });
+            continue;
+          }
+          const instance = byId.get(instanceId);
+          if (instance === undefined) {
+            issues.push({
+              id: "needs-binding:" + key,
+              kind: "needs-binding",
+              severity: "warning",
+              title:
+                connection.integration +
+                " (" +
+                connection.slot +
+                ") needs a connection",
+              detail: "Connection " + instanceId + " is missing",
+              integration: connection.integration,
+              slot: connection.slot,
+              at: record.updatedAt,
+            });
+            continue;
+          }
+          if (instance.status !== "connected") {
+            issues.push({
+              id: "connection-offline:" + key,
+              kind: "connection-offline",
+              severity: "warning",
+              title:
+                instance.title + " (" + connection.slot + ") offline",
+              detail:
+                instance.lastError ??
+                "Connection " + instance.id + " is " + instance.status,
+              integration: connection.integration,
+              slot: connection.slot,
+              connectionId: instanceId,
+              at: instance.lastConnectedAt ?? record.updatedAt,
+            });
+          }
+        }
+        return issues;
+      });
+
+    const mergeIssues = (
+      stored: ReadonlyArray<ProjectIssue>,
+      live: ReadonlyArray<ProjectIssue>,
+    ): ReadonlyArray<ProjectIssue> => {
+      const liveIds = new Set(live.map((issue) => issue.id));
+      return [
+        ...stored.filter(
+          (issue) =>
+            !liveIds.has(issue.id) &&
+            issue.kind !== "connection-offline" &&
+            issue.kind !== "needs-binding",
+        ),
+        ...live,
+      ];
+    };
+
+    const liveIssues = (
+      record: ProjectRuntimeRecord,
+    ): Effect.Effect<ReadonlyArray<ProjectIssue>> =>
+      Effect.gen(function* () {
+        const live = yield* connectionIssues(record);
+        const issues = mergeIssues(record.issues, live);
+        if (record.pendingConsent !== undefined) {
+          return [
+            ...issues.filter((issue) => issue.kind !== "needs-consent"),
+            {
+              id: "needs-consent",
+              kind: "needs-consent",
+              severity: "warning",
+              title: "Consent required",
+              detail: record.pendingConsent.summary,
+              at: record.pendingConsent.createdAt,
+            },
+          ];
+        }
+        return issues.filter((issue) => issue.kind !== "needs-consent");
+      });
+
+    const effectiveStatus = (
+      record: ProjectRuntimeRecord,
+      issues: ReadonlyArray<ProjectIssue>,
+    ): ProjectSummary["status"] => {
+      // A live worker is the truth; needs-user only says a start is blocked.
+      if (record.session !== undefined) return record.status;
+      if (
+        record.pendingConsent !== undefined ||
+        missingBindings(record).length > 0 ||
+        issues.some((issue) => issue.kind === "needs-binding")
+      ) {
+        return "needs-user";
+      }
+      return record.status;
+    };
+
+    const summaryOf = (
+      record: ProjectRuntimeRecord,
+      issues: ReadonlyArray<ProjectIssue>,
+    ): ProjectSummary => ({
       id: record.project.id,
       name: record.project.name,
       root: record.project.root,
       ...(record.entry === undefined ? {} : { entry: record.entry }),
       enabled: record.enabled,
-      status: record.status,
-      unitCount: record.manifest === undefined ? 0 : record.manifest.topics.length + record.manifest.timers.length + record.manifest.workflows.length + record.manifest.params.length + record.manifest.runs.length + record.manifest.databases.length,
+      status: effectiveStatus(record, issues),
+      unitCount:
+        record.manifest === undefined
+          ? 0
+          : record.manifest.topics.length +
+            record.manifest.timers.length +
+            record.manifest.workflows.length +
+            record.manifest.params.length +
+            record.manifest.runs.length +
+            record.manifest.databases.length,
       createdAt: record.project.createdAt,
       updatedAt: record.updatedAt,
-      ...(record.lastError === undefined ? {} : { lastError: record.lastError }),
+      issues,
     });
 
-    const publish = (record: ProjectRuntimeRecord): Effect.Effect<void> =>
-      hub.publish({ _tag: "project-changed", project: summaryOf(record) });
+    const liveSummary = (record: ProjectRuntimeRecord): Effect.Effect<ProjectSummary> =>
+      Effect.map(liveIssues(record), (issues) => summaryOf(record, issues));
 
+    const publish = (record: ProjectRuntimeRecord): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        // Re-read: a worker exit or binding change may have replaced this
+        // snapshot between setRecord and the publish.
+        const current = (yield* getRecord(record.project.id)) ?? record;
+        const issues = yield* liveIssues(current);
+        yield* hub.publish({
+          _tag: "project-changed",
+          project: summaryOf(current, issues),
+        });
+      });
 
     const detailOf = (record: ProjectRuntimeRecord): Effect.Effect<ProjectDetail, AgentError> =>
       Effect.gen(function* () {
@@ -754,6 +955,9 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const bound = yield* bindingsFor(record);
         const requirements = yield* requirementsFor(record);
         const timerRows = yield* timers.list({ projectId: record.project.id });
+        const issues = yield* liveIssues(record);
+        const connectionList = yield* connections.summaries();
+        const byId = new Map(connectionList.map((connection) => [connection.id, connection]));
         const orphanedDatabases = yield* Effect.sync(() =>
           listOrphanedDatabases(
             paths.join(record.project.root, ".ballast", "db"),
@@ -761,14 +965,14 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           ),
         );
         return {
-          summary: summaryOf(record),
+          summary: summaryOf(record, issues),
           manifest: wireManifest(manifest, record.params, options, bound),
           requirements,
-          units: units(record, timerRows),
+          units: units(record, timerRows, byId, issues),
+          issues,
           orphanedDatabases,
           ...(record.appliedAt === undefined ? {} : { appliedAt: record.appliedAt }),
           ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
-          ...(record.lastErrorSource === undefined ? {} : { lastErrorSource: record.lastErrorSource }),
         };
       });
 
@@ -779,7 +983,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         return record;
       });
 
-    const failureSource = (message: string): ProjectDetail["lastErrorSource"] => {
+    const failureSource = (message: string): ProjectIssue["source"] => {
       const match = /^(.+?):(\d+):(\d+)\s+—/.exec(message);
       if (match === null) return undefined;
       const file = match[1];
@@ -789,21 +993,58 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       return { file, line: Number(line), column: Number(column) };
     };
 
-    const markFailure = (record: ProjectRuntimeRecord, message: string): Effect.Effect<ProjectRuntimeRecord> =>
+    const issueWith = (
+      record: ProjectRuntimeRecord,
+      issue: Omit<ProjectIssue, "at">,
+    ): ProjectRuntimeRecord => ({
+      ...record,
+      issues: [
+        ...record.issues.filter((current) => current.id !== issue.id),
+        { ...issue, at: Date.now() },
+      ],
+    });
+
+    const withoutIssue = (
+      record: ProjectRuntimeRecord,
+      id: string,
+    ): ProjectRuntimeRecord => ({
+      ...record,
+      issues: record.issues.filter((issue) => issue.id !== id),
+    });
+
+    /** A failed plan keeps the current worker; it is an issue, not a status. */
+    const markFailure = (
+      record: ProjectRuntimeRecord,
+      message: string,
+    ): Effect.Effect<ProjectRuntimeRecord> =>
       Effect.gen(function* () {
         const source = failureSource(message);
-        const next = yield* setRecord({
-          ...record,
-          status: "error",
-          lastError: message,
-          lastErrorKind: "plan",
-          lastErrorSource: source,
-        });
+        const next = yield* setRecord(
+          issueWith(
+            {
+              ...record,
+              status:
+                record.session !== undefined
+                  ? "running"
+                  : record.enabled
+                    ? "failed"
+                    : "stopped",
+            },
+            {
+              id: "change-not-applied",
+              kind: "change-not-applied",
+              severity: "error",
+              title: "Latest change not applied",
+              detail: message,
+              ...(source === undefined ? {} : { source }),
+            },
+          ),
+        );
         yield* hub.publish({
           _tag: "reload-failed",
           projectId: next.project.id,
           message,
-          ...(next.lastErrorSource === undefined ? {} : { source: next.lastErrorSource }),
+          ...(source === undefined ? {} : { source }),
           at: Date.now(),
         });
         yield* publish(next);
@@ -815,14 +1056,94 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       message: string,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const next = yield* setRecord({
-          ...record,
-          status: "error",
-          lastError: message,
-          lastErrorKind: "runtime",
-          lastErrorSource: failureSource(message),
-        });
+        const source = failureSource(message);
+        const next = yield* setRecord(
+          issueWith(
+            {
+              ...record,
+              status: record.session === undefined ? "failed" : "running",
+            },
+            {
+              id: "start-failed",
+              kind: "start-failed",
+              severity: "error",
+              title: "Failed to start",
+              detail: message,
+              ...(source === undefined ? {} : { source }),
+            },
+          ),
+        );
         yield* publish(next);
+      });
+
+    const handleUnitFailure = (input: {
+      readonly projectId: string;
+      readonly generation: number;
+      readonly unit: string;
+      readonly error: string;
+      readonly source?: { readonly file: string; readonly line: number; readonly column: number };
+    }): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const current = yield* getRecord(input.projectId);
+        if (
+          current === undefined ||
+          current.generation !== input.generation ||
+          current.session === undefined
+        ) {
+          return;
+        }
+        const next = yield* setRecord(
+          issueWith(current, {
+            id: "unit-failed:" + input.unit,
+            kind: "unit-failed",
+            severity: "error",
+            title: input.unit + " failed",
+            detail: input.error,
+            unit: input.unit,
+            ...(input.source === undefined ? {} : { source: input.source }),
+          }),
+        );
+        yield* publish(next);
+      });
+
+    const handleWorkerExit = (
+      projectId: string,
+      generation: number,
+      reason: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const current = yield* getRecord(projectId);
+        if (
+          current === undefined ||
+          current.generation !== generation ||
+          current.session === undefined
+        ) {
+          return;
+        }
+        const session = current.session;
+        const databases = current.databases;
+        const next = yield* setRecord(
+          issueWith(
+            {
+              ...current,
+              status: "failed",
+              session: undefined,
+              databases: undefined,
+            },
+            {
+              id: "worker-exited",
+              kind: "worker-exited",
+              severity: "error",
+              title: "Worker exited",
+              detail: "worker exited: " + reason,
+            },
+          ),
+        );
+        yield* publish(next);
+        yield* session.close.pipe(Effect.catchCause(() => Effect.void));
+        if (databases !== undefined) {
+          yield* databases.close.pipe(Effect.catchCause(() => Effect.void));
+        }
       });
 
     const startWithRuntimeErrors = (
@@ -874,9 +1195,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           enabled: settings.enabled,
           generation: 0,
           updatedAt: project.updatedAt,
-          lastError: undefined,
-          lastErrorKind: undefined,
-          lastErrorSource: undefined,
+          issues: [],
           pendingConsent: undefined,
           params: settings.params,
           artifactHashes: {},
@@ -923,17 +1242,26 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const resolved = yield* resolveProjectEntry(record.project.root).pipe(Effect.mapError((error) => agentError("invalid", error.message)));
         const fingerprint = yield* provide(projectFingerprint(record.project.root));
         if (!force && record.fingerprint === fingerprint && record.manifest !== undefined) {
-          if (record.status !== "error") return record;
-          // Runtime errors belong to a start/restart attempt, not to a stale
-          // plan. A file sync must not clear them without another start.
-          if (record.lastErrorKind === "runtime") return record;
-          const recovered = yield* setRecord({
-            ...record,
-            status: record.session === undefined ? "stopped" : "running",
-            lastError: undefined,
-            lastErrorKind: undefined,
-            lastErrorSource: undefined,
-          });
+          if (!record.issues.some((issue) => issue.kind === "change-not-applied")) {
+            return record;
+          }
+          // A start/worker failure belongs to an attempt, not to a stale plan.
+          if (
+            record.issues.some(
+              (issue) => issue.kind === "start-failed" || issue.kind === "worker-exited",
+            )
+          ) {
+            return record;
+          }
+          const recovered = yield* setRecord(
+            withoutIssue(
+              {
+                ...record,
+                status: record.session === undefined ? "stopped" : "running",
+              },
+              "change-not-applied",
+            ),
+          );
           yield* publish(recovered);
           return recovered;
         }
@@ -950,14 +1278,29 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         yield* registerHistory(base);
         if (changes.requiresConsent) {
           const consent = yield* consentOf(base, planned.manifest, resolved.entry);
-          const next = yield* setRecord({ ...base, status: record.session === undefined ? "stopped" : "needs-consent", pendingConsent: consent });
+          const next = yield* setRecord({
+            ...base,
+            status: record.session === undefined ? "stopped" : "running",
+            pendingConsent: consent,
+          });
           yield* hub.publish({ _tag: "project-consent", consent });
           yield* publish(next);
           return next;
         }
         const appliedAt = Date.now();
         yield* saveApplied(record.project, planned.manifest, appliedAt);
-        const next = yield* setRecord({ ...base, appliedManifest: planned.manifest, appliedAt, pendingConsent: undefined, status: record.session === undefined ? "stopped" : "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined });
+        const next = yield* setRecord(
+          withoutIssue(
+            {
+              ...base,
+              appliedManifest: planned.manifest,
+              appliedAt,
+              pendingConsent: undefined,
+              status: record.session === undefined ? "stopped" : "running",
+            },
+            "change-not-applied",
+          ),
+        );
         yield* publish(next);
         return next;
       }).pipe(
@@ -984,30 +1327,18 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           }
         }
         yield* saveBindings(record.project, bindings);
-        const next = yield* setRecord({ ...record, bindings });
-        const remaining = yield* requirementsFor(next);
-        const missing = remaining.filter(
-          (requirement) => requirement.boundInstanceId === undefined,
-        );
-        if (missing.length > 0) {
-          return yield* Effect.fail(
-            agentError(
-              "conflict",
-              "The project has unbound connections: " +
-                missing
-                  .map((requirement) => requirement.integration + "/" + requirement.slot)
-                  .join(", "),
-              { missing },
-            ),
-          );
-        }
-        return next;
+        return yield* setRecord({ ...record, bindings });
       });
 
     const requestHandler = (
       record: ProjectRuntimeRecord,
       requirements: ReadonlyArray<ProjectRequirement>,
-    ) => (integration: string, request: string, slot: string, input: unknown): Effect.Effect<unknown, string> =>
+    ) => (
+      integration: string,
+      request: string,
+      slot: string,
+      input: unknown,
+    ): Effect.Effect<unknown, import("@ballast/core").ConnectionRequestError> =>
       Effect.gen(function* () {
         yield* router.recordOutbound({ projectId: record.project.id, scriptId: record.entry ?? "", integration, slot, request, input });
         const instanceId = requirements.find(
@@ -1090,13 +1421,6 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           bindings: bindingMap,
         });
         yield* reconcile([], record);
-        yield* connections.ready(
-          requirements.flatMap((requirement) =>
-            requirement.boundInstanceId === undefined
-              ? []
-              : [requirement.boundInstanceId],
-          ),
-        );
         const bundle = yield* provide(bundleScript(record.entryFile, generation)).pipe(
           Effect.mapError((error) => agentError("internal", error.message)),
         );
@@ -1151,6 +1475,19 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
               ...(payload.before === undefined ? {} : { before: payload.before }),
             }),
           databaseExecute: databases.execute,
+          onExit: (reason) => {
+            Effect.runForkWith(context)(
+              handleWorkerExit(record.project.id, generation, reason),
+            );
+          },
+          unitFailed: (payload) =>
+            handleUnitFailure({
+              projectId: record.project.id,
+              generation,
+              unit: payload.unit,
+              error: payload.error,
+              ...(payload.source === undefined ? {} : { source: payload.source }),
+            }),
           onLog: (line) => {
             const kind = line.unitName === undefined ? undefined : unitKindOf(manifest, line.unitName);
             Effect.runForkWith(context)(logs.write({
@@ -1187,7 +1524,29 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           ),
         });
         yield* timers.activate({ projectId: record.project.id, generation, session, manifest });
-        const next = yield* setRecord({ ...record, appliedManifest: manifest, manifest, generation, status: "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined, pendingConsent: undefined, session, databases });
+        const next = yield* setRecord({
+          ...record,
+          appliedManifest: manifest,
+          manifest,
+          generation,
+          status: "running",
+          pendingConsent: undefined,
+          session,
+          databases,
+          issues: record.issues.filter(
+            (issue) =>
+              issue.kind !== "start-failed" &&
+              issue.kind !== "worker-exited" &&
+              issue.kind !== "unit-failed",
+          ),
+        });
+        // The worker can exit between spawn and this write; onExit may have
+        // seen no session yet. Re-check once the generation is on the record.
+        const exited = yield* session.exitReason;
+        if (exited !== undefined) {
+          yield* handleWorkerExit(record.project.id, generation, exited);
+          return yield* requireRecord(record.project.id);
+        }
         if (previous !== undefined && previous !== session) {
           // Keep the old generation briefly so an in-flight reload can settle,
           // but tie the grace timer to the service scope. A detached fiber used
@@ -1235,14 +1594,36 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
     const start = (projectId: string): Effect.Effect<ProjectDetail, AgentError> =>
       semaphore.withPermit(Effect.gen(function* () {
         const initial = yield* requireRecord(projectId);
+        if (initial.session !== undefined) {
+          const running = yield* setRecord({
+            ...initial,
+            enabled: true,
+            status: "running",
+          });
+          yield* saveEnabled(running, true);
+          return yield* detailOf(running);
+        }
         yield* saveEnabled(initial, true);
-        const enabled = yield* setRecord({ ...initial, enabled: true });
+        const enabled = yield* setRecord({
+          ...initial,
+          enabled: true,
+          status: "starting",
+        });
         const record = yield* planAndApply(enabled, false);
         return yield* Effect.gen(function* () {
           const confirmed = yield* confirmBindings(record);
           if (confirmed.pendingConsent !== undefined) return yield* detailOf(confirmed);
           if (confirmed.session !== undefined && confirmed.status === "running") {
             return yield* detailOf(confirmed);
+          }
+          if (missingBindings(confirmed).length > 0) {
+            const blocked = yield* setRecord({
+              ...confirmed,
+              enabled: true,
+              status: "needs-user",
+            });
+            yield* publish(blocked);
+            return yield* detailOf(blocked);
           }
           return yield* detailOf(yield* startGeneration(confirmed));
         }).pipe(
@@ -1283,6 +1664,10 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const bound = yield* bindingsFor(record);
         const requirements = yield* requirementsFor(record);
         const availableConnections = yield* connections.summaries();
+        const connectionsById = new Map(
+          availableConnections.map((connection) => [connection.id, connection]),
+        );
+        const issues = yield* liveIssues(record);
         const applied = record.appliedManifest;
         const appliedManifest =
           applied === undefined ? undefined : wireManifest(applied, record.params, options, bound);
@@ -1291,7 +1676,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           const failure = Cause.squash(resolved.cause);
           const message = typeof failure === "object" && failure !== null && "message" in failure && typeof failure.message === "string" ? failure.message : String(failure);
           return {
-            summary: summaryOf(record),
+            summary: summaryOf(record, issues),
             ok: false,
             units: [],
             changes: [],
@@ -1346,7 +1731,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
               ? failure.message
               : String(failure);
           return {
-            summary: summaryOf(record),
+            summary: summaryOf(record, issues),
             ok: false,
             units: [],
             changes: [],
@@ -1381,23 +1766,28 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const missingConnections = plannedRequirements.filter(
           (requirement) => requirement.boundInstanceId === undefined,
         );
-        const cleared =
-          record.lastErrorKind === "plan"
-            ? yield* setRecord({
-                ...record,
-                status: record.session === undefined ? "stopped" : "running",
-                lastError: undefined,
-                lastErrorKind: undefined,
-                lastErrorSource: undefined,
-              })
-            : record;
+        const cleared = record.issues.some((issue) => issue.kind === "change-not-applied")
+          ? yield* setRecord(
+              withoutIssue(
+                {
+                  ...record,
+                  status: record.session === undefined ? "stopped" : "running",
+                },
+                "change-not-applied",
+              ),
+            )
+          : record;
         const checked: ProjectRuntimeRecord = { ...cleared, manifest: next.manifest, entry: next.entry.entry, entryFile: next.entry.entryFile };
+        const checkedIssues = mergeIssues(
+          checked.issues,
+          yield* connectionIssues({ ...checked, bindings: record.bindings }),
+        );
         return {
-          summary: summaryOf(checked),
+          summary: summaryOf(checked, checkedIssues),
           ok: true,
           manifest: wireManifest(next.manifest, record.params, plannedOptions, plannedBound),
           ...(appliedManifest === undefined ? {} : { appliedManifest }),
-          units: units(checked, []),
+          units: units(checked, [], connectionsById, checkedIssues),
           changes,
           requiresConsent: diff.requiresConsent,
           requirements: plannedRequirements,
@@ -1423,7 +1813,18 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const record = yield* requireRecord(projectId);
         const stopped = record.session === undefined ? record : yield* stopGeneration(record, true);
         const next = yield* planAndApply({ ...stopped, enabled: true }, true);
-        const started = next.session === undefined ? yield* startWithRuntimeErrors({ ...next, enabled: true }) : next;
+        if (next.pendingConsent !== undefined) {
+          yield* saveEnabled(next, true);
+          return yield* detailOf(next);
+        }
+        const blocked =
+          next.session === undefined && missingBindings(next).length > 0
+            ? yield* setRecord({ ...next, enabled: true, status: "needs-user" })
+            : next;
+        const started =
+          blocked.session === undefined && blocked.status !== "needs-user"
+            ? yield* startWithRuntimeErrors({ ...blocked, enabled: true })
+            : blocked;
         yield* saveEnabled(started, true);
         return yield* detailOf(started);
       }));
@@ -1603,10 +2004,17 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       });
 
     const summaries = (): Effect.Effect<ReadonlyArray<ProjectSummary>> =>
-      Effect.map(records(), (all) => all.map(summaryOf).sort((left, right) => left.name.localeCompare(right.name)));
+      Effect.flatMap(records(), (all) =>
+        Effect.map(
+          Effect.forEach(all, liveSummary),
+          (items) => items.sort((left, right) => left.name.localeCompare(right.name)),
+        ),
+      );
 
     const summary = (projectId: string): Effect.Effect<ProjectSummary | undefined> =>
-      Effect.map(getRecord(projectId), (record) => record === undefined ? undefined : summaryOf(record));
+      Effect.flatMap(getRecord(projectId), (record) =>
+        record === undefined ? Effect.succeed(undefined) : liveSummary(record),
+      );
 
     const syncProject = (projectId: string): Effect.Effect<void> =>
       semaphore.withPermit(Effect.gen(function* () {
@@ -1687,12 +2095,23 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       yield* reconcile([]).pipe(Effect.catchCause(() => Effect.void));
     });
 
-    const counts = Effect.map(records(), (all) => ({
-      total: all.length,
-      running: all.filter((record) => record.status === "running").length,
-      needsConsent: all.filter((record) => record.pendingConsent !== undefined).length,
-      error: all.filter((record) => record.status === "error").length,
-    }));
+    const counts = Effect.flatMap(records(), (all) =>
+      Effect.map(Effect.forEach(all, liveSummary), (summaries) => {
+        const count = (status: string): number =>
+          summaries.filter((project) => project.status === status).length;
+        return {
+          total: summaries.length,
+          stopped: count("stopped"),
+          starting: count("starting"),
+          running: count("running"),
+          needsUser: count("needs-user"),
+          failed: count("failed"),
+          needsConsent: all.filter((record) => record.pendingConsent !== undefined)
+            .length,
+          error: count("failed"),
+        };
+      }),
+    );
 
     const resumeEnabled = (): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1857,9 +2276,29 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
             },
             record.pendingConsent?.bindings ?? [],
           );
-          const next = yield* setRecord(confirmed);
-          const started = next.enabled && next.session === undefined ? yield* startWithRuntimeErrors(next) : next;
-          yield* hub.publish({ _tag: "project-consent-resolved", projectId: started.project.id, consentId, approved: true, project: summaryOf(started) });
+          // Approving is an explicit user action, so it also enables and
+          // starts a stopped project; the "Set up…" flow goes straight here.
+          const enabled = yield* setRecord({
+            ...confirmed,
+            enabled: true,
+          });
+          yield* saveEnabled(enabled, true);
+          const missing =
+            enabled.session === undefined && missingBindings(enabled).length > 0;
+          const blocked = missing
+            ? yield* setRecord({ ...enabled, status: "needs-user" })
+            : enabled;
+          const started =
+            blocked.session === undefined && !missing
+              ? yield* startWithRuntimeErrors(blocked)
+              : blocked;
+          yield* hub.publish({
+            _tag: "project-consent-resolved",
+            projectId: started.project.id,
+            consentId,
+            approved: true,
+            project: yield* liveSummary(started),
+          });
           return yield* detailOf(started);
         })),
       reject: (consentId, _reason) =>
@@ -1867,7 +2306,13 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           const record = (yield* records()).find((candidate) => candidate.pendingConsent?.id === consentId);
           if (record === undefined) return yield* Effect.fail(agentError("not-found", "No pending consent " + consentId));
           const next = yield* setRecord({ ...record, pendingConsent: undefined, status: record.session === undefined ? "stopped" : "running" });
-          yield* hub.publish({ _tag: "project-consent-resolved", projectId: next.project.id, consentId, approved: false, project: summaryOf(next) });
+          yield* hub.publish({
+            _tag: "project-consent-resolved",
+            projectId: next.project.id,
+            consentId,
+            approved: false,
+            project: yield* liveSummary(next),
+          });
           yield* publish(next);
           return yield* detailOf(next);
         })),

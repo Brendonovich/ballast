@@ -24,6 +24,7 @@ export type CheckResult = ProjectCheckResult;
 /** Shared project-state vocabulary for ballast_status and ballast_apply. */
 export type ProjectState =
   | "running"
+  | "starting"
   | "stopped"
   | "waiting_for_user"
   | "previous_version_running_latest_failed"
@@ -155,19 +156,26 @@ const normalizeUnit = (
   return { ...unit, ...(source === undefined ? {} : { source }) };
 };
 
-const normalizeDetail = (detail: ProjectDetail): ProjectDetail => ({
-  ...detail,
-  units: detail.units.map((unit) =>
-    normalizeUnit(detail.summary.root, unit, detail.manifest),
-  ),
-  ...(detail.lastErrorSource === undefined
-    ? {}
-    : {
-        lastErrorSource:
-          normalizeSourceLocation(detail.summary.root, detail.lastErrorSource) ??
-          detail.lastErrorSource,
-      }),
-});
+const normalizeIssues = (
+  root: string,
+  issues: ProjectDetail["issues"],
+): ProjectDetail["issues"] =>
+  issues.map((issue) => {
+    const source = normalizeSourceLocation(root, issue.source);
+    return { ...issue, ...(source === undefined ? {} : { source }) };
+  });
+
+const normalizeDetail = (detail: ProjectDetail): ProjectDetail => {
+  const issues = normalizeIssues(detail.summary.root, detail.issues);
+  return {
+    ...detail,
+    issues,
+    summary: { ...detail.summary, issues },
+    units: detail.units.map((unit) =>
+      normalizeUnit(detail.summary.root, unit, detail.manifest),
+    ),
+  };
+};
 
 const normalizeCheck = (check: CheckResult): CheckResult => ({
   ...check,
@@ -781,13 +789,14 @@ export const applyProject = (
         project: restarted.success.summary,
       };
     }
-    if (restarted.success.summary.status === "error") {
+    if (restarted.success.summary.status === "failed") {
+      const issue = restarted.success.summary.issues[0];
       return {
         state: "error" as const,
         reason: "reload" as const,
         message:
           "The reload did not start: " +
-          (restarted.success.summary.lastError ?? "the project reported an error") +
+          (issue?.detail ?? issue?.title ?? "the project reported an error") +
           ". The previous version keeps running.",
         check,
         project: restarted.success.summary,

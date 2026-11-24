@@ -262,8 +262,11 @@ describe("artifact gateway", () => {
         const added = yield* call(root, (client) =>
           client.AddProject({ path: project, name: "Artifacts" }),
         );
-        if (added.summary.lastError !== undefined) {
-          return yield* Effect.fail(new Error(added.summary.lastError));
+        const addError = added.summary.issues.find(
+          (issue) => issue.severity === "error",
+        );
+        if (addError !== undefined) {
+          return yield* Effect.fail(new Error(addError.detail ?? addError.title));
         }
         yield* startProject(root, added.summary.id);
 
@@ -529,8 +532,11 @@ describe("artifact gateway", () => {
         const added = yield* call(root, (client) =>
           client.AddProject({ path: project, name: "Renew" }),
         );
-        if (added.summary.lastError !== undefined) {
-          return yield* Effect.fail(new Error(added.summary.lastError));
+        const addError = added.summary.issues.find(
+          (issue) => issue.severity === "error",
+        );
+        if (addError !== undefined) {
+          return yield* Effect.fail(new Error(addError.detail ?? addError.title));
         }
         yield* startProject(root, added.summary.id);
 

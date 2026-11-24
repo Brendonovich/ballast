@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createConnection, createServer, type Server } from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -188,6 +189,63 @@ const approve = (client: LiveAgentClient, projectId: string) =>
     }
   });
 
+const freePorts = (count: number): Effect.Effect<ReadonlyArray<number>, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      const servers = await Promise.all(
+        Array.from(
+          { length: count },
+          () =>
+            new Promise<{ readonly server: Server; readonly port: number }>((resolve, reject) => {
+              const server = createServer();
+              server.once("error", reject);
+              server.listen(0, "127.0.0.1", () => {
+                const address = server.address();
+                if (address === null || typeof address === "string") {
+                  server.close();
+                  reject(new Error("no ephemeral port"));
+                  return;
+                }
+                resolve({ server, port: address.port });
+              });
+            }),
+        ),
+      );
+      await Promise.all(
+        servers.map(
+          (entry) => new Promise<void>((resolve) => entry.server.close(() => resolve())),
+        ),
+      );
+      return servers.map((entry) => entry.port);
+    },
+    catch: (cause) => new Error(String(cause)),
+  });
+
+const holdPort = (port: number): Effect.Effect<Server, Error> =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<Server>((resolve, reject) => {
+        const server = createServer();
+        server.once("error", reject);
+        server.listen(port, "127.0.0.1", () => resolve(server));
+      }),
+    catch: (cause) => new Error(String(cause)),
+  });
+
+const canConnect = (port: number): Effect.Effect<void, Error> =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<void>((resolve, reject) => {
+        const socket = createConnection({ host: "127.0.0.1", port });
+        socket.once("connect", () => {
+          socket.end();
+          resolve();
+        });
+        socket.once("error", reject);
+      }),
+    catch: (cause) => new Error("nothing is listening on 127.0.0.1:" + port + ": " + String(cause)),
+  }).pipe(Effect.timeout("5 seconds"));
+
 const waitForScene = (root: string, projectId: string, scene: string) =>
   call(root, (client) =>
     client.StreamLogs({ projectId, unitName: "scene" }).pipe(
@@ -231,7 +289,7 @@ describe("connection instances", () => {
       expect(instances.a.boundBy).toEqual([]);
       expect((yield* call(root, (client) => client.ListProjects())).projects).toHaveLength(0);
       const integrations = (yield* call(root, (client) => client.ListIntegrations())).integrations;
-      expect(integrations.map((entry) => entry.integration)).toHaveLength(8);
+      expect(integrations.map((entry) => entry.integration)).toHaveLength(9);
       expect(
         integrations.find((entry) => entry.integration === "obs")?.fields.map((field) => field.key),
       ).toEqual(["url", "password"]);
@@ -245,23 +303,24 @@ describe("connection instances", () => {
       const addedA = yield* call(root, (client) => client.AddProject({ path: projectA, name: "A" }));
       expect(addedA.requirements[0]?.boundInstanceId).toBeUndefined();
       expect(addedA.requirements[0]?.proposedInstanceId).toBeUndefined();
-      const blocked = yield* call(root, (client) => client.StartProject({ projectId: addedA.summary.id })).pipe(Effect.exit);
-      expect(blocked._tag).toBe("Failure");
+      const blocked = yield* call(root, (client) => client.StartProject({ projectId: addedA.summary.id }));
+      expect(blocked.summary.status).toBe("needs-user");
+      expect(blocked.issues.some((issue) => issue.kind === "needs-binding")).toBe(true);
       const blockedDetail = yield* waitForProject(
         root,
         addedA.summary.id,
-        (detail) => detail.summary.lastError?.includes("unbound connections") === true,
+        (detail) => detail.issues.some((issue) => issue.kind === "needs-binding"),
       );
-      expect(blockedDetail.summary.lastError).toContain("unbound connections");
+      expect(blockedDetail.summary.status).toBe("needs-user");
       const checked = yield* call(root, (client) => client.CheckProject({ projectId: addedA.summary.id }));
       expect(checked.missingConnections).toHaveLength(1);
       expect(checked.availableConnections).toHaveLength(2);
       const checkedDetail = yield* waitForProject(
         root,
         addedA.summary.id,
-        (detail) => detail.summary.lastError?.includes("unbound connections") === true,
+        (detail) => detail.issues.some((issue) => issue.kind === "needs-binding"),
       );
-      expect(checkedDetail.summary.lastError).toContain("unbound connections");
+      expect(checkedDetail.summary.status).toBe("needs-user");
 
       const boundA = yield* call(root, (client) =>
         client.SetProjectBinding({
@@ -275,7 +334,8 @@ describe("connection instances", () => {
       yield* call(root, (client) => client.StartProject({ projectId: addedA.summary.id }));
       yield* call(root, (client) => approve(client, addedA.summary.id));
       const startedA = yield* call(root, (client) => client.StartProject({ projectId: addedA.summary.id }));
-      expect(startedA.summary.lastError).toBeUndefined();
+      expect(startedA.summary.status).toBe("running");
+      expect(startedA.issues).toEqual([]);
 
       const projectB = yield* makeProject(root, "project-b");
       const addedB = yield* call(root, (client) => client.AddProject({ path: projectB, name: "B" }));
@@ -500,6 +560,178 @@ describe("connection instances", () => {
       const up = yield* waitForStatus("connected");
       expect(up.lastError).toBeUndefined();
       expect(up.nextRetryAt).toBeUndefined();
+    }),
+    120_000,
+  );
+
+  it.live("listens on each slot's declared port and reconnects unless disconnected", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-ws-server-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      const service = yield* startService(root);
+      yield* Effect.addFinalizer(() => service.stop());
+
+      const ports = yield* freePorts(3);
+      const pixelPort = ports[0];
+      const deckPort = ports[1];
+      const unusedPort = ports[2];
+      if (pixelPort === undefined || deckPort === undefined || unusedPort === undefined) {
+        return yield* Effect.fail(new Error("could not reserve ports"));
+      }
+      const content = [
+        'import * as Websocket from "@ballast/module-websocket";',
+        'import { Effect } from "effect";',
+        "",
+        "export default Effect.gen(function* () {",
+        `  const pixels = yield* Websocket.Server("pixels", { port: ${pixelPort} });`,
+        `  const deck = yield* Websocket.Server("streamdeck", { port: ${deckPort} });`,
+        '  yield* Websocket.ClientConnected.subscribe("pixel-connected", pixels, () => Effect.void);',
+        '  yield* Websocket.ServerMessage.subscribe("streamdeck-keys", deck, () => Effect.void);',
+        "});",
+        "",
+      ].join("\n");
+
+      const project = yield* makeProject(root, "ws-project", content);
+      const added = yield* call(root, (client) =>
+        client.AddProject({ path: project, name: "WebSocket project" }),
+      );
+      const instance = yield* call(root, (client) =>
+        client.CreateConnection({
+          integration: "websocket-server",
+          label: "Shared server",
+          // The connection port must not override the ports the script declares.
+          config: { port: String(unusedPort) },
+        }),
+      );
+      for (const slot of ["pixels", "streamdeck"]) {
+        yield* call(root, (client) =>
+          client.SetProjectBinding({
+            projectId: added.summary.id,
+            integration: "websocket-server",
+            slot,
+            instanceId: instance.id,
+          }),
+        );
+      }
+      yield* call(root, (client) => client.StartProject({ projectId: added.summary.id }));
+      yield* call(root, (client) => approve(client, added.summary.id));
+      const started = yield* call(root, (client) =>
+        client.StartProject({ projectId: added.summary.id }),
+      );
+      expect(started.summary.status).toBe("running");
+
+      const status = () =>
+        call(root, (client) => client.ListConnections()).pipe(
+          Effect.map((listed) => listed.connections.find((entry) => entry.id === instance.id)),
+        );
+      const waitForStatus = (wanted: ConnectionSummary["status"]) =>
+        waitFor("connection " + wanted, () =>
+          status().pipe(Effect.map((value) => (value?.status === wanted ? value : undefined))),
+        );
+
+      const connected = yield* waitForStatus("connected");
+      expect(connected.detail).toContain(":" + String(pixelPort));
+      expect(connected.detail).toContain(":" + String(deckPort));
+      yield* canConnect(pixelPort);
+      yield* canConnect(deckPort);
+      // The unused connection setting is not opened.
+      yield* canConnect(unusedPort).pipe(Effect.exit, Effect.map((exit) => expect(exit._tag).toBe("Failure")));
+
+      const disconnected = yield* call(root, (client) =>
+        client.DisconnectConnection({ connectionId: instance.id }),
+      );
+      expect(disconnected.status).toBe("disconnected");
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        yield* Effect.sleep("500 millis");
+        const current = yield* status();
+        expect(current?.status).toBe("disconnected");
+      }
+
+      const reconnected = yield* call(root, (client) =>
+        client.ConnectConnection({ connectionId: instance.id }),
+      );
+      expect(reconnected.status).toBe("connected");
+      yield* canConnect(pixelPort);
+      yield* canConnect(deckPort);
+    }),
+    120_000,
+  );
+
+  it.live("retries a listener whose port is taken until it can bind", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-ws-retry-")));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+      );
+      const service = yield* startService(root);
+      yield* Effect.addFinalizer(() => service.stop());
+
+      const ports = yield* freePorts(1);
+      const port = ports[0];
+      if (port === undefined) return yield* Effect.fail(new Error("could not reserve a port"));
+      const blocker = yield* Effect.acquireRelease(holdPort(port), (server) =>
+        Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+      );
+
+      const content = [
+        'import * as Websocket from "@ballast/module-websocket";',
+        'import { Effect } from "effect";',
+        "",
+        "export default Effect.gen(function* () {",
+        '  const pixels = yield* Websocket.Server("pixels");',
+        '  yield* Websocket.ClientConnected.subscribe("pixel-connected", pixels, () => Effect.void);',
+        "});",
+        "",
+      ].join("\n");
+      const project = yield* makeProject(root, "ws-retry-project", content);
+      const added = yield* call(root, (client) =>
+        client.AddProject({ path: project, name: "WebSocket retry" }),
+      );
+      const instance = yield* call(root, (client) =>
+        client.CreateConnection({
+          integration: "websocket-server",
+          label: "Retrying server",
+          config: { port: String(port) },
+        }),
+      );
+      yield* call(root, (client) =>
+        client.SetProjectBinding({
+          projectId: added.summary.id,
+          integration: "websocket-server",
+          slot: "pixels",
+          instanceId: instance.id,
+        }),
+      );
+      yield* call(root, (client) => client.StartProject({ projectId: added.summary.id }));
+      yield* call(root, (client) => approve(client, added.summary.id));
+      const started = yield* call(root, (client) =>
+        client.StartProject({ projectId: added.summary.id }),
+      );
+      expect(started.summary.status).toBe("running");
+
+      const status = () =>
+        call(root, (client) => client.ListConnections()).pipe(
+          Effect.map((listed) => listed.connections.find((entry) => entry.id === instance.id)),
+        );
+      yield* waitFor("connection error", () =>
+        status().pipe(Effect.map((value) => (value?.status === "error" ? value : undefined))),
+      );
+
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve, reject) =>
+            blocker.close((error) => (error === undefined ? resolve() : reject(error))),
+          ),
+      );
+
+      const connected = yield* waitFor("connection connected", () =>
+        status().pipe(Effect.map((value) => (value?.status === "connected" ? value : undefined))),
+        30_000,
+      );
+      expect(connected.lastError).toBeUndefined();
+      yield* canConnect(port);
     }),
     120_000,
   );

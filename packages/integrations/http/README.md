@@ -1,7 +1,9 @@
 # @ballast/module-http
 
-Outgoing HTTP clients and incoming webhooks for Ballast scripts. The script entry
-has no Node-only imports; runtime code lives in `@ballast/module-http/driver`.
+Incoming webhooks for Ballast scripts. Outgoing HTTP needs no Ballast
+connection: import Effect's `HttpClient` and provide `FetchHttpClient.layer`
+where the request runs. The script entry has no Node-only imports; runtime code
+lives in `@ballast/module-http/driver`.
 
 ## Script API
 
@@ -9,58 +11,48 @@ has no Node-only imports; runtime code lives in `@ballast/module-http/driver`.
 import * as Ballast from "@ballast/core";
 import * as Http from "@ballast/module-http";
 import { Effect, Schema } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
 
 const Donation = Schema.Struct({ from: Schema.String, amount: Schema.Number });
 const Summary = Schema.Struct({ total: Schema.Number });
 
 export default Effect.gen(function* () {
   const hook = yield* Http.Webhook("kofi");
-  const api = yield* Http.Client("kofi-api", { hosts: ["api.example.com"] });
-
-  yield* Http.Webhook.json(Donation).subscribe(hook, (donation) =>
+  yield* Http.Webhook.json(Donation).subscribe("donation", hook, (donation) =>
     Effect.gen(function* () {
-      const summary = yield* api.get("/v1/summary", { schema: Summary });
-      yield* Effect.log(donation.from, summary.body.total);
+      const http = yield* HttpClient.HttpClient.pipe(
+        Effect.provide(FetchHttpClient.layer),
+      );
+      const response = yield* http.get("https://api.example.com/v1/summary", {
+        headers: { authorization: "Bearer <token>" },
+      });
+      const summary = yield* Schema.decodeUnknownEffect(Summary)(
+        yield* response.json,
+      );
+      yield* Effect.log(donation.from, summary.total);
     }),
   );
 });
 ```
 
-`Http.Client(slot, { hosts })` returns `request`, `get`, `post`, `put`,
-`patch`, and `delete`. Methods accept `{ query, headers, schema }`; with a
-schema the JSON response body is decoded into `response.body`. Auth and default
-headers are never script values: they come from connection config.
-
 `Http.Webhook("kofi")` declares an `either` connection.
-`Http.Webhook.subscribe(hook, handler)` (or `Http.Webhook.json(schema)`) records
-the `http/webhook` topic. The driver answers the provider with the static
+`Http.Webhook.subscribe(name, hook, handler)` (or
+`Http.Webhook.json(schema).subscribe(name, hook, handler)`) records the
+`http/webhook` topic. The driver answers the provider with the static
 response from connection config; handlers cannot return a response (see decision
 0005).
 
 ## Manifest capabilities
 
-- `Http.Client` records `http/request` scopes such as
-  `http:host:api.example.com`, or `http:host:*` when no hosts are named.
 - `Http.Webhook` records topic `http/webhook` with scope
   `http:webhook:<slot>` and condition `{ hook: "<slot>" }`.
+- Outgoing HTTP records nothing. Requests run through Effect's `HttpClient` and
+  the script supplies headers and auth itself.
 
 ## Driver
 
 ```ts
-import { layerNode, webhookLayer } from "@ballast/module-http/driver";
-
-const http = yield* HttpClientDriver;
-const response = yield* http.request({
-  config: {
-    slot: "kofi-api",
-    baseUrl: "https://api.example.com/",
-    headers: { "x-api-version": "2" },
-    auth: { type: "bearer", token: "…" },
-    allowedHosts: ["api.example.com"],
-  },
-  request: { method: "GET", path: "v1/summary" },
-  allowedHosts: ["api.example.com"], // manifest scopes
-});
+import { WebhookDriver } from "@ballast/module-http/driver";
 
 const webhooks = yield* WebhookDriver;
 const runtime = yield* webhooks.start([
@@ -75,8 +67,5 @@ const runtime = yield* webhooks.start([
 yield* runtime.deliveries.pipe(Stream.runForEach(console.log));
 ```
 
-`HttpClientDriver` enforces the connection's `allowedHosts` and the script's
-manifest hosts, follows redirects itself, rejects script-controlled
-`authorization`/`cookie`/`host` headers, and limits response size/time.
 `WebhookRelay` and `webhookRelayLayerNode` implement the proposed cloud protocol
 in `docs/decisions/0005-generic-webhooks.md`.

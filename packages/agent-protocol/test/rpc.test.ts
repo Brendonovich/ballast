@@ -28,14 +28,81 @@ describe("@ballast/agent-protocol RPC group", () => {
 
       const health = yield* agent.GetHealth();
       expect(health.ok).toBe(true);
-      expect(health.projects.total).toBe(2);
+      expect(health.projects.total).toBe(3);
 
       const projects = yield* agent.ListProjects();
-      expect(projects.projects.map((project) => project.id)).toEqual([main, alt]);
+      expect(projects.projects.map((project) => project.id)).toEqual([
+        main,
+        alt,
+        "proj_failed",
+      ]);
       expect(projects.projects.map((project) => project.name)).toEqual([
         "Main Channel",
         "Second Channel",
+        "Failed Channel",
       ]);
+    }),
+  );
+
+  it.effect("exposes a realistic issue for every project-health kind", () =>
+    Effect.gen(function* () {
+      const agent = yield* client;
+      const projects = yield* agent.ListProjects();
+      const kinds = new Set(
+        projects.projects.flatMap((project) =>
+          project.issues.map((issue) => issue.kind),
+        ),
+      );
+      expect([...kinds].sort()).toEqual([
+        "change-not-applied",
+        "connection-offline",
+        "needs-binding",
+        "needs-consent",
+        "start-failed",
+        "unit-failed",
+        "worker-exited",
+      ]);
+
+      const mainDetail = yield* agent.GetProject({ projectId: main });
+      expect(mainDetail.summary.issues).toEqual(mainDetail.issues);
+      const failed = mainDetail.units.find(
+        (unit) => unit.kind === "topic" && unit.name === "redemption",
+      );
+      expect(failed?.status).toBe("failed");
+      expect(failed?.lastError).toContain("Twitch chat");
+
+      const altDetail = yield* agent.GetProject({ projectId: alt });
+      expect(
+        altDetail.issues.find((issue) => issue.kind === "connection-offline")
+          ?.integration,
+      ).toBe("obs");
+      expect(
+        altDetail.issues.find((issue) => issue.kind === "needs-binding")
+          ?.integration,
+      ).toBe("obs");
+      const scene = altDetail.units.find(
+        (unit) => unit.kind === "topic" && unit.name === "scene",
+      );
+      expect(scene?.status).toBe("waiting");
+      expect(
+        altDetail.manifest.topics.some((topic) => topic.name === "scene"),
+      ).toBe(true);
+
+      const failedProject = yield* agent.GetProject({ projectId: "proj_failed" });
+      expect(failedProject.summary.status).toBe("failed");
+      expect(
+        failedProject.issues.some((issue) => issue.kind === "worker-exited"),
+      ).toBe(true);
+
+      const health = yield* agent.GetHealth();
+      expect(health.projects).toMatchObject({
+        total: 3,
+        running: 1,
+        needsUser: 1,
+        needsConsent: 1,
+        failed: 1,
+        error: 1,
+      });
     }),
   );
 
@@ -84,7 +151,7 @@ describe("@ballast/agent-protocol RPC group", () => {
       });
       expect(added.summary.name).toBe("Guest");
       expect(added.units).toEqual([]);
-      expect((yield* agent.ListProjects()).projects).toHaveLength(3);
+      expect((yield* agent.ListProjects()).projects).toHaveLength(4);
 
       const duplicate = yield* agent
         .AddProject({ path: "/Users/streamer/Ballast/guest" })
@@ -100,6 +167,7 @@ describe("@ballast/agent-protocol RPC group", () => {
       expect((yield* agent.ListProjects()).projects.map((p) => p.id)).toEqual([
         main,
         alt,
+        "proj_failed",
       ]);
     }),
   );
@@ -116,7 +184,8 @@ describe("@ballast/agent-protocol RPC group", () => {
         "vts",
         "keyboard",
         "midi",
-        "websocket",
+        "websocket-client",
+        "websocket-server",
         "http",
       ]);
       const obs = listed.integrations.find((entry) => entry.integration === "obs");
@@ -273,7 +342,7 @@ describe("@ballast/agent-protocol RPC group", () => {
       const snapshot = yield* Queue.take(watch);
       expect(snapshot._tag).toBe("snapshot");
       if (snapshot._tag === "snapshot") {
-        expect(snapshot.snapshot.projects).toHaveLength(2);
+        expect(snapshot.snapshot.projects).toHaveLength(3);
         expect(snapshot.snapshot.connections.length).toBeGreaterThan(0);
       }
     }),

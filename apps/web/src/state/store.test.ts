@@ -54,9 +54,12 @@ describe("agent store against MockAgentLayer", () => {
     expect(store.projects().map((project) => project.name)).toEqual([
       "Main Channel",
       "Second Channel",
+      "Failed Channel",
     ]);
     expect(store.project(main)?.status).toBe("running");
-    expect(store.health()?.projects.total).toBe(2);
+    expect(store.health()?.projects.total).toBe(3);
+    expect(store.project("proj_failed")?.status).toBe("failed");
+    expect(store.project("proj_alt")?.issues.find((issue) => issue.kind === "needs-binding")?.integration).toBe("obs");
   });
 
   it("loads the integration catalog", async () => {
@@ -272,6 +275,6 @@ describe("agent store against MockAgentLayer", () => {
     expect(await store.shutdownService()).toBe(true);
     expect(await store.refresh()).toBe(true);
     expect(store.health()?.ok).toBe(true);
-    expect(store.projects()).toHaveLength(2);
+    expect(store.projects()).toHaveLength(3);
   });
 });

@@ -256,7 +256,12 @@ const startProjectAndApprove = (client: Client, projectId: string) =>
         detail === undefined
           ? "missing"
           : detail.summary.status +
-            (detail.summary.lastError === undefined ? "" : ": " + detail.summary.lastError);
+            (detail.summary.issues.length === 0
+              ? ""
+              : ": " +
+                detail.summary.issues
+                  .map((issue) => issue.title)
+                  .join("; "));
       if (detail?.summary.status === "running" && detail.pendingConsent === undefined) {
         return detail;
       }

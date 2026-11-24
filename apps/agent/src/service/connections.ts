@@ -33,6 +33,12 @@ import {
   type ConnectionValue,
   type PermissionStatus,
 } from "@ballast/agent-protocol";
+import {
+  ConnectionUnavailable,
+  ConnectionRequestFailed,
+  connectionRequestError,
+  type ConnectionRequestError,
+} from "@ballast/core";
 import type { Manifest } from "@ballast/core";
 import { RequestSchemas } from "@ballast/module-obs";
 import { VTubeStudioDriver } from "@ballast/module-vtube-studio/driver";
@@ -51,11 +57,9 @@ import type {
   WebSocketServerConnection,
 } from "@ballast/module-websocket/driver";
 import {
-  HttpClientDriver,
   WebhookDriver,
   WebhookRelay,
   webhookLayer,
-  layerNode as httpLayerNode,
 } from "@ballast/module-http/driver";
 import type { WebhookRuntime } from "@ballast/module-http/driver";
 import type { WebhookDefinition } from "@ballast/module-http";
@@ -138,6 +142,8 @@ interface ConnectionRecord {
   readonly secrets: Readonly<Record<string, string>>;
   readonly label: string;
   readonly manual: boolean;
+  /** The user pressed Disconnect; do not reconnect until Connect. */
+  readonly disabled: boolean;
   readonly driver: DriverState | undefined;
   readonly status: ConnectionSummary["status"];
   readonly lastError: string | undefined;
@@ -175,7 +181,8 @@ interface DriverState {
   readonly keyboard: KeyboardDriverService | undefined;
   readonly midi: MidiDriverService | undefined;
   readonly webSocketClient: WebSocketClientConnection | undefined;
-  readonly webSocketServer: WebSocketServerConnection | undefined;
+  /** One listener per bound slot; slots that share an address share a listener. */
+  readonly webSocketServers: ReadonlyMap<string, WebSocketServerConnection>;
   readonly cloudApi: CloudApi | undefined;
   readonly cloudConnectionId: string | undefined;
 }
@@ -189,6 +196,7 @@ interface StoredConnections {
     readonly mode: ConnectionMode;
     readonly values: Readonly<Record<string, string>>;
     readonly label: string;
+    readonly disabled?: boolean;
   }>;
 }
 
@@ -262,7 +270,6 @@ export interface ConnectionManagerService {
     readonly permission: "accessibility";
     readonly status: PermissionStatus;
   }) => Effect.Effect<void>;
-  readonly ready: (connectionKeys: ReadonlyArray<string>) => Effect.Effect<void, AgentError>;
   readonly request: (input: {
     readonly integration: string;
     readonly slot: string;
@@ -270,7 +277,7 @@ export interface ConnectionManagerService {
     readonly connectionId?: string;
     readonly request: string;
     readonly input: unknown;
-  }) => Effect.Effect<unknown, string>;
+  }) => Effect.Effect<unknown, ConnectionRequestError>;
   readonly optionValues: (source: {
     readonly integration: string;
     readonly slot: string;
@@ -298,6 +305,7 @@ const noneRecord = (
   secrets: {},
   label: titleOf(integration),
   manual: false,
+  disabled: false,
   driver: undefined,
   status: "unconfigured",
   lastError: undefined,
@@ -366,6 +374,7 @@ const loadStored = (
           mode,
           values,
           label: storedLabel,
+          disabled: entry["disabled"] === true,
         });
       }
     }
@@ -442,6 +451,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         loaded.secrets,
       );
       const lastInput = yield* Ref.make<ReconcileInput>({ running: [], known: [] });
+      /** Retry schedule for drivers that failed to start: id -> attempts and next try. */
+      const retries = yield* Ref.make<
+        ReadonlyMap<string, { readonly attempts: number; readonly nextAt: number }>
+      >(new Map());
       const shellPermissions = yield* Ref.make<{ accessibility: PermissionStatus }>({
         accessibility: "unknown",
       });
@@ -449,8 +462,6 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const webSocketContext = yield* Layer.build(webSocketLayerNode);
       const webSocketClientDriver = Context.get(webSocketContext, WebSocketClientDriver);
       const webSocketServerDriver = Context.get(webSocketContext, WebSocketServerDriver);
-      const httpContext = yield* Layer.build(httpLayerNode);
-      const httpClientDriver = Context.get(httpContext, HttpClientDriver);
       const relayContext = yield* Layer.build(
         WebhookRelayAgentLive.pipe(Layer.provide(Layer.succeed(CloudLink, cloud))),
       );
@@ -486,6 +497,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 mode: record.mode,
                 values: record.values,
                 label: record.label,
+                disabled: record.disabled,
               })),
             };
             yield* ensureDir(options.dataDir);
@@ -576,6 +588,12 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         if (record.integration === "obs") {
           return (valueOf("url") ?? "").length > 0;
         }
+        if (record.integration === "websocket-client") {
+          return (valueOf("url") ?? "").length > 0;
+        }
+        // A server's port normally comes from the script's listen scope; the
+        // connection setting is only a fallback, so no field is required here.
+        if (record.integration === "websocket-server") return true;
         if (record.integration === "fake") return true;
         // Cloud mode uses the machine's linked Twitch account; client id and
         // secret are only needed for a local-app OAuth flow.
@@ -622,7 +640,11 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
 
       const statusOf = (record: ConnectionRecord): ConnectionSummary["status"] => {
         if (record.status === "error") return "error";
-        if (["vts", "keyboard", "midi", "websocket", "http"].includes(record.integration)) {
+        if (
+          ["vts", "keyboard", "midi", "websocket-client", "websocket-server", "http"].includes(
+            record.integration,
+          )
+        ) {
           return record.status;
         }
         if (record.integration === "twitch") {
@@ -662,7 +684,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             ? record.grantedScopes
             : record.integration === "fake"
               ? ["fake:read", "fake:write", "fake:chat"]
-              : record.integration === "websocket" || record.integration === "http"
+              : record.integration === "websocket-client" ||
+                  record.integration === "websocket-server" ||
+                  record.integration === "http"
                 ? scopesRequiredFor(record)
                 : [];
         const missing = missingScopes(required, granted);
@@ -914,9 +938,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 login: connection.login,
                 displayName: connection.displayName,
               },
-              lastError: connection.needsReauth === true
-                ? "Twitch requires this account to be reconnected in the Ballast cloud"
-                : current.lastError,
+              lastError:
+                connection.needsReauth === true
+                  ? "Twitch requires this account to be reconnected in the Ballast cloud"
+                  : undefined,
             }));
             continue;
           }
@@ -1094,7 +1119,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: undefined,
             midi: undefined,
             webSocketClient: undefined,
-            webSocketServer: undefined,
+            webSocketServers: new Map(),
             cloudApi: started.api,
             cloudConnectionId: started.cloudConnectionId,
           };
@@ -1193,7 +1218,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: undefined,
             midi: undefined,
             webSocketClient: undefined,
-            webSocketServer: undefined,
+            webSocketServers: new Map(),
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
@@ -1314,7 +1339,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: undefined,
             midi: undefined,
             webSocketClient: undefined,
-            webSocketServer: undefined,
+            webSocketServers: new Map(),
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
@@ -1358,28 +1383,6 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             }),
           ),
         ];
-
-      const jsonRecord = (raw: string | undefined): Readonly<Record<string, string>> => {
-        if (raw === undefined || raw.trim() === "") return {};
-        const parsed = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.String))(
-          (() => {
-            try {
-              return JSON.parse(raw) as unknown;
-            } catch {
-              return undefined;
-            }
-          })(),
-        );
-        return parsed._tag === "Some" ? parsed.value : {};
-      };
-
-      const listOf = (raw: string | undefined): ReadonlyArray<string> =>
-        raw === undefined
-          ? []
-          : raw
-              .split(",")
-              .map((value) => value.trim())
-              .filter((value) => value.length > 0);
 
       const numberOf = (raw: string | undefined): number | undefined => {
         if (raw === undefined || raw.trim() === "") return undefined;
@@ -1461,7 +1464,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: undefined,
             midi: undefined,
             webSocketClient: undefined,
-            webSocketServer: undefined,
+            webSocketServers: new Map(),
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
@@ -1553,7 +1556,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: driver,
             midi: undefined,
             webSocketClient: undefined,
-            webSocketServer: undefined,
+            webSocketServers: new Map(),
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
@@ -1655,7 +1658,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: undefined,
             midi: driver,
             webSocketClient: undefined,
-            webSocketServer: undefined,
+            webSocketServers: new Map(),
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
@@ -1704,29 +1707,6 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           }));
         });
 
-      const webSocketModeOf = (
-        record: ConnectionRecord,
-        input: ReconcileInput,
-      ): "client" | "server" => {
-        const configured = record.values["mode"];
-        if (configured === "client" || configured === "server") return configured;
-        const topics = topicsFor(record, input);
-        const requests = input.running.flatMap((entry) =>
-          entry.manifest.requests.filter(
-            (request) =>
-              request.integration === "websocket" && request.slot === record.slot,
-          ),
-        );
-        return topics.some((topic) => topic.topic.startsWith("websocket/server/")) ||
-          requests.some(
-            (request) =>
-              request.request === "websocket/sendToClient" ||
-              request.request === "websocket/broadcast",
-          )
-          ? "server"
-          : "client";
-      };
-
       const webSocketAllowed = (
         record: ConnectionRecord,
         input: ReconcileInput,
@@ -1737,6 +1717,90 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         return scopes.includes("ws:connect:*") || scopes.includes("ws:listen:*") || scopes.includes(scope);
       };
 
+      interface WebSocketServerListen {
+        readonly slot: string;
+        readonly host: string;
+        readonly port: number;
+        readonly path: string | undefined;
+        readonly scope: string;
+      }
+
+      const parseListenScope = (
+        scope: string,
+      ): { host: string; port: number; path?: string } | undefined => {
+        const match = /^ws:listen:([^:]+):(\d+)(\/.*)?$/.exec(scope);
+        if (match === null) return undefined;
+        const port = Number(match[2]);
+        if (!Number.isInteger(port)) return undefined;
+        const path = match[3];
+        return {
+          host: match[1] ?? "127.0.0.1",
+          port,
+          ...(path === undefined || path === "" ? {} : { path }),
+        };
+      };
+
+      /**
+       * One entry per bound slot that declares a WebSocket server. A slot's
+       * declared `ws:listen:` scope wins; the connection's port setting is the
+       * fallback for a script that declared only `ws:listen:*`. Slots that
+       * share an address share one listener.
+       */
+      const webSocketServerListens = (
+        record: ConnectionRecord,
+        input: ReconcileInput,
+      ): {
+        readonly listens: ReadonlyArray<WebSocketServerListen>;
+        readonly missing: ReadonlyArray<string>;
+      } => {
+        const configuredPort = numberOf(record.values["port"]);
+        const listens: WebSocketServerListen[] = [];
+        const missing: string[] = [];
+        for (const entry of input.running) {
+          for (const slot of new Set(slotsFor(input, entry, record))) {
+            const declared = entry.manifest.requests
+              .filter(
+                (request) =>
+                  request.integration === record.integration &&
+                  request.slot === slot &&
+                  request.request === "websocket/listen",
+              )
+              .flatMap((request) =>
+                request.scopes.flatMap((scope) => {
+                  const parsed = parseListenScope(scope);
+                  return parsed === undefined
+                    ? []
+                    : [
+                        {
+                          slot,
+                          host: parsed.host,
+                          port: parsed.port,
+                          path: parsed.path,
+                          scope,
+                        },
+                      ];
+                }),
+              );
+            if (declared.length > 0) {
+              listens.push(...declared);
+              continue;
+            }
+            if (configuredPort === undefined) {
+              missing.push(slot);
+              continue;
+            }
+            listens.push({
+              slot,
+              host: "127.0.0.1",
+              port: configuredPort,
+              path: undefined,
+              scope: "ws:listen:127.0.0.1:" + String(configuredPort),
+            });
+          }
+        }
+        return { listens, missing };
+      };
+
       const startWebSocket = (
         record: ConnectionRecord,
         input: ReconcileInput,
@@ -1744,9 +1808,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         topicsKey: string,
       ): Effect.Effect<ConnectionRecord, AgentError> =>
         Effect.gen(function* () {
-          const mode = webSocketModeOf(record, input);
           const scope = yield* Scope.make();
-          if (mode === "client") {
+          if (record.integration === "websocket-client") {
             const url = record.values["url"];
             if (url === undefined || url === "") {
               return yield* Effect.fail(
@@ -1762,16 +1825,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               );
             }
             const connection = yield* webSocketClientDriver
-              .connect({
-                slot: record.slot,
-                url,
-                headers: {
-                  ...jsonRecord(record.values["headers"]),
-                  ...jsonRecord(record.secrets["headersSecret"]),
-                },
-                subprotocols: listOf(record.values["subprotocols"]),
-                reconnect: { enabled: true },
-              })
+              .connect({ slot: record.slot, url })
               .pipe(
                 Effect.provideService(Scope.Scope, scope),
                 Effect.mapError((error) => agentError("upstream", error.reason)),
@@ -1787,7 +1841,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               keyboard: undefined,
               midi: undefined,
               webSocketClient: connection,
-              webSocketServer: undefined,
+              webSocketServers: new Map(),
               cloudApi: undefined,
               cloudConnectionId: undefined,
             };
@@ -1795,7 +1849,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               Stream.runForEach((event) => {
                 if (event._tag === "open") {
                   return router.publishInbound({
-                    integration: "websocket",
+                    integration: record.integration,
                     slot: record.slot,
                     topic: "websocket/open",
                     payload: event.open,
@@ -1804,7 +1858,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 }
                 if (event._tag === "close") {
                   return router.publishInbound({
-                    integration: "websocket",
+                    integration: record.integration,
                     slot: record.slot,
                     topic: "websocket/close",
                     payload: event.close,
@@ -1812,7 +1866,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                   });
                 }
                 return router.publishInbound({
-                  integration: "websocket",
+                  integration: record.integration,
                   slot: record.slot,
                   topic: "websocket/message",
                   payload: event.message,
@@ -1834,7 +1888,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                           ? "disconnected"
                           : "connecting",
                   detailText: status,
-                  ...(status === "open" ? { lastConnectedAt: Date.now() } : {}),
+                  ...(status === "open"
+                    ? { lastConnectedAt: Date.now(), lastError: undefined }
+                    : {}),
                 })),
               ),
               Effect.forkIn(scope),
@@ -1847,27 +1903,123 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             }));
           }
 
-          const scopes = scopesFor(record, input);
-          const scopeHint = scopes.find((value) => value.startsWith("ws:listen:") && value !== "ws:listen:*");
-          const parsedScope = scopeHint?.match(/^ws:listen:([^:]+):(\d+)(.*)$/);
-          const host = record.values["serverHost"] ?? parsedScope?.[1] ?? "127.0.0.1";
-          const port = numberOf(record.values["serverPort"]) ?? Number(parsedScope?.[2] ?? 0);
-          const path = record.values["serverPath"] ?? parsedScope?.[3] ?? undefined;
-          const listenScope = `ws:listen:${host}:${port}${path ?? ""}`;
-          if (!webSocketAllowed(record, input, listenScope)) {
+          const { listens, missing } = webSocketServerListens(record, input);
+          if (missing.length > 0) {
             return yield* Effect.fail(
               agentError(
-                "unauthorized",
-                `No running script allows ${record.id} to listen on ${host}:${port}${path ?? ""}`,
+                "invalid",
+                `WebSocket ${record.id} needs a port for ${missing.join(", ")}: declare one in the script or set one in connection settings`,
               ),
             );
           }
-          const connection = yield* webSocketServerDriver
-            .listen({ slot: record.slot, host, port, ...(path === undefined ? {} : { path }) })
-            .pipe(
-              Effect.provideService(Scope.Scope, scope),
-              Effect.mapError((error) => agentError("upstream", error.reason)),
+          if (listens.length === 0) {
+            return yield* Effect.fail(
+              agentError(
+                "invalid",
+                `WebSocket ${record.id} has no running script listening on a port`,
+              ),
             );
+          }
+
+          // Slots that declare the same address share one listener; a slot with
+          // its own declared port gets its own.
+          const grouped = new Map<
+            string,
+            { listen: WebSocketServerListen; slots: ReadonlyArray<string> }
+          >();
+          for (const listen of listens) {
+            const key = `${listen.host}:${listen.port}${listen.path ?? ""}`;
+            const existing = grouped.get(key);
+            if (existing === undefined) {
+              grouped.set(key, { listen, slots: [listen.slot] });
+            } else if (!existing.slots.includes(listen.slot)) {
+              grouped.set(key, { ...existing, slots: [...existing.slots, listen.slot] });
+            }
+          }
+
+          const servers = new Map<string, WebSocketServerConnection>();
+          const addresses: string[] = [];
+          const running = yield* Ref.make(new Set<string>());
+          yield* Effect.gen(function* () {
+            for (const group of grouped.values()) {
+              const { listen } = group;
+              if (!webSocketAllowed(record, input, listen.scope)) {
+                return yield* Effect.fail(
+                  agentError(
+                    "unauthorized",
+                    `No running script allows ${record.id} to listen on ${listen.host}:${listen.port}${listen.path ?? ""}`,
+                  ),
+                );
+              }
+              const connection = yield* webSocketServerDriver
+                .listen({
+                  slot: record.slot,
+                  host: listen.host,
+                  port: listen.port,
+                  ...(listen.path === undefined ? {} : { path: listen.path }),
+                })
+                .pipe(
+                  Effect.provideService(Scope.Scope, scope),
+                  Effect.mapError((error) => agentError("upstream", error.reason)),
+                );
+              for (const slot of group.slots) servers.set(slot, connection);
+              const address = `${listen.host}:${connection.address.port}${listen.path ?? ""}`;
+              addresses.push(address);
+              yield* Ref.update(running, (current) => new Set(current).add(address));
+              const owner = group.slots[0] ?? record.slot;
+              yield* connection.events.pipe(
+                Stream.runForEach((event) => {
+                  if (event._tag === "client_connected") {
+                    return router.publishInbound({
+                      integration: record.integration,
+                      slot: owner,
+                      topic: "websocket/server/client.connected",
+                      payload: event.client,
+                      connectionId: record.id,
+                    });
+                  }
+                  if (event._tag === "client_disconnected") {
+                    return router.publishInbound({
+                      integration: record.integration,
+                      slot: owner,
+                      topic: "websocket/server/client.disconnected",
+                      payload: event.client,
+                      connectionId: record.id,
+                    });
+                  }
+                  return router.publishInbound({
+                    integration: record.integration,
+                    slot: owner,
+                    topic: "websocket/server/message",
+                    payload: event.message,
+                    connectionId: record.id,
+                  });
+                }),
+                Effect.forkIn(scope),
+              );
+              yield* connection.statusChanges.pipe(
+                Stream.runForEach((status) => {
+                  if (status !== "closed") return Effect.void;
+                  return Effect.gen(function* () {
+                    const remaining = yield* Ref.modify(running, (current) => {
+                      const next = new Set(current);
+                      next.delete(address);
+                      return [next, next];
+                    });
+                    if (remaining.size > 0) return;
+                    yield* updateRecord(record.id, (current) => ({
+                      ...current,
+                      status: "disconnected",
+                      lastError: "WebSocket listeners closed",
+                      detailText: addresses.join(", "),
+                    }));
+                  });
+                }),
+                Effect.forkIn(scope),
+              );
+            }
+          }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
+
           const state: DriverState = {
             kind: "websocket-server",
             scope,
@@ -1879,64 +2031,18 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             keyboard: undefined,
             midi: undefined,
             webSocketClient: undefined,
-            webSocketServer: connection,
+            webSocketServers: servers,
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
-          yield* connection.events.pipe(
-            Stream.runForEach((event) => {
-              if (event._tag === "client_connected") {
-                return router.publishInbound({
-                  integration: "websocket",
-                  slot: record.slot,
-                  topic: "websocket/server/client.connected",
-                  payload: event.client,
-                  connectionId: record.id,
-                });
-              }
-              if (event._tag === "client_disconnected") {
-                return router.publishInbound({
-                  integration: "websocket",
-                  slot: record.slot,
-                  topic: "websocket/server/client.disconnected",
-                  payload: event.client,
-                  connectionId: record.id,
-                });
-              }
-              return router.publishInbound({
-                integration: "websocket",
-                slot: record.slot,
-                topic: "websocket/server/message",
-                payload: event.message,
-                connectionId: record.id,
-              });
-            }),
-            Effect.forkIn(scope),
-          );
-          yield* connection.statusChanges.pipe(
-            Stream.runForEach((status) =>
-              updateRecord(record.id, (current) => ({
-                ...current,
-                status:
-                  status === "running"
-                    ? "connected"
-                    : status === "error"
-                      ? "error"
-                      : status === "closed"
-                        ? "disconnected"
-                        : "connecting",
-                detailText: `${host}:${connection.address.port}${path ?? ""}`,
-                ...(status === "running" ? { lastConnectedAt: Date.now() } : {}),
-              })),
-            ),
-            Effect.forkIn(scope),
-          );
           return yield* updateRecord(record.id, (current) => ({
             ...current,
             driver: state,
-            status: "connecting",
-            detailText: `${host}:${connection.address.port}${path ?? ""}`,
+            status: "connected",
+            lastConnectedAt: Date.now(),
+            detailText: addresses.join(", "),
             lastError: undefined,
+            nextRetryAt: undefined,
           }));
         });
 
@@ -2127,8 +2233,16 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const ensureDriver = (record: ConnectionRecord): Effect.Effect<ConnectionRecord> =>
         Effect.gen(function* () {
           const input = yield* Ref.get(lastInput);
+          const scheduled = (yield* Ref.get(retries)).get(record.id);
+          if (
+            record.driver === undefined &&
+            scheduled !== undefined &&
+            scheduled.nextAt > Date.now()
+          ) {
+            return record;
+          }
           const uses = input.running.filter((entry) => usesConnection(input, entry, record));
-          const active = uses.length > 0 || record.manual;
+          const active = !record.disabled && (uses.length > 0 || record.manual);
           const cloudStatus = yield* cloud.status;
           const mode =
             record.mode === "auto"
@@ -2148,6 +2262,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           const configKey = JSON.stringify({
             active,
             mode,
+            ...(record.integration === "websocket-server"
+              ? { listens: webSocketServerListens(record, input) }
+              : {}),
             ...(record.integration === "vts" ? {} : { topics: topicEntries }),
             values: record.values,
             secrets: Object.keys(record.secrets).sort(),
@@ -2271,7 +2388,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               Effect.catch((error) => markDriverError(record, error)),
             );
           }
-          if (record.integration === "websocket") {
+          if (
+            record.integration === "websocket-client" ||
+            record.integration === "websocket-server"
+          ) {
             return yield* startWebSocket(record, input, configKey, topicsKey).pipe(
               Effect.catch((error) => markDriverError(record, error)),
             );
@@ -2282,17 +2402,15 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             );
             return yield* updateRecord(record.id, (current) => ({
               ...current,
-              status:
-                current.values["baseUrl"] !== undefined && current.values["baseUrl"] !== ""
-                  ? "connected"
-                  : hasWebhook
-                    ? "connected"
-                    : requiredFieldsSet(current)
-                      ? "disconnected"
-                      : "unconfigured",
+              status: hasWebhook
+                ? "connected"
+                : requiredFieldsSet(current)
+                  ? "disconnected"
+                  : "unconfigured",
+              ...(hasWebhook ? { lastError: undefined } : {}),
               detailText: hasWebhook
                 ? (current.detailText ?? "Webhook listener")
-                : current.values["baseUrl"],
+                : undefined,
             }));
           }
           if (record.integration === "twitch") {
@@ -2443,6 +2561,86 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           }),
         );
 
+      const retryDelay = (attempts: number): number =>
+        Math.min(30_000, 1_000 * 2 ** Math.min(attempts, 5));
+
+      /**
+       * Reconnect policy: an active connection that failed to start keeps
+       * retrying with exponential backoff until it connects, its settings
+       * change, or the user disconnects it (`disabled`). Explicit Connect,
+       * Disconnect and Configure clear the schedule and reconcile at once.
+       */
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep("1 second");
+          const input = yield* Ref.get(lastInput);
+          const current = yield* Ref.get(state);
+          const now = Date.now();
+          const next = new Map(yield* Ref.get(retries));
+          const due: string[] = [];
+          for (const record of current.values()) {
+            if (record.driver !== undefined) {
+              next.delete(record.id);
+              if (record.nextRetryAt !== undefined) {
+                yield* updateRecord(record.id, (value) => ({
+                  ...value,
+                  nextRetryAt: undefined,
+                }));
+              }
+              continue;
+            }
+            const active =
+              !record.disabled &&
+              (record.manual || input.running.some((entry) => usesConnection(input, entry, record)));
+            if (
+              !active ||
+              record.needsReauth ||
+              !requiredFieldsSet(record) ||
+              (record.status !== "error" && record.status !== "disconnected")
+            ) {
+              next.delete(record.id);
+              if (record.nextRetryAt !== undefined) {
+                yield* updateRecord(record.id, (value) => ({
+                  ...value,
+                  nextRetryAt: undefined,
+                }));
+              }
+              continue;
+            }
+            const entry = next.get(record.id);
+            if (entry === undefined) {
+              next.set(record.id, { attempts: 0, nextAt: now + 1_000 });
+              continue;
+            }
+            if (entry.nextAt <= now) due.push(record.id);
+          }
+          if (due.length === 0) {
+            yield* Ref.set(retries, next);
+            continue;
+          }
+          // Let this attempt pass the backoff gate; refailures are scheduled
+          // again below with the next delay.
+          for (const id of due) {
+            next.set(id, { attempts: next.get(id)?.attempts ?? 0, nextAt: now });
+          }
+          yield* Ref.set(retries, next);
+          yield* reconcile(input);
+          const after = yield* Ref.get(state);
+          for (const id of due) {
+            const record = after.get(id);
+            if (record?.driver !== undefined || record?.status === "connected") continue;
+            const attempts = (next.get(id)?.attempts ?? 0) + 1;
+            const nextAt = Date.now() + retryDelay(attempts);
+            yield* Ref.update(retries, (latest) => {
+              const updated = new Map(latest);
+              updated.set(id, { attempts, nextAt });
+              return updated;
+            });
+            yield* updateRecord(id, (value) => ({ ...value, nextRetryAt: nextAt }));
+          }
+        }
+      }).pipe(Effect.forkIn(parentScope));
+
       const permissions = (): Effect.Effect<{ readonly accessibility: PermissionStatus }> =>
         Effect.map(Ref.get(shellPermissions), (value) => ({
           accessibility: value.accessibility,
@@ -2503,12 +2701,20 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             }
           }
           const mode = input.mode ?? record.mode;
+          yield* Ref.update(retries, (current) => {
+            if (!current.has(record.id)) return current;
+            const next = new Map(current);
+            next.delete(record.id);
+            return next;
+          });
           yield* updateRecord(record.id, (current) => ({
             ...current,
             values,
             secrets,
             mode,
+            disabled: false,
             lastError: undefined,
+            nextRetryAt: undefined,
           }));
           yield* Ref.update(secretState, (current) => ({
             ...current,
@@ -2653,7 +2859,18 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               agentError("not-found", `No connection "${connectionId}"`),
             );
           }
-          yield* updateRecord(connectionId, (current) => ({ ...current, manual: true }));
+          yield* Ref.update(retries, (current) => {
+            if (!current.has(connectionId)) return current;
+            const next = new Map(current);
+            next.delete(connectionId);
+            return next;
+          });
+          yield* updateRecord(connectionId, (current) => ({
+            ...current,
+            manual: true,
+            disabled: false,
+            nextRetryAt: undefined,
+          }));
           yield* reconcile(yield* Ref.get(lastInput));
           yield* ready([connectionId]).pipe(Effect.catch(() => Effect.void));
           return yield* require(connectionId);
@@ -2667,7 +2884,18 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               agentError("not-found", `No connection "${connectionId}"`),
             );
           }
-          yield* updateRecord(connectionId, (current) => ({ ...current, manual: false }));
+          yield* Ref.update(retries, (current) => {
+            if (!current.has(connectionId)) return current;
+            const next = new Map(current);
+            next.delete(connectionId);
+            return next;
+          });
+          yield* updateRecord(connectionId, (current) => ({
+            ...current,
+            manual: false,
+            disabled: true,
+            nextRetryAt: undefined,
+          }));
           yield* reconcile(yield* Ref.get(lastInput));
           return yield* require(connectionId);
         });
@@ -2764,125 +2992,84 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         readonly connectionId?: string;
         readonly request: string;
         readonly input: unknown;
-      }): Effect.Effect<unknown, string> =>
+      }): Effect.Effect<unknown, ConnectionRequestError> =>
         Effect.gen(function* () {
           const id = input.connectionId ?? `${input.integration}/${input.slot}`;
           const record = yield* getRecord(id);
           if (record === undefined) {
-            return yield* Effect.fail(`No connection ${id}`);
+            return yield* Effect.fail(
+              new ConnectionUnavailable({
+                integration: input.integration,
+                slot: input.slot,
+                connectionId: id,
+                message: `No connection ${id}`,
+              }),
+            );
           }
-          if (input.integration === "http") {
-            const values = record.values;
-            const authType = values["authType"];
-            const auth =
-              authType === "bearer" && record.secrets["authToken"] !== undefined
-                ? { type: "bearer" as const, token: record.secrets["authToken"] }
-                : authType === "basic" &&
-                    values["authUsername"] !== undefined &&
-                    record.secrets["authPassword"] !== undefined
-                  ? {
-                      type: "basic" as const,
-                      username: values["authUsername"],
-                      password: record.secrets["authPassword"],
-                    }
-                  : authType === "header" &&
-                      values["authHeaderName"] !== undefined &&
-                      record.secrets["authHeaderValue"] !== undefined
-                    ? {
-                        type: "header" as const,
-                        name: values["authHeaderName"],
-                        value: record.secrets["authHeaderValue"],
-                      }
-                    : undefined;
-            const manifest = yield* Ref.get(lastInput);
-            const allowedHosts = scopesFor(record, manifest)
-              .filter((scope) => scope.startsWith("http:host:"))
-              .map((scope) => scope.slice("http:host:".length));
-            return yield* httpClientDriver
-              .request({
-                config: {
-                  slot: record.slot,
-                  baseUrl: values["baseUrl"] ?? "",
-                  headers: {
-                    ...jsonRecord(values["headers"]),
-                    ...jsonRecord(record.secrets["headersSecret"]),
-                  },
-                  ...(auth === undefined ? {} : { auth }),
-                  ...(listOf(values["allowedHosts"]).length === 0
-                    ? {}
-                    : { allowedHosts: listOf(values["allowedHosts"]) }),
-                },
-                request: Schema.decodeUnknownSync(
-                  Schema.Struct({
-                    method: Schema.Literals(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
-                    path: Schema.String,
-                    query: Schema.optionalKey(
-                      Schema.Record(
-                        Schema.String,
-                        Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
-                      ),
-                    ),
-                    headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-                    body: Schema.optionalKey(
-                      Schema.Union([
-                        Schema.Struct({ type: Schema.Literal("json"), value: Schema.Unknown }),
-                        Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
-                        Schema.Struct({ type: Schema.Literal("binary"), base64: Schema.String }),
-                      ]),
-                    ),
-                  }),
-                )(input.input),
-                allowedHosts,
-              })
-              .pipe(Effect.mapError((error) => error.reason));
-          }
+          const unavailable = (message: string): ConnectionUnavailable =>
+            new ConnectionUnavailable({
+              integration: record.integration,
+              slot: record.slot,
+              connectionId: record.id,
+              message,
+            });
+          const failed = (message: string): ConnectionRequestError =>
+            connectionRequestError({
+              integration: record.integration,
+              slot: record.slot,
+              connectionId: record.id,
+              message,
+            });
           if (record.driver === undefined) {
-            return yield* Effect.fail(`Connection ${id} is not connected`);
+            return yield* Effect.fail(unavailable(`Connection ${id} is not connected`));
           }
           if (input.integration === "fake") {
-            return yield* handleFakeRequest(input.request, input.slot, input.input);
+            return yield* handleFakeRequest(input.request, input.slot, input.input).pipe(
+              Effect.mapError(failed),
+            );
           }
           if (input.integration === "obs") {
             if (record.driver.obs === undefined) {
-              return yield* Effect.fail(`OBS ${id} is not connected`);
+              return yield* Effect.fail(unavailable(`OBS ${id} is not connected`));
             }
             return yield* record.driver.obs.request(input.request, input.input);
           }
           if (input.integration === "vts") {
             if (record.driver.vts === undefined) {
-              return yield* Effect.fail(`VTube Studio ${id} is not connected`);
+              return yield* Effect.fail(unavailable(`VTube Studio ${id} is not connected`));
             }
             return yield* record.driver.vts.request(input.request, input.input).pipe(
-              Effect.mapError((error) => error.message),
+              Effect.mapError((error) => failed(error.message)),
             );
           }
           if (input.integration === "keyboard") {
             if (record.driver.keyboard === undefined) {
-              return yield* Effect.fail(`Keyboard ${id} is not connected`);
+              return yield* Effect.fail(unavailable(`Keyboard ${id} is not connected`));
             }
             return yield* record.driver.keyboard.request(input.request, input.input).pipe(
-              Effect.mapError((error) => error.message),
+              Effect.mapError((error) => failed(error.message)),
             );
           }
           if (input.integration === "midi") {
             if (record.driver.midi === undefined) {
-              return yield* Effect.fail(`MIDI ${id} is not connected`);
+              return yield* Effect.fail(unavailable(`MIDI ${id} is not connected`));
             }
             return yield* record.driver.midi.request(input.request, input.input).pipe(
-              Effect.mapError((error) => error.message),
+              Effect.mapError((error) => failed(error.message)),
             );
           }
-          if (input.integration === "websocket") {
+          if (input.integration === "websocket-client") {
             const client = record.driver.webSocketClient;
-            const server = record.driver.webSocketServer;
             if (input.request === "websocket/connect") {
               return client === undefined
-                ? yield* Effect.fail(`WebSocket ${id} is not connected`)
+                ? yield* Effect.fail(unavailable(`WebSocket ${id} is not connected`))
                 : {};
             }
             if (input.request === "websocket/send") {
               if (client === undefined) {
-                return yield* Effect.fail(`WebSocket ${id} is not a connected client`);
+                return yield* Effect.fail(
+                  unavailable(`WebSocket ${id} is not a connected client`),
+                );
               }
               const message = Schema.decodeUnknownSync(
                 Schema.Union([
@@ -2891,11 +3078,24 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                   Schema.Struct({ type: Schema.Literal("json"), value: Schema.Unknown }),
                 ]),
               )(input.input);
-              yield* client.send(message).pipe(Effect.mapError((error) => error.reason));
+              yield* client.send(message).pipe(Effect.mapError((error) => failed(error.reason)));
               return {};
             }
+            return yield* Effect.fail(
+              new ConnectionRequestFailed({
+                integration: record.integration,
+                slot: record.slot,
+                connectionId: record.id,
+                message: `Unknown WebSocket client request "${input.request}"`,
+              }),
+            );
+          }
+          if (input.integration === "websocket-server") {
+            const server = record.driver.webSocketServers.get(input.slot);
             if (server === undefined) {
-              return yield* Effect.fail(`WebSocket ${id} is not a running server`);
+              return yield* Effect.fail(
+                unavailable(`WebSocket ${id} is not listening for slot ${input.slot}`),
+              );
             }
             if (input.request === "websocket/sendToClient") {
               const value = Schema.decodeUnknownSync(
@@ -2910,7 +3110,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               )(input.input);
               yield* server
                 .sendToClient(value.clientId, value.message)
-                .pipe(Effect.mapError((error) => error.reason));
+                .pipe(Effect.mapError((error) => failed(error.reason)));
               return {};
             }
             if (input.request === "websocket/broadcast") {
@@ -2922,24 +3122,45 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 ]),
               )(input.input);
               return yield* server.broadcast(message).pipe(
-                Effect.mapError((error) => error.reason),
+                Effect.mapError((error) => failed(error.reason)),
               );
             }
-            return yield* Effect.fail(`Unknown WebSocket request "${input.request}"`);
+            return yield* Effect.fail(
+              new ConnectionRequestFailed({
+                integration: record.integration,
+                slot: record.slot,
+                connectionId: record.id,
+                message: `Unknown WebSocket server request "${input.request}"`,
+              }),
+            );
           }
           if (input.integration === "twitch") {
             if (record.driver.twitch === undefined) {
-              return yield* Effect.fail(`Twitch ${id} is not connected`);
+              return yield* Effect.fail(unavailable(`Twitch ${id} is not connected`));
             }
             const name = Twitch.parseHelixRequestName(input.request);
             if (name === undefined) {
-              return yield* Effect.fail(`Unknown Twitch request "${input.request}"`);
+              return yield* Effect.fail(
+                new ConnectionRequestFailed({
+                  integration: record.integration,
+                  slot: record.slot,
+                  connectionId: record.id,
+                  message: `Unknown Twitch request "${input.request}"`,
+                }),
+              );
             }
             return yield* record.driver.twitch.request(name, input.input).pipe(
-              Effect.mapError((error) => error.message),
+              Effect.mapError((error) => failed(error.message)),
             );
           }
-          return yield* Effect.fail(`No request handler for integration "${input.integration}"`);
+          return yield* Effect.fail(
+            new ConnectionRequestFailed({
+              integration: record.integration,
+              slot: record.slot,
+              connectionId: record.id,
+              message: `No request handler for integration "${input.integration}"`,
+            }),
+          );
         });
 
       const optionValues = (source: {
@@ -3038,7 +3259,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             ),
           );
           const response = yield* driver.request("GetSceneList", {}).pipe(
-            Effect.mapError((error) => agentError("upstream", error)),
+            Effect.mapError((error) => agentError("upstream", error.message)),
           );
           const decoded = yield* Effect.try({
             try: () => Schema.decodeUnknownSync(RequestSchemas.GetSceneList.output)(response),
@@ -3106,6 +3327,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           );
         });
 
+      /** Used by the user-facing Connect action, never to gate a project start. */
       const ready = (
         connectionKeys: ReadonlyArray<string>,
       ): Effect.Effect<void, AgentError> =>
@@ -3139,7 +3361,11 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 lastError: undefined,
               }));
             }
-            if (["vts", "keyboard", "midi", "websocket", "http"].includes(record.integration)) {
+            if (
+              ["vts", "keyboard", "midi", "websocket-client", "websocket-server", "http"].includes(
+                record.integration,
+              )
+            ) {
               yield* waitForConnected(key);
             }
           }
@@ -3162,7 +3388,6 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         reconcile,
         permissions,
         reportShellPermission,
-        ready,
         request,
         optionValues,
         close,

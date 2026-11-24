@@ -1,7 +1,9 @@
 # @ballast/module-websocket
 
-WebSocket clients and local servers for Ballast scripts. The script entry has no
-Node-only imports; runtime code lives in `@ballast/module-websocket/driver`.
+WebSocket clients and local servers for Ballast scripts. Clients and servers are
+separate connection kinds: `websocket-client` is configured with a URL, and
+`websocket-server` with a port. The script entry has no Node-only imports;
+runtime code lives in `@ballast/module-websocket/driver`.
 
 ## Script API
 
@@ -35,36 +37,36 @@ Client topics: `WebSocket.Message`, `WebSocket.Open`, `WebSocket.Close`, and
 
 ## Manifest capabilities
 
-- `WebSocket.Client(slot, { url? })` records `websocket/*` plus
-  `websocket/connect` with `ws:connect:<host>` or `ws:connect:*` when the URL
-  comes from config. Sending is `client.send` / `client.text` /
-  `client.binary` / `client.json`.
-- `WebSocket.Server(slot, { host?, port?, path? })` records `websocket/*`
-  plus `websocket/listen` with `ws:listen:<host>:<port><path>`. Sending is
-  `server.send(clientId, message)`; broadcasting is `server.broadcast` plus
-  the `broadcastText` / `broadcastBinary` / `broadcastJson` helpers.
+- `WebSocket.Client(slot, { url? })` records the `websocket-client` connection,
+  `websocket/*` plus `websocket/connect` with `ws:connect:<host>` or
+  `ws:connect:*` when the URL comes from config. Sending is `client.send` /
+  `client.text` / `client.binary` / `client.json`.
+- `WebSocket.Server(slot, { port?, path? })` records the `websocket-server`
+  connection, `websocket/*` plus `websocket/listen` with
+  `ws:listen:127.0.0.1:<port><path>`. Sending is `server.send(clientId, message)`;
+  broadcasting is `server.broadcast` plus the `broadcastText` /
+  `broadcastBinary` / `broadcastJson` helpers.
 
-Connection config (agent-side) supplies the URL, headers, subprotocols, reconnect
-policy, and the server host/port/path. The optional script values are intent and
-manifest hints, not secrets.
+Connection settings are just the client URL or the server port. The script's
+server path is part of the listen capability, so the agent binds the path from
+the manifest and binds `127.0.0.1` by default.
 
 ## Driver
 
 ```ts
-import { layerNode } from "@ballast/module-websocket/driver";
+import { WebSocketClientDriver, layerNode } from "@ballast/module-websocket/driver";
 
 const client = yield* WebSocketClientDriver;
 const connection = yield* client.connect({
   slot: "upstream",
   url: "wss://example.com/socket",
-  headers: { authorization: "Bearer …" },
-  subprotocols: ["chat"],
-  reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 },
 });
 
 yield* connection.events.pipe(Stream.runForEach(console.log));
 yield* connection.send({ type: "text", text: "hello" });
 ```
+
+Both drivers are provided by `layerNode`.
 
 `WebSocketClientDriver` emits `open` / `message` / `close` events and reconnects
 with exponential backoff. `WebSocketServerDriver` accepts clients (Node `ws`

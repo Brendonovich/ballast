@@ -42,6 +42,15 @@ export interface CreateAgentStoreOptions {
   readonly logProjectId?: string;
 }
 
+/**
+ * Mock mode only. The in-browser mock lists a pending consent for the main
+ * project (ListProjectConsents) but leaves it off the project detail, so a
+ * fixture can attach it to exercise the approval panel.
+ */
+export interface ProjectFixture {
+  readonly pendingConsent?: ProjectConsentRequest;
+}
+
 export interface AgentStore {
   readonly transport: TransportConfig;
   readonly snapshot: Accessor<ServiceSnapshot | undefined>;
@@ -58,6 +67,11 @@ export interface AgentStore {
    * dev hook so e2e tests can produce project log lines on demand.
    */
   readonly receiveLog: (entry: LogEntry) => void;
+  /**
+   * Mock mode only: attach a pending consent to a project's detail (see
+   * `ProjectFixture`). Kept until cleared, so refetches keep it.
+   */
+  readonly setProjectFixture: (projectId: string, fixture: ProjectFixture | undefined) => void;
   readonly projects: () => ReadonlyArray<ProjectSummary>;
   readonly project: (projectId: string) => ProjectSummary | undefined;
   readonly projectDetail: (projectId: string) => ProjectDetail | undefined;
@@ -334,6 +348,13 @@ export const createAgentStore = (
     readyResolve = undefined;
   };
 
+  const fixtures = new Map<string, ProjectFixture>();
+
+  const fixtureDetail = (detail: ProjectDetail): ProjectDetail => {
+    const consent = fixtures.get(detail.summary.id)?.pendingConsent;
+    return consent === undefined ? detail : { ...detail, pendingConsent: consent };
+  };
+
   const upsertSummary = (summary: ProjectSummary): void => {
     setSnapshot((current) => {
       if (current === undefined) return current;
@@ -372,7 +393,8 @@ export const createAgentStore = (
     });
   };
 
-  const applyProjectDetail = (detail: ProjectDetail): void => {
+  const applyProjectDetail = (incoming: ProjectDetail): void => {
+    const detail = fixtureDetail(incoming);
     setProjectDetails((current) => ({ ...current, [detail.summary.id]: detail }));
     upsertSummary(detail.summary);
     if (detail.pendingConsent === undefined) clearProjectConsent(detail.summary.id);
@@ -1163,6 +1185,13 @@ export const createAgentStore = (
     pending,
     setLogProject,
     receiveLog: appendLog,
+    setProjectFixture: (projectId, fixture) => {
+      if (fixture === undefined) fixtures.delete(projectId);
+      else fixtures.set(projectId, fixture);
+      const detail = projectDetails()[projectId];
+      if (detail !== undefined) applyProjectDetail(detail);
+      void fetchProject(projectId, true);
+    },
     projects,
     project,
     projectDetail,

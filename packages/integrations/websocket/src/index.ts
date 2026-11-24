@@ -2,8 +2,8 @@ import * as Ballast from "@ballast/core";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { encodeBase64 } from "./base64.ts";
-import { INTEGRATION } from "./constants.ts";
-import type { Integration } from "./constants.ts";
+import { CLIENT_INTEGRATION, SERVER_INTEGRATION } from "./constants.ts";
+import type { ClientIntegration, ServerIntegration } from "./constants.ts";
 import type {
   WebSocketBroadcastResult,
   WebSocketClientDisconnected,
@@ -16,7 +16,8 @@ import type {
   WebSocketServerMessage,
 } from "./types.ts";
 
-export { INTEGRATION } from "./constants.ts";
+export { CLIENT_INTEGRATION, SERVER_INTEGRATION } from "./constants.ts";
+export type { ClientIntegration, ServerIntegration } from "./constants.ts";
 export type * from "./types.ts";
 export { decodeBase64, encodeBase64 } from "./base64.ts";
 
@@ -100,28 +101,28 @@ export interface ClientOptions {
 export interface WebSocketSender {
   readonly send: (
     message: WebSocketOutboundMessage,
-  ) => Effect.Effect<void, never, Ballast.Runtime>;
-  readonly text: (text: string) => Effect.Effect<void, never, Ballast.Runtime>;
-  readonly binary: (bytes: Uint8Array) => Effect.Effect<void, never, Ballast.Runtime>;
-  readonly json: (value: unknown) => Effect.Effect<void, never, Ballast.Runtime>;
+  ) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
+  readonly text: (text: string) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
+  readonly binary: (bytes: Uint8Array) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
+  readonly json: (value: unknown) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
 }
 
 export interface WebSocketClient
-  extends Ballast.ConnectionRef<Integration>, WebSocketSender {
+  extends Ballast.ConnectionRef<ClientIntegration>, WebSocketSender {
   /** The URL declared in the script, if any. */
   readonly url: string | undefined;
 }
 
 const sendClient = (
   host: Ballast.RequestHostService,
-  connection: Ballast.ConnectionRef<Integration>,
+  connection: Ballast.ConnectionRef<ClientIntegration>,
 ): WebSocketSender => {
   const send = host.granted<WebSocketOutboundMessage, Record<string, never>>({
-    integration: INTEGRATION,
+    integration: CLIENT_INTEGRATION,
     slot: connection.slot,
     request: "websocket/send",
     scopes: [],
-    key: INTEGRATION + "/" + connection.slot + "/websocket/send",
+    key: CLIENT_INTEGRATION + "/" + connection.slot + "/websocket/send",
     inputSchema: OutboundSchema,
     outputSchema: AckSchema,
   });
@@ -139,18 +140,18 @@ export const Client = (
   options: ClientOptions = {},
 ): Effect.Effect<WebSocketClient, never, Ballast.RequestHost> =>
   Effect.gen(function* () {
-    const connection = yield* Ballast.Connection<Integration>({
-      integration: INTEGRATION,
+    const connection = yield* Ballast.Connection<ClientIntegration>({
+      integration: CLIENT_INTEGRATION,
       slot,
       location: "local",
-      requests: ["*"],
+      requests: ["websocket/*"],
     });
     const host = yield* Ballast.RequestHost;
 
     // A request-shaped capability keeps the consent UI honest: it shows the
     // host this slot may connect to even though the driver reads config.
     yield* Ballast.Request<Record<string, never>, Record<string, never>>({
-      integration: INTEGRATION,
+      integration: CLIENT_INTEGRATION,
       slot,
       request: "websocket/connect",
       scopes: [connectScope(options.url)],
@@ -172,42 +173,42 @@ export interface WebSocketServerSender {
   readonly send: (
     clientId: string,
     message: WebSocketOutboundMessage,
-  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  ) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly broadcast: (
     message: WebSocketOutboundMessage,
-  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  ) => Effect.Effect<WebSocketBroadcastResult, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly text: (
     clientId: string,
     text: string,
-  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  ) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly binary: (
     clientId: string,
     bytes: Uint8Array,
-  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  ) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly json: (
     clientId: string,
     value: unknown,
-  ) => Effect.Effect<void, never, Ballast.Runtime>;
+  ) => Effect.Effect<void, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly broadcastText: (
     text: string,
-  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  ) => Effect.Effect<WebSocketBroadcastResult, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly broadcastBinary: (
     bytes: Uint8Array,
-  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  ) => Effect.Effect<WebSocketBroadcastResult, Ballast.ConnectionRequestError, Ballast.Runtime>;
   readonly broadcastJson: (
     value: unknown,
-  ) => Effect.Effect<WebSocketBroadcastResult, never, Ballast.Runtime>;
+  ) => Effect.Effect<WebSocketBroadcastResult, Ballast.ConnectionRequestError, Ballast.Runtime>;
 }
 
 export interface WebSocketServer
-  extends Ballast.ConnectionRef<Integration>, WebSocketServerSender {
+  extends Ballast.ConnectionRef<ServerIntegration>, WebSocketServerSender {
   readonly port: number | undefined;
   readonly path: string | undefined;
 }
 
 const sendServer = (
   host: Ballast.RequestHostService,
-  connection: Ballast.ConnectionRef<Integration>,
+  connection: Ballast.ConnectionRef<ServerIntegration>,
 ): WebSocketServerSender => {
   const toClientSchema = Schema.Struct({
     clientId: Schema.String,
@@ -217,20 +218,20 @@ const sendServer = (
     { readonly clientId: string; readonly message: WebSocketOutboundMessage },
     Record<string, never>
   >({
-    integration: INTEGRATION,
+    integration: SERVER_INTEGRATION,
     slot: connection.slot,
     request: "websocket/sendToClient",
     scopes: [],
-    key: INTEGRATION + "/" + connection.slot + "/websocket/sendToClient",
+    key: SERVER_INTEGRATION + "/" + connection.slot + "/websocket/sendToClient",
     inputSchema: toClientSchema,
     outputSchema: AckSchema,
   });
   const broadcast = host.granted<WebSocketOutboundMessage, WebSocketBroadcastResult>({
-    integration: INTEGRATION,
+    integration: SERVER_INTEGRATION,
     slot: connection.slot,
     request: "websocket/broadcast",
     scopes: [],
-    key: INTEGRATION + "/" + connection.slot + "/websocket/broadcast",
+    key: SERVER_INTEGRATION + "/" + connection.slot + "/websocket/broadcast",
     inputSchema: OutboundSchema,
     outputSchema: BroadcastResultSchema,
   });
@@ -261,16 +262,16 @@ export const Server = (
   options: ServerOptions = {},
 ): Effect.Effect<WebSocketServer, never, Ballast.RequestHost> =>
   Effect.gen(function* () {
-    const connection = yield* Ballast.Connection<Integration>({
-      integration: INTEGRATION,
+    const connection = yield* Ballast.Connection<ServerIntegration>({
+      integration: SERVER_INTEGRATION,
       slot,
       location: "local",
-      requests: ["*"],
+      requests: ["websocket/*"],
     });
     const host = yield* Ballast.RequestHost;
 
     yield* Ballast.Request<Record<string, never>, Record<string, never>>({
-      integration: INTEGRATION,
+      integration: SERVER_INTEGRATION,
       slot,
       request: "websocket/listen",
       scopes: [listenScope(options)],
@@ -287,43 +288,43 @@ export const Server = (
   });
 
 /** A frame received by a client slot. */
-export const Message = Ballast.Topic<WebSocketMessage, Integration>({
-  integration: INTEGRATION,
+export const Message = Ballast.Topic<WebSocketMessage, ClientIntegration>({
+  integration: CLIENT_INTEGRATION,
   topic: "websocket/message",
   schema: MessageSchema,
 });
 
 /** The client slot connected (emitted again after every reconnect). */
-export const Open = Ballast.Topic<WebSocketOpen, Integration>({
-  integration: INTEGRATION,
+export const Open = Ballast.Topic<WebSocketOpen, ClientIntegration>({
+  integration: CLIENT_INTEGRATION,
   topic: "websocket/open",
   schema: OpenSchema,
 });
 
 /** The client slot disconnected. */
-export const Close = Ballast.Topic<WebSocketClose, Integration>({
-  integration: INTEGRATION,
+export const Close = Ballast.Topic<WebSocketClose, ClientIntegration>({
+  integration: CLIENT_INTEGRATION,
   topic: "websocket/close",
   schema: CloseSchema,
 });
 
 /** A frame received from one server client. */
-export const ServerMessage = Ballast.Topic<WebSocketServerMessage, Integration>({
-  integration: INTEGRATION,
+export const ServerMessage = Ballast.Topic<WebSocketServerMessage, ServerIntegration>({
+  integration: SERVER_INTEGRATION,
   topic: "websocket/server/message",
   schema: ServerMessageSchema,
 });
 
 /** A local server accepted a client. */
-export const ClientConnected = Ballast.Topic<WebSocketClientInfo, Integration>({
-  integration: INTEGRATION,
+export const ClientConnected = Ballast.Topic<WebSocketClientInfo, ServerIntegration>({
+  integration: SERVER_INTEGRATION,
   topic: "websocket/server/client.connected",
   schema: ClientInfoSchema,
 });
 
 /** A local server lost a client. */
-export const ClientDisconnected = Ballast.Topic<WebSocketClientDisconnected, Integration>({
-  integration: INTEGRATION,
+export const ClientDisconnected = Ballast.Topic<WebSocketClientDisconnected, ServerIntegration>({
+  integration: SERVER_INTEGRATION,
   topic: "websocket/server/client.disconnected",
   schema: ClientDisconnectedSchema,
 });
@@ -355,8 +356,8 @@ const decodeJson = <A>(
 export const Json = <A>(
   schema: Schema.Codec<A, unknown, never, never>,
 ): WebSocketJsonTopic<A> => {
-  const base = Ballast.Topic<WebSocketMessage, Integration>({
-    integration: INTEGRATION,
+  const base = Ballast.Topic<WebSocketMessage, ClientIntegration>({
+    integration: CLIENT_INTEGRATION,
     topic: "websocket/message",
     schema: MessageSchema,
   });
@@ -369,7 +370,7 @@ export const Json = <A>(
       base.subscribe(
         name,
         // The base topic only needs the slot; callers pass a connection handle.
-        { ...connection, integration: INTEGRATION, location: "local" },
+        { ...connection, integration: CLIENT_INTEGRATION, location: "local" },
         (message) =>
           Effect.gen(function* () {
             const decoded = yield* decodeJson(schema, message);

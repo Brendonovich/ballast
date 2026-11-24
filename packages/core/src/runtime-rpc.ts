@@ -10,6 +10,8 @@ import type { FromClientEncoded, FromServerEncoded } from "effect/rpc/RpcMessage
 import type { Scope } from "effect/Scope";
 import type { DatabaseExecuteInput, SqlErrorWire } from "./database.ts";
 import { SqlErrorWireSchema } from "./database.ts";
+import { ConnectionRequestErrorSchema } from "./errors.ts";
+import type { ConnectionRequestError } from "./errors.ts";
 import * as RpcServer from "effect/rpc/RpcServer";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import {
@@ -61,7 +63,7 @@ export const RuntimeRpcs = RpcGroup.make(
       input: Schema.Unknown,
     },
     success: Schema.Unknown,
-    error: Schema.String,
+    error: ConnectionRequestErrorSchema,
   }),
   Rpc.make("RegisterTimer", {
     payload: { name: Schema.String },
@@ -99,6 +101,20 @@ export const RuntimeRpcs = RpcGroup.make(
   Rpc.make("StoreIncrement", {
     payload: { name: Schema.String, by: Schema.Number, initial: Schema.Number },
     success: Schema.Number,
+  }),
+  Rpc.make("UnitFailed", {
+    payload: {
+      unit: Schema.String,
+      error: Schema.String,
+      source: Schema.optional(
+        Schema.Struct({
+          file: Schema.String,
+          line: Schema.Number,
+          column: Schema.Number,
+        }),
+      ),
+    },
+    success: Schema.Void,
   }),
   Rpc.make("EventHistoryRecord", {
     payload: {
@@ -192,7 +208,7 @@ export interface RuntimeHostHandlers {
     readonly request: string;
     readonly slot: string;
     readonly input: unknown;
-  }) => Effect.Effect<unknown, string>;
+  }) => Effect.Effect<unknown, ConnectionRequestError>;
   /**
    * Optional so existing hosts keep compiling. A host that does not implement
    * timers fails loudly when a script uses one.
@@ -225,6 +241,15 @@ export interface RuntimeHostHandlers {
     readonly by: number;
     readonly initial: number;
   }) => Effect.Effect<number>;
+  readonly unitFailed?: (payload: {
+    readonly unit: string;
+    readonly error: string;
+    readonly source?: {
+      readonly file: string;
+      readonly line: number;
+      readonly column: number;
+    } | undefined;
+  }) => Effect.Effect<void>;
   readonly eventHistoryRecord?: (payload: {
     readonly name: string;
     readonly fingerprint: string;
@@ -407,6 +432,9 @@ export const serveRuntimeRpc = (
                 });
                 return next;
               })),
+          UnitFailed:
+            handlers.unitFailed ??
+            (() => Effect.void),
           EventHistoryRecord:
             handlers.eventHistoryRecord ??
             ((payload) => Effect.sync(() => memoryHistoryRecord(payload))),

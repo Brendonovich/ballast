@@ -299,3 +299,18 @@
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
+
+/* Navigated-to targets (an issue's binding row, consent, a connection). */
+[data-flash="true"] {
+  animation: flash-ring 1.4s ease-out;
+}
+
+@keyframes flash-ring {
+  0%,
+  40% {
+    box-shadow: 0 0 0 2px var(--v2-border-border-focus);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}

@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { Schema } from "effect";
+import type { ConnectionRequestError } from "./errors.ts";
 import type { RequestManifest } from "./manifest.ts";
 import { Runtime } from "./runtime.ts";
 import { ManifestRecorder, RequestClients } from "./services.ts";
@@ -31,7 +32,7 @@ export interface RequestSpec<A, B> {
 
 export type RequestClient<A, B> = (
   input: A,
-) => Effect.Effect<B, never, Runtime>;
+) => Effect.Effect<B, ConnectionRequestError, Runtime>;
 
 export const toRequestManifest = (request: RequestRef<unknown, unknown>): RequestManifest => ({
   integration: request.integration,

@@ -15,7 +15,8 @@ machine is not publicly reachable, so the same hook must work in two modes:
 | **Cloud** | The Ballast Worker receives the request and relays it to the paired machine over the existing relay WebSocket | `https://<cloud>/hooks/<machineId>/<hookId>` | Public incoming webhooks |
 
 The script-facing API is identical: `Http.Webhook("kofi")` declares an `either`
-connection, and `Http.Webhook.subscribe(hook, handler)` records an `http/webhook` topic.
+connection, and `Http.Webhook.subscribe(name, hook, handler)` records an
+`http/webhook` topic.
 The manifest's connection location and the user's connection configuration choose the
 transport.
 

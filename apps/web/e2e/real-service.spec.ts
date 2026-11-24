@@ -284,13 +284,16 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       });
     }
 
-    // Start confirms the sole-instance proposal and raises the consent review.
+    // The project needs the user: Set up… leads to the consent review, which
+    // also confirms the sole-instance proposal.
+    await expect(page.getByTestId("project-status")).toHaveText("Needs you", { timeout: 20_000 });
+    await expect(page.getByTestId("toggle-project")).toHaveText("Set up…");
     await page.getByTestId("toggle-project").click();
     await expect(page.getByTestId("project-consent")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("approve-project-consent")).toBeFocused();
     await expect(page.getByTestId("consent-binding")).toContainText("Studio OBS");
     await expect(page.getByTestId("consent-binding")).toContainText("OBS Studio · main");
     await expect(requirement).toHaveAttribute("data-bound-instance", studioId);
-    await expect(requirement.getByText("Proposed · confirmed on Start")).toHaveCount(0);
 
     for (const theme of ["dark", "light"] as const) {
       await applyTheme(page, theme);
@@ -300,9 +303,9 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.screenshot({ path: `screenshots/real-${theme}-06-consent.png` });
     }
     await page.getByTestId("approve-project-consent").click();
-    await expect(page.getByText("Running", { exact: true }).first()).toBeVisible({
-      timeout: 20_000,
-    });
+    await expect(page.getByTestId("project-status")).toHaveText("Running", { timeout: 20_000 });
+    await expect(page.getByTestId("toggle-project")).toHaveText("Stop");
+    await expect(requirement.getByText("Proposed · confirmed on Start")).toHaveCount(0);
     await expect(
       page.getByTestId("log-line").filter({ hasText: "hello from alpha" }).first(),
     ).toBeVisible({ timeout: 20_000 });
@@ -502,10 +505,11 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     await writeBundle(info.projectsDir, needsName, projectBundle(needsName));
     await goHome(page);
     const needsRow = page.getByTestId("project-row").filter({ hasText: needsName });
-    await expect(needsRow).toHaveAttribute("data-status", "needs-connections", {
+    await expect(needsRow).toHaveAttribute("data-status", "needs-user", {
       timeout: 20_000,
     });
-    await expect(needsRow.getByText("Needs connections")).toBeVisible();
+    await expect(needsRow.getByTestId("project-status-word")).toHaveText("Needs you");
+    await expect(needsRow.getByTestId("project-action")).toHaveText("Set up…");
 
     for (const theme of ["dark", "light"] as const) {
       await applyTheme(page, theme);
@@ -526,33 +530,39 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.screenshot({ path: `screenshots/real-${theme}-08-connections.png` });
     }
 
-    // A failed reload keeps the previous worker running and links the error line.
+    // A failed change keeps the worker running; the status popover lists it and
+    // the source pane marks its line. There is no banner.
     await applyTheme(page, "dark");
     await openProject(page, mainName);
     await writeBundle(info.projectsDir, mainName, brokenBundle());
-    await expect(page.getByTestId("project-error")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("Running previous version, latest change failed")).toBeVisible();
+    const changeIssue = page.locator('[data-testid="project-issue"][data-issue-kind="change-not-applied"]');
+    await expect(page.getByTestId("project-status")).toHaveAttribute("data-issues", /[1-9]/, {
+      timeout: 20_000,
+    });
+    await expect(page.getByTestId("project-status")).toHaveText("Running");
     await expect(page.getByTestId("toggle-project")).toHaveText("Stop");
     await expect(page.getByTestId("restart-project")).toBeVisible();
-    await expect(page.getByTestId("project-error")).toContainText("TS2322");
-    await expect(page.getByTestId("project-error-source")).toHaveText("ballast.ts:4");
-    await expect(page.getByTestId("project-error")).not.toContainText("ballast.ts:4:7");
+    await expect(page.getByText(/previous version/i)).toHaveCount(0);
+    await expect(page.getByTestId("project-error")).toHaveCount(0);
+    await page.getByTestId("project-status").click();
+    await expect(changeIssue).toBeVisible();
+    await expect(changeIssue).toContainText("TS2322");
     await page.waitForTimeout(150);
     await page.screenshot({ path: "screenshots/real-dark-07-reload-failed.png" });
-    await page.getByTestId("project-error-source").click();
+    await changeIssue.click();
     await expect(page.locator('[data-highlighted="true"]')).toContainText("broken");
+    await expect(page.locator('[data-line="4"]')).toHaveAttribute("data-marked", "true");
+    await expect(page.getByTestId("source-marker")).toHaveAttribute("aria-label", /TS2322/);
 
     await applyTheme(page, "light");
-    await expect(page.getByTestId("project-error")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("source-marker")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("toggle-project")).toHaveText("Stop");
     await page.waitForTimeout(150);
     await page.screenshot({ path: "screenshots/real-light-07-reload-failed.png" });
 
     await writeBundle(info.projectsDir, mainName, projectBundle(mainName));
-    await expect(page.getByTestId("project-error")).toHaveCount(0, { timeout: 30_000 });
-    await expect(page.getByText("Running", { exact: true }).first()).toBeVisible({
-      timeout: 30_000,
-    });
+    await expect(page.getByTestId("source-marker")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId("project-status")).toHaveText("Running", { timeout: 30_000 });
 
     // Cancelling a timer and editing project-level params both round-trip.
     const timer = page.getByTestId("timer-row").filter({ hasText: "demo" });

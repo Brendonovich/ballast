@@ -38,8 +38,14 @@ export const HealthStatus = Schema.Struct({
   uptimeMs: Schema.Number,
   projects: Schema.Struct({
     total: Schema.Number,
+    stopped: Schema.Number,
+    starting: Schema.Number,
     running: Schema.Number,
+    needsUser: Schema.Number,
+    failed: Schema.Number,
+    /** Projects with a pending consent, kept for older clients. */
     needsConsent: Schema.Number,
+    /** Alias for failed, kept for older clients. */
     error: Schema.Number,
   }),
   connections: Schema.Struct({

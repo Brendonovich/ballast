@@ -1,5 +1,5 @@
 import type { Schema } from "effect";
-import type { Integration } from "./constants.ts";
+import type { ClientIntegration } from "./constants.ts";
 
 export interface WebSocketMessage {
   /** Text frame contents, when the frame was text. */
@@ -115,7 +115,7 @@ export type WebSocketServerEvent =
     };
 
 export interface WebSocketJsonTopic<A> {
-  readonly integration: Integration;
+  readonly integration: ClientIntegration;
   readonly topic: string;
   readonly schema: Schema.Codec<A, unknown, never, never>;
   readonly subscribe: (
@@ -125,7 +125,7 @@ export interface WebSocketJsonTopic<A> {
       event: A,
     ) => import("effect/Effect").Effect<
       void,
-      never,
+      unknown,
       import("@ballast/core").Runtime
     >,
   ) => import("effect/Effect").Effect<void, never, import("@ballast/core").EventHost>;

@@ -12,12 +12,14 @@ describe("plan WebSocket scripts", () => {
 
       expect(manifest.project).toEqual({ id: "ws-bridge", entry: "ws-bridge.ts" });
       expect(manifest.connections).toEqual([
-        { integration: "websocket", slot: "bridge", location: "local" },
-        { integration: "websocket", slot: "upstream", location: "local" },
+        { integration: "websocket-client", slot: "upstream", location: "local" },
+        { integration: "websocket-server", slot: "bridge", location: "local" },
       ]);
-      expect(manifest.topics.map((topic) => topic.slot + ":" + topic.topic)).toEqual([
-        "bridge:websocket/server/message",
-        "upstream:websocket/message",
+      expect(
+        manifest.topics.map((topic) => topic.integration + "/" + topic.slot + ":" + topic.topic),
+      ).toEqual([
+        "websocket-client/upstream:websocket/message",
+        "websocket-server/bridge:websocket/server/message",
       ]);
       expect(
         manifest.requests.map((request) => ({
@@ -25,15 +27,15 @@ describe("plan WebSocket scripts", () => {
           scopes: request.scopes,
         })),
       ).toEqual([
-        { request: "websocket/bridge/websocket/*", scopes: [] },
+        { request: "websocket-client/upstream/websocket/*", scopes: [] },
         {
-          request: "websocket/bridge/websocket/listen",
-          scopes: ["ws:listen:127.0.0.1:1890/bridge"],
-        },
-        { request: "websocket/upstream/websocket/*", scopes: [] },
-        {
-          request: "websocket/upstream/websocket/connect",
+          request: "websocket-client/upstream/websocket/connect",
           scopes: ["ws:connect:*"],
+        },
+        { request: "websocket-server/bridge/websocket/*", scopes: [] },
+        {
+          request: "websocket-server/bridge/websocket/listen",
+          scopes: ["ws:listen:127.0.0.1:1890/bridge"],
         },
       ]);
     }),

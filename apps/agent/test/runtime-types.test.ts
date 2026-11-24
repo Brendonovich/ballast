@@ -5,6 +5,14 @@ import * as OBS from "@ballast/module-obs";
 import * as Twitch from "@ballast/module-twitch";
 import { Effect, Schema } from "effect";
 
+/** A handler may fail with any error; the runtime contains it on the unit. */
+export const handlerFailsWithAnyError = Effect.gen(function* () {
+  const fake = yield* Fake.Connection("main");
+  yield* Fake.Tick.subscribe("tick", fake, () =>
+    Effect.fail(new Error("handler boom")),
+  );
+});
+
 /** Reading a param in init leaves Ballast.Runtime in the entry requirements. */
 export const paramInInit = Effect.gen(function* () {
   const greeting = yield* Ballast.Param.string("greeting");

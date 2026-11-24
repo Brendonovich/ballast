@@ -29,7 +29,7 @@ export const UnitKind = Schema.Literals([
 ]);
 export type UnitKind = typeof UnitKind.Type;
 
-export const UnitStatus = Schema.Literals(["active", "waiting", "error"]);
+export const UnitStatus = Schema.Literals(["active", "waiting", "failed"]);
 export type UnitStatus = typeof UnitStatus.Type;
 
 /**
@@ -42,6 +42,8 @@ export const UnitSummary = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   source: Schema.optionalKey(SourceLocation),
   status: UnitStatus,
+  /** Last error for this unit, when it failed. */
+  lastError: Schema.optionalKey(Schema.String),
   /** Last time this unit handled work or changed state, epoch ms. */
   lastActivityAt: Schema.optionalKey(Schema.Number),
 });
@@ -49,11 +51,43 @@ export type UnitSummary = typeof UnitSummary.Type;
 
 export const ProjectStatus = Schema.Literals([
   "stopped",
+  "starting",
   "running",
-  "needs-consent",
-  "error",
+  "needs-user",
+  "failed",
 ]);
 export type ProjectStatus = typeof ProjectStatus.Type;
+
+export const ProjectIssueKind = Schema.Literals([
+  "connection-offline",
+  "unit-failed",
+  "change-not-applied",
+  "start-failed",
+  "worker-exited",
+  "needs-binding",
+  "needs-consent",
+]);
+export type ProjectIssueKind = typeof ProjectIssueKind.Type;
+
+export const ProjectIssueSeverity = Schema.Literals(["warning", "error"]);
+export type ProjectIssueSeverity = typeof ProjectIssueSeverity.Type;
+
+export const ProjectIssue = Schema.Struct({
+  id: Schema.String,
+  kind: ProjectIssueKind,
+  severity: ProjectIssueSeverity,
+  /** Short one-line title, for example "OBS (main) offline". */
+  title: Schema.String,
+  detail: Schema.optionalKey(Schema.String),
+  unit: Schema.optionalKey(Schema.String),
+  /** Connection integration for slot issues, for example `"obs"`. */
+  integration: Schema.optionalKey(Schema.String),
+  slot: Schema.optionalKey(Schema.String),
+  connectionId: Schema.optionalKey(Schema.String),
+  source: Schema.optionalKey(SourceLocation),
+  at: Schema.Number,
+});
+export type ProjectIssue = typeof ProjectIssue.Type;
 
 export const ManifestTopicUnit = Schema.Struct({
   name: Schema.String,
@@ -210,7 +244,8 @@ export const ProjectSummary = Schema.Struct({
   unitCount: Schema.Number,
   createdAt: Schema.Number,
   updatedAt: Schema.Number,
-  lastError: Schema.optionalKey(Schema.String),
+  /** Live and recorded problems. Empty when the project is healthy. */
+  issues: Schema.Array(ProjectIssue),
 });
 export type ProjectSummary = typeof ProjectSummary.Type;
 
@@ -230,9 +265,9 @@ export const ProjectDetail = Schema.Struct({
   manifest: ProjectManifest,
   requirements: Schema.Array(ProjectRequirement),
   units: Schema.Array(UnitSummary),
+  issues: Schema.Array(ProjectIssue),
   appliedAt: Schema.optionalKey(Schema.Number),
   pendingConsent: Schema.optionalKey(ProjectConsentRequest),
-  lastErrorSource: Schema.optionalKey(SourceLocation),
   appliedManifest: Schema.optionalKey(ProjectManifest),
   /** Database files under `.ballast/db` with no current declaration. */
   orphanedDatabases: Schema.optionalKey(Schema.Array(OrphanedDatabase)),

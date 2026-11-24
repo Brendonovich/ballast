@@ -56,6 +56,7 @@ describe("service telemetry", () => {
         generation: 1,
         subscriptions: new Set([key]),
         ready: Effect.void,
+        exitReason: Effect.succeed(undefined),
         deliver: (_key, payload) => {
           delivered.push(payload);
         },
@@ -91,6 +92,7 @@ describe("service telemetry", () => {
         generation: 1,
         subscriptions: new Set([key]),
         ready: Effect.void,
+        exitReason: Effect.succeed(undefined),
         deliver: (_key, payload) => {
           delivered.push(payload);
         },

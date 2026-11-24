@@ -6,6 +6,7 @@ import {
   createSignal,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
 import type { JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
@@ -19,10 +20,16 @@ import type {
 import { useAgent } from "../state/context.tsx";
 import { getDesktopBridge } from "../bridge.ts";
 import { useAccessibilityPermission } from "../permissions.ts";
+import { blockingRequirements, integrationName } from "../lib/format.ts";
 import {
-  integrationName,
-  projectWorkerRunning,
-} from "../lib/format.ts";
+  actionLabel,
+  canRestart,
+  projectAction,
+  sourceMarkers,
+} from "../lib/project-health.ts";
+import type { IssueTarget } from "../lib/project-health.ts";
+import { flash, pendingProjectIntent, takeProjectIntent } from "../lib/project-intent.ts";
+import type { ProjectIntent } from "../lib/project-intent.ts";
 import {
   AlertIcon,
   PanelRightIcon,
@@ -109,21 +116,14 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   const pendingConsent = createMemo(
     () => detail()?.pendingConsent ?? store.projectConsent(projectId()),
   );
-  const workerRunning = (): boolean => {
+  const status = createMemo(() => {
     const project = summary();
-    return project !== undefined && projectWorkerRunning(project);
-  };
-  const errorMessage = (): string => {
-    const project = summary();
-    const source = detail()?.lastErrorSource;
-    if (project?.lastError === undefined) return "";
-    if (source === undefined) return project.lastError;
-    const prefix = `${source.file}:${source.line}:${source.column}`;
-    if (!project.lastError.startsWith(prefix)) return project.lastError;
-    return project.lastError
-      .slice(prefix.length)
-      .replace(/^\s*[—-]\s*/, "");
-  };
+    return project === undefined ? "stopped" : project.status;
+  });
+  const action = createMemo(() => projectAction(status()));
+  const workerRunning = (): boolean => status() === "running";
+  /** Gutter markers for a change that did not apply. Summary issues are canonical. */
+  const markers = createMemo(() => sourceMarkers(summary()?.issues ?? []));
 
   // The screen remounts per project, so the layout is read once for it.
   const initialLogs = readLogsLayout(safeDecode(props.projectId));
@@ -138,7 +138,10 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   const [timers, setTimers] = createSignal<ReadonlyArray<TimerSummary>>([]);
   const [selectedArtifactName, setSelectedArtifactName] = createSignal<string>();
   const [selectedOutlineKey, setSelectedOutlineKey] = createSignal<string>();
-  const outline = createMemo(() => buildOutline(detail()));
+  const outline = createMemo(() =>
+    buildOutline(detail(), (connectionId) => store.connection(connectionId)?.label),
+  );
+  const [reveal, setReveal] = createSignal<{ readonly key: string; readonly token: number }>();
   const [artifactFullscreen, setArtifactFullscreen] = createSignal(false);
   const selectedArtifact = createMemo(() => {
     const name = selectedArtifactName();
@@ -346,6 +349,126 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     await store.restartProject(projectId());
   };
 
+  /** After the DOM reflects a state change (sidebar opened, outline expanded). */
+  const afterRender = (run: () => void): void => {
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  };
+
+  /**
+   * The requirement row for a slot, matched by integration and slot. Without
+   * a slot (Set up…) the first unbound requirement is shown.
+   */
+  const showBinding = (requirement: {
+    readonly integration: string | undefined;
+    readonly slot: string | undefined;
+  }): void => {
+    if (sidebarCollapsed()) {
+      setSidebarCollapsed(false);
+      writeSidebar(false);
+    }
+    afterRender(() => {
+      const rows = [...document.querySelectorAll('[data-testid="project-requirement"]')].filter(
+        (element) => element instanceof HTMLElement,
+      );
+      const row =
+        requirement.slot === undefined
+          ? rows.find((element) => element.dataset.boundInstance === undefined)
+          : rows.find(
+              (element) =>
+                element.dataset.slot === requirement.slot &&
+                (requirement.integration === undefined ||
+                  element.dataset.integration === requirement.integration),
+            );
+      flash(row);
+      const picker = row?.querySelector('[data-testid="project-connection-picker"]');
+      if (picker instanceof HTMLElement) picker.focus();
+    });
+  };
+
+  const showConsent = (): void => {
+    afterRender(() => {
+      const banner = document.querySelector('[data-testid="project-consent"]');
+      flash(banner);
+      const approve = banner?.querySelector('[data-testid="approve-project-consent"]');
+      if (approve instanceof HTMLElement) approve.focus();
+    });
+  };
+
+  /** Take the user to where an issue can be seen or fixed. */
+  const showTarget = (target: IssueTarget): void => {
+    switch (target.kind) {
+      case "binding":
+        showBinding(target);
+        return;
+      case "consent":
+        showConsent();
+        return;
+      case "source":
+        openSource(target.source.file, target.source.line);
+        return;
+      case "unit": {
+        const item = outline()
+          .flatMap((group) => group.items)
+          .find((entry) => entry.unit?.name === target.unit);
+        if (item !== undefined) {
+          selectOutlineItem(item);
+          setReveal({ key: item.key, token: (reveal()?.token ?? 0) + 1 });
+        }
+        if (target.source !== undefined) openSource(target.source.file, target.source.line);
+        return;
+      }
+      case "connection":
+      case "none":
+        return;
+    }
+  };
+
+  /**
+   * Set up…: bind what is missing, then approve. Approving enables and starts
+   * a stopped project, so there is no separate start step.
+   */
+  const setUp = (): void => {
+    const missing = blockingRequirements(detail()?.requirements ?? [])[0];
+    if (missing !== undefined) {
+      showBinding(missing);
+      return;
+    }
+    if (pendingConsent() !== undefined) {
+      showConsent();
+      return;
+    }
+    const binding = summary()?.issues.find((issue) => issue.kind === "needs-binding");
+    showBinding({ integration: binding?.integration, slot: binding?.slot });
+  };
+
+  const runIntent = (intent: ProjectIntent): void => {
+    if (intent.kind === "set-up") setUp();
+    else showTarget(intent.target);
+  };
+
+  // Requests from the top bar (an issue) or the Projects list (Set up…) wait
+  // for the detail so the outline and requirements exist.
+  createEffect(() => {
+    pendingProjectIntent();
+    if (detail() === undefined) return;
+    const intent = untrack(() => takeProjectIntent(projectId()));
+    if (intent !== undefined) untrack(() => runIntent(intent));
+  });
+
+  const runAction = (): void => {
+    switch (action()) {
+      case "stop":
+        void stop();
+        return;
+      case "start":
+        void start();
+        return;
+      case "set-up":
+        setUp();
+        return;
+    }
+  };
+
   const bindRequirement = async (
     requirement: ProjectRequirement,
     instanceId: string | null,
@@ -442,7 +565,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
             >
               <span class="hidden lg:inline">Project</span>
             </Button>
-            <Show when={pendingConsent() === undefined && workerRunning()}>
+            <Show when={canRestart(status())}>
               <Button
                 size="small"
                 variant="ghost"
@@ -453,21 +576,26 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                 Restart
               </Button>
             </Show>
-            <Show when={pendingConsent() === undefined || !workerRunning()}>
-              <Button
-                size="small"
-                variant={workerRunning() ? "outline" : "primary"}
-                data-testid="toggle-project"
-                loading={
-                  store.isPending(`project:${projectId()}:start`) ||
-                  store.isPending(`project:${projectId()}:stop`)
-                }
-                icon={workerRunning() ? <StopIcon size={12} /> : <PlayIcon size={12} />}
-                onClick={() => void (workerRunning() ? stop() : start())}
-              >
-                {workerRunning() ? "Stop" : "Start"}
-              </Button>
-            </Show>
+            <Button
+              size="small"
+              variant={action() === "start" ? "primary" : "outline"}
+              data-testid="toggle-project"
+              data-action={action()}
+              loading={
+                store.isPending(`project:${projectId()}:start`) ||
+                store.isPending(`project:${projectId()}:stop`)
+              }
+              icon={
+                action() === "stop" ? (
+                  <StopIcon size={12} />
+                ) : action() === "start" ? (
+                  <PlayIcon size={12} />
+                ) : undefined
+              }
+              onClick={() => runAction()}
+            >
+              {actionLabel(action())}
+            </Button>
           </TopBarActions>
 
           <Show when={pendingConsent()}>
@@ -519,38 +647,6 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
             )}
           </Show>
 
-          <Show when={project().status === "error" && project().lastError}>
-            <div
-              data-testid="project-error"
-              class="shrink-0 rounded-md border border-[var(--v2-state-border-danger)] bg-[var(--v2-state-bg-danger)] px-2.5 py-1.5 text-[11px] text-danger"
-            >
-              <div class="flex items-start gap-2">
-                <AlertIcon size={13} class="mt-px shrink-0" />
-                <div class="min-w-0 flex-1">
-                  <p class="font-medium">
-                    {project().enabled
-                      ? "Running previous version, latest change failed"
-                      : "Latest change failed"}
-                  </p>
-                  <p class="mt-0.5 break-all">{errorMessage()}</p>
-                  <Show when={detail()?.lastErrorSource}>
-                    {(source) => (
-                      <button
-                        type="button"
-                        data-testid="project-error-source"
-                        class="mt-1 font-mono text-[10px] text-danger underline-offset-2 hover:underline"
-                        title={`${source().file}:${source().line}:${source().column}`}
-                        onClick={() => openSource(source().file, source().line)}
-                      >
-                        {source().file}:{source().line}
-                      </button>
-                    )}
-                  </Show>
-                </div>
-              </div>
-            </div>
-          </Show>
-
           <div class="flex min-h-0 flex-1 gap-3">
             <Show when={!artifactFullscreen()}>
               <ProjectNavigator
@@ -563,6 +659,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                 selectedItem={selectedOutlineKey()}
                 onSelectItem={selectOutlineItem}
                 onOpenSource={openSource}
+                reveal={reveal()}
               />
             </Show>
 
@@ -575,6 +672,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                       <SourcePanel
                         projectId={projectId()}
                         jump={jump()}
+                        markers={markers()}
                         collapsed={maximized() === "logs"}
                         maximized={maximized() === "source"}
                         onToggleMaximize={() => toggleMaximize("source")}

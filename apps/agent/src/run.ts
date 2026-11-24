@@ -13,7 +13,12 @@ import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { FetchHttpClient } from "effect/http";
 import { diff, plan } from "@ballast/planner";
 import type { ManifestDiff } from "@ballast/planner";
-import { makeTimerScheduler } from "@ballast/core";
+import {
+  ConnectionUnavailable,
+  connectionRequestError,
+  makeTimerScheduler,
+} from "@ballast/core";
+import type { ConnectionRequestError } from "@ballast/core";
 import type { Manifest, ParamManifest, ParamOptionSource, TimerManifest } from "@ballast/core";
 import { RequestSchemas } from "@ballast/module-obs";
 import { AgentEventBus } from "./event-bus.ts";
@@ -50,7 +55,7 @@ type RequestHandler = (
   request: string,
   slot: string,
   input: unknown,
-) => Effect.Effect<unknown, string>;
+) => Effect.Effect<unknown, ConnectionRequestError>;
 
 type RunParamValue = string | number | boolean | ReadonlyArray<string>;
 
@@ -506,7 +511,7 @@ export const runScript = (options: RunOptions) =>
 
             const response = yield* driver
               .request("GetSceneList", {})
-              .pipe(Effect.mapError((error) => new Error(error)));
+              .pipe(Effect.mapError((error) => new Error(error.message)));
             const decoded = yield* Effect.try({
               try: () =>
                 Schema.decodeUnknownSync(RequestSchemas.GetSceneList.output)(response),
@@ -550,20 +555,34 @@ export const runScript = (options: RunOptions) =>
       );
 
       const requestHandler: RequestHandler = (integration, request, slot, input) => {
-        if (integration === "fake") return handleFakeRequest(request, slot, input);
+        const failed = (message: string): ConnectionRequestError =>
+          connectionRequestError({ integration, slot, message });
+        if (integration === "fake") {
+          return handleFakeRequest(request, slot, input).pipe(
+            Effect.mapError(failed),
+          );
+        }
         if (integration === "obs") {
           const state = obsSlots.get(slot);
           if (state === undefined) {
-            return Effect.fail(`No OBS connection for slot "${slot}"`);
+            return Effect.fail(
+              new ConnectionUnavailable({
+                integration,
+                slot,
+                message: `No OBS connection for slot "${slot}"`,
+              }),
+            );
           }
           return state.driver.request(request, input);
         }
         if (integration === "twitch") {
           return twitch.request(slot, request, input).pipe(
-            Effect.mapError((error) => error.message),
+            Effect.mapError((error) => failed(error.message)),
           );
         }
-        return Effect.fail(`No runtime handler for integration "${integration}"`);
+        return Effect.fail(
+          failed(`No runtime handler for integration "${integration}"`),
+        );
       };
 
       // In-process `ballast run` keeps timers in memory. The service uses the

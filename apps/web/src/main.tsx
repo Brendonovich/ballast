@@ -9,6 +9,8 @@ import { errorMessage } from "./agent/errors.ts";
 import { createAgentStore } from "./state/store.ts";
 import type { AgentStore } from "./state/store.ts";
 import type { LogLevel } from "@ballast/agent-protocol";
+import { ProjectConsentRequest } from "@ballast/agent-protocol";
+import { Schema } from "effect";
 import { toast } from "./ui/toast.tsx";
 import { initialiseTheme } from "./ui/theme.ts";
 
@@ -33,12 +35,26 @@ const logLevels: ReadonlyArray<LogLevel> = ["debug", "info", "warn", "error"];
 const isLogLevel = (value: unknown): value is LogLevel =>
   logLevels.some((level) => level === value);
 
+/** What `ballastMock.project` may attach; validated so a bad fixture fails loudly. */
+const ProjectFixtureInput = Schema.Struct({
+  pendingConsent: Schema.optionalKey(ProjectConsentRequest),
+});
+const decodeFixture = Schema.decodeUnknownSync(ProjectFixtureInput);
+
 /**
  * Mock mode only: `window.ballastMock.log({ level, message })` appends a line
  * to the current project's logs, so e2e tests can exercise live log UI.
  */
 const installMockHooks = (store: AgentStore): void => {
   Reflect.set(window, "ballastMock", {
+    /**
+     * `ballastMock.project(id, { pendingConsent })` attaches the consent the
+     * mock lists but leaves off the detail; `null` clears it.
+     */
+    project: (projectId: unknown, input: unknown): void => {
+      if (typeof projectId !== "string") throw new Error("a project id is required");
+      store.setProjectFixture(projectId, input === null ? undefined : decodeFixture(input));
+    },
     log: (input: unknown): void => {
       const projectId = projectIdFromHash();
       if (projectId === undefined || typeof input !== "object" || input === null) return;

@@ -69,11 +69,11 @@ export interface KeyboardClient extends Ballast.ConnectionRef<Integration> {
   /** Tap a key once, optionally holding modifiers, on the streamer's machine. */
   readonly tap: (
     input: TapInput,
-  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
+  ) => Effect.Effect<RequestOutput, Ballast.ConnectionRequestError, Ballast.Runtime>;
   /** Press or release a key without a matching tap, for push-to-talk style keys. */
   readonly toggle: (
     input: ToggleInput,
-  ) => Effect.Effect<RequestOutput, never, Ballast.Runtime>;
+  ) => Effect.Effect<RequestOutput, Ballast.ConnectionRequestError, Ballast.Runtime>;
 }
 
 const call = <A, B>(
@@ -83,7 +83,7 @@ const call = <A, B>(
   inputSchema: Schema.Codec<A, unknown, never, never>,
   outputSchema: Schema.Codec<B, unknown, never, never>,
   input: A,
-): Effect.Effect<B, never, Ballast.Runtime> =>
+): Effect.Effect<B, Ballast.ConnectionRequestError, Ballast.Runtime> =>
   host.granted<A, B>({
     integration: INTEGRATION,
     slot: connection.slot,

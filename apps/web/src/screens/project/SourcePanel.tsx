@@ -6,6 +6,7 @@ import { useAgent } from "../../state/context.tsx";
 import { formatDateTime, formatRelative } from "../../lib/format.ts";
 import { languageForPath, tokenizeSource } from "../../lib/highlight.ts";
 import type { SourceLanguage, SourceToken } from "../../lib/highlight.ts";
+import type { SourceMarker } from "../../lib/project-health.ts";
 import {
   CopyIcon,
   MaximizeIcon,
@@ -30,6 +31,8 @@ const fileName = (path: string): string => path.split("/").at(-1) ?? path;
 export const SourcePanel = (props: {
   readonly projectId: string;
   readonly jump: SourceJump | undefined;
+  /** Lines to flag in the gutter, for example a change that did not apply. */
+  readonly markers?: ReadonlyArray<SourceMarker>;
   readonly collapsed: boolean;
   readonly maximized: boolean;
   readonly onToggleMaximize: () => void;
@@ -56,6 +59,16 @@ export const SourcePanel = (props: {
   );
 
   const lines = createMemo(() => source()?.content.split("\n") ?? []);
+
+  /** Markers for the open file, by line. */
+  const markerLines = createMemo(() => {
+    const path = source()?.path;
+    const map = new Map<number, SourceMarker>();
+    for (const marker of props.markers ?? []) {
+      if (marker.file === path && !map.has(marker.line)) map.set(marker.line, marker);
+    }
+    return map;
+  });
 
   // The file paints as plain text at once; tokens replace it when Shiki is
   // ready. The whole file is tokenized together so multi-line strings and
@@ -285,17 +298,44 @@ export const SourcePanel = (props: {
                     {(line, index) => {
                       const lineNumber = (): number => index() + 1;
                       const highlighted = (): boolean => targetLine() === lineNumber();
+                      const marker = (): SourceMarker | undefined => markerLines().get(lineNumber());
                       return (
                         <div
                           data-line={lineNumber()}
                           data-highlighted={highlighted() ? "true" : undefined}
+                          data-marked={marker() === undefined ? undefined : "true"}
                           class={cx(
                             "flex",
-                            highlighted() && "bg-[var(--v2-state-bg-warning)]",
+                            highlighted()
+                              ? "bg-[var(--v2-state-bg-warning)]"
+                              : marker() !== undefined && "bg-[var(--v2-state-bg-danger)]",
                           )}
                         >
-                          <span class="w-12 shrink-0 select-none pr-2 text-right text-faint">
-                            {lineNumber()}
+                          <span class="relative flex w-12 shrink-0 select-none items-center justify-end gap-1 pr-2 text-faint">
+                            <Show when={marker()}>
+                              {(current) => (
+                                <span
+                                  data-testid="source-marker"
+                                  tabIndex={0}
+                                  role="img"
+                                  aria-label={`${current().title}: ${current().message}`}
+                                  class="group/marker absolute left-1 flex h-5 items-center outline-none"
+                                >
+                                  <span class="size-2 rounded-full bg-danger" />
+                                  <span
+                                    role="tooltip"
+                                    data-testid="source-marker-tooltip"
+                                    class="pointer-events-none invisible absolute left-3 top-5 z-30 w-max max-w-[420px] whitespace-normal rounded-md border border-edge-strong bg-layer px-2.5 py-1.5 text-left font-sans text-[11px] leading-4 text-body opacity-0 shadow-[var(--v2-elevation-overlay)] transition-opacity group-hover/marker:visible group-hover/marker:opacity-100 group-focus/marker:visible group-focus/marker:opacity-100"
+                                  >
+                                    <span class="block font-medium text-danger">{current().title}</span>
+                                    <span class="mt-0.5 block break-words">{current().message}</span>
+                                  </span>
+                                </span>
+                              )}
+                            </Show>
+                            <span class={marker() === undefined ? undefined : "text-danger"}>
+                              {lineNumber()}
+                            </span>
                           </span>
                           <code class="block whitespace-pre px-3 text-[var(--syntax-variable)]">
                             <Show when={tokens()?.[index()]} fallback={line === "" ? " " : line}>

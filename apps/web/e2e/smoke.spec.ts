@@ -118,7 +118,7 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await expect(page).toHaveTitle("Main Channel — Ballast");
   await expect(page.getByTestId("top-bar")).toBeVisible();
   await expect(page.getByTestId("project-switcher")).toContainText("Main Channel");
-  await expect(page.getByTestId("top-bar-status")).toHaveText("Running");
+  await expect(page.getByTestId("project-status")).toHaveText("Running");
   // A plain browser has an ordinary bar, not a draggable title bar.
   expect(
     await page
@@ -479,7 +479,7 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.getByTestId("project-switcher").click();
   await expect(
     page.locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"]'),
-  ).toContainText("Needs connections");
+  ).toContainText("Needs you");
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-17-switcher-open.png` });
   await page.keyboard.press("Escape");
@@ -639,10 +639,10 @@ test("the project switcher re-scopes the window, lists projects and creates one"
   await page.getByTestId("project-switcher").click();
   const menu = page.getByTestId("project-switcher-menu");
   await expect(menu).toBeVisible();
-  await expect(page.getByTestId("project-switcher-row")).toHaveCount(2);
+  await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
   await expect(
     page.locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"]'),
-  ).toContainText("Needs connections");
+  ).toContainText("Needs you");
   // Opening another window is a desktop affordance.
   await expect(page.getByTestId("project-switcher-new-window")).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -671,12 +671,12 @@ test("the project switcher re-scopes the window, lists projects and creates one"
   await expect(page.getByTestId("project-switcher")).toContainText("Switcher Channel");
   await expect(page).toHaveTitle("Switcher Channel — Ballast");
   await page.getByTestId("project-switcher").click();
-  await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
+  await expect(page.getByTestId("project-switcher-row")).toHaveCount(4);
 
   // All projects goes to the projects list.
   await page.getByTestId("project-switcher-all").click();
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
-  await expect(page.getByTestId("project-row")).toHaveCount(3);
+  await expect(page.getByTestId("project-row")).toHaveCount(4);
   expect(errors).toEqual([]);
 });
 

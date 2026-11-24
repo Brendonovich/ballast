@@ -6,14 +6,13 @@ import { plan } from "@ballast/planner";
 const example = fileURLToPath(new URL("../../../../examples/webhook-to-obs.ts", import.meta.url));
 
 describe("plan HTTP scripts", () => {
-  it.effect("records webhook, host and OBS capabilities", () =>
+  it.effect("records webhook and OBS capabilities", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
       expect(manifest.project).toEqual({ id: "webhook-to-obs", entry: "webhook-to-obs.ts" });
       expect(manifest.connections).toEqual([
         { integration: "http", slot: "kofi", location: "either" },
-        { integration: "http", slot: "kofi-api", location: "local" },
         { integration: "obs", slot: "main", location: "local" },
       ]);
       expect(manifest.topics).toEqual([
@@ -31,12 +30,6 @@ describe("plan HTTP scripts", () => {
         },
       ]);
       expect(manifest.requests).toEqual([
-        {
-          integration: "http",
-          slot: "kofi-api",
-          request: "http/request",
-          scopes: ["http:host:api.example.com"],
-        },
         { integration: "obs", slot: "main", request: "obs/*", scopes: [] },
       ]);
       expect(manifest.params).toEqual([

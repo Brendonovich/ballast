@@ -1,13 +1,10 @@
 import { NodeSocket } from "@effect/platform-node";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/http";
-import { layer as httpClientLayer } from "./client.ts";
 import { layer as relayLayer } from "./relay.ts";
 import type { WebhookRelayOptions } from "./relay.ts";
 import { layer as webhookDriverLayer } from "./webhook.ts";
 
-export { HttpClientDriver, layer as httpClientLayer } from "./client.ts";
-export type { HttpClientDriverRequest } from "./client.ts";
 export { HttpDriverError } from "./errors.ts";
 export {
   WebhookRelay,
@@ -33,9 +30,6 @@ const fetchLayer = FetchHttpClient.layer.pipe(
     }),
   ),
 );
-
-/** HTTP client driver wired to fetch. Redirects are followed by the driver. */
-export const layerNode = httpClientLayer.pipe(Layer.provide(fetchLayer));
 
 /** Webhook driver has no ambient dependencies; local listeners use Node HTTP. */
 export const webhookLayer = webhookDriverLayer;

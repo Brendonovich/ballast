@@ -246,19 +246,24 @@ export const statusState = (
   if ((detail.requirements ?? []).some((requirement) => requirement.boundInstanceId === undefined)) {
     return { state: "waiting_for_user", reason: "connections" };
   }
-  if (detail.pendingConsent !== undefined || project.status === "needs-consent") {
+  if (detail.pendingConsent !== undefined) {
     return { state: "waiting_for_user", reason: "consent" };
   }
-  if (project.status === "error") {
-    return {
-      state:
-        detail.appliedAt !== undefined && detail.units.some((unit) => unit.status === "active")
-          ? "previous_version_running_latest_failed"
-          : "error",
-    };
+  if (project.status === "needs-user") {
+    return { state: "waiting_for_user", reason: "consent" };
+  }
+  if (project.status === "failed") {
+    return { state: "error" };
   }
   if (project.status === "running") {
-    return { state: "running" };
+    return {
+      state: project.issues.some((issue) => issue.kind === "change-not-applied")
+        ? "previous_version_running_latest_failed"
+        : "running",
+    };
+  }
+  if (project.status === "starting") {
+    return { state: "starting" };
   }
   // The service auto-applies plans with no new permissions, so appliedAt does
   // not prove the user ever started the project. Report "stopped"; apply will
@@ -333,18 +338,20 @@ export const formatStatus = (
       " · applied " +
       (detail.appliedAt === undefined ? "never" : new Date(detail.appliedAt).toISOString()),
   ];
-  if (project.lastError !== undefined) {
+  for (const issue of project.issues) {
     lines.push(
-      "last error: " +
-        project.lastError +
-        (detail.lastErrorSource === undefined
+      issue.severity +
+        ": " +
+        issue.title +
+        (issue.detail === undefined ? "" : " — " + issue.detail) +
+        (issue.source === undefined
           ? ""
           : " @ " +
-            detail.lastErrorSource.file +
+            issue.source.file +
             ":" +
-            detail.lastErrorSource.line +
+            issue.source.line +
             ":" +
-            detail.lastErrorSource.column),
+            issue.source.column),
     );
   }
   if (detail.pendingConsent !== undefined) {
@@ -432,7 +439,7 @@ export const formatStatus = (
       ...new Set([...attributedScopes, ...extraScopes]),
     ],
     ...(detail.pendingConsent === undefined ? {} : { pendingConsent: detail.pendingConsent }),
-    ...(detail.lastErrorSource === undefined ? {} : { lastErrorSource: detail.lastErrorSource }),
+    issues: project.issues,
   });
 };
 
@@ -624,7 +631,13 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
                 " · " +
                 project.unitCount +
                 " units" +
-                (project.lastError === undefined ? "" : " · error: " + truncate(project.lastError, 160)),
+                (project.issues.length === 0
+                  ? ""
+                  : " · issues: " +
+                    truncate(
+                      project.issues.map((issue) => issue.title).join("; "),
+                      160,
+                    )),
             );
           }
         }

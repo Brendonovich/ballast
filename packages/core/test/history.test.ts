@@ -30,7 +30,7 @@ describe("subscription event history", () => {
   it.effect("queries paged history, watches live entries and exposes legacy rows", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        let deliver: ((event: unknown) => Effect.Effect<void>) | undefined;
+        let deliver: ((event: unknown) => Effect.Effect<void, unknown>) | undefined;
         const eventHost: Ballast.EventHostService = {
           subscribe: (topic, _connection, handler) =>
             Effect.sync(() => {

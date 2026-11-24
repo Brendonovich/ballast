@@ -1,9 +1,10 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import type { ConnectionSummary, PermissionStatus } from "@ballast/agent-protocol";
 
 import { useAgent } from "../state/context.tsx";
 import { useAccessibilityPermission } from "../permissions.ts";
+import { clearConnectionFocus, flash, pendingConnectionFocus } from "../lib/project-intent.ts";
 import { ConnectionDialog } from "./connections/ConnectionDialog.tsx";
 import {
   connectionNeedsAttention,
@@ -89,6 +90,16 @@ export const ConnectionsScreen = (): JSX.Element => {
   const [adding, setAdding] = createSignal(false);
   const [editingId, setEditingId] = createSignal<string>();
   const [deletingId, setDeletingId] = createSignal<string>();
+
+  // An issue in the top bar asked to show this instance.
+  createEffect(() => {
+    const id = pendingConnectionFocus();
+    if (id === undefined || store.connection(id) === undefined) return;
+    clearConnectionFocus();
+    requestAnimationFrame(() =>
+      flash(document.querySelector(`[data-testid="connection-row"][data-connection-id="${CSS.escape(id)}"]`)),
+    );
+  });
 
   const editing = createMemo(() => {
     const id = editingId();

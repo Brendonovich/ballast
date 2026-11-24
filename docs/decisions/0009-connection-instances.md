@@ -174,8 +174,8 @@ warmup, then seeds each announced project subscription with the matching
 events; it stops holding once `resumeEnabled` has completed.
 
 HTTP webhooks follow the same rule: the webhook definition names the bound
-instance, and inbound deliveries publish that instance id. A project whose HTTP
-requirement is unbound cannot start and registers nothing.
+instance, and inbound deliveries publish that instance id. A project whose
+webhook requirement is unbound cannot start and registers nothing.
 
 ## Deleting an instance
 

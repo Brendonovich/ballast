@@ -23,6 +23,7 @@ const detail: ProjectDetail = {
     unitCount: 4,
     createdAt: 0,
     updatedAt: 0,
+    issues: [],
   },
   manifest: {
     ...emptyProjectManifest("proj_main", "ballast.ts"),
@@ -33,6 +34,7 @@ const detail: ProjectDetail = {
     },
   },
   requirements: [],
+  issues: [],
   units: [
     { kind: "database", name: "main", status: "active" },
     { kind: "param", name: "greeting", title: "Greeting", status: "active" },
@@ -65,6 +67,64 @@ describe("outline", () => {
     expect(groups[2]?.items[0]?.source?.line).toBe(12);
     expect(groups[3]?.items[0]?.key).toBe("store:count");
     expect(buildOutline(undefined)).toEqual([]);
+  });
+
+  it("explains failed units and topics waiting on an offline connection", () => {
+    const unhealthy: ProjectDetail = {
+      ...detail,
+      manifest: {
+        ...detail.manifest,
+        topics: [
+          {
+            name: "chat",
+            integration: "twitch",
+            slot: "broadcaster",
+            topic: "twitch/chat",
+            scopes: [],
+            onStale: "drop",
+            maxAgeMs: 1_000,
+          },
+        ],
+      },
+      issues: [
+        {
+          id: "connection-offline:twitch/broadcaster",
+          kind: "connection-offline",
+          severity: "warning",
+          title: "Twitch (broadcaster) offline",
+          slot: "broadcaster",
+          connectionId: "twitch/broadcaster",
+          at: 0,
+        },
+        {
+          id: "unit-failed:loop",
+          kind: "unit-failed",
+          severity: "error",
+          title: "loop failed",
+          detail: "boom from the issue",
+          unit: "loop",
+          at: 0,
+        },
+      ],
+      units: [
+        { kind: "topic", name: "chat", status: "waiting" },
+        { kind: "run", name: "loop", status: "failed", lastError: "boom" },
+        { kind: "run", name: "other", status: "failed" },
+      ],
+    };
+    const items = buildOutline(unhealthy, (id) => (id === "twitch/broadcaster" ? "Broadcaster" : undefined))
+      .flatMap((group) => group.items);
+    const note = (name: string): string | undefined =>
+      items.find((item) => item.unit?.name === name)?.note;
+    expect(note("chat")).toBe("Waiting for Broadcaster (twitch · broadcaster), which is offline");
+    expect(note("loop")).toBe("Failed: boom");
+    expect(note("other")).toBe("Failed");
+    // Without a connection label the issue title names it.
+    const fallback = buildOutline(unhealthy).flatMap((group) => group.items);
+    expect(fallback.find((item) => item.unit?.name === "chat")?.note).toBe(
+      "Waiting: Twitch (broadcaster) offline",
+    );
+    expect(buildOutline(detail).flatMap((group) => group.items).every((item) => item.note === undefined)).toBe(true);
   });
 
   it("is collapsed by default and restores a stored layout", () => {

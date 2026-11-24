@@ -94,7 +94,11 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         uptimeMs: Math.max(0, Date.now() - options.startedAt),
         projects: {
           total: projectList.length,
+          stopped: projectCounts.stopped,
+          starting: projectCounts.starting,
           running: projectCounts.running,
+          needsUser: projectCounts.needsUser,
+          failed: projectCounts.failed,
           needsConsent: projectCounts.needsConsent,
           error: projectCounts.error,
         },
@@ -123,6 +127,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       unitCount: 0,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
+      issues: [],
     });
 
     const projectSummary = (project: ProjectRecord) =>

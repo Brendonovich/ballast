@@ -33,8 +33,9 @@ still open, and what to build next.
   version with rollback), stop-before-app-update, and a typed `window.ballast` bridge. No OS
   supervisor or start at login. Quitting the UI does not stop the service.
 - **Integrations.** OBS WebSocket, Twitch (local-app + cloud modes, EventSub, Helix), VTube Studio
-  (plugin auth/events/hotkeys), keyboard (libuiohook), MIDI, WebSocket client/server, HTTP client
-  and generic local/cloud webhooks. Local integrations grant their whole request namespace from
+  (plugin auth/events/hotkeys), keyboard (libuiohook), MIDI, WebSocket client/server, and
+  generic local/cloud webhooks (outgoing HTTP uses Effect's `HttpClient` directly). Local
+  integrations grant their whole request namespace from
   the connection handle (for example `midi/*`, `keyboard/*`, `websocket/*`, `fake/*`);
   per-request declarations remain only where a request carries permission scopes. The fake
   integration drives the E2E and unit suites.
@@ -106,7 +107,7 @@ still open, and what to build next.
 | `packages/integrations/keyboard` | Global keyboard driver; macOS Accessibility hint/status |
 | `packages/integrations/midi` | MIDI input/output driver |
 | `packages/integrations/websocket` | WebSocket client/server driver and JSON helpers |
-| `packages/integrations/http` | HTTP client, local webhook server, cloud relay adapter |
+| `packages/integrations/http` | Local webhook server, verification and cloud relay adapter; outbound HTTP uses `effect/http` |
 | `packages/e2e` | Cross-package protocol tests (no product UI) |
 | `apps/agent` | `ballast` CLI + `ballast serve` service + `dist-service` build |
 | `apps/web` | Solid web UI served by the agent (scripts, source, logs, connections, settings) |

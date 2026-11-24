@@ -172,7 +172,7 @@ export const toTimerManifest = (timer: TimerMetadata<unknown>): TimerManifest =>
 export interface TimerHostService {
   readonly subscribe: <A>(
     spec: TimerSpec<A>,
-    handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
+    handler: (fire: TimerFire<A>) => Effect.Effect<void, unknown, never>,
   ) => Effect.Effect<Timer<A>>;
 }
 
@@ -192,7 +192,7 @@ export class TimerHost extends Context.Service<TimerHost, TimerHostService>()(
 export interface TimerRuntimeService {
   readonly subscribe: <A>(
     timer: TimerMetadata<A>,
-    handler: (fire: TimerFire<A>) => Effect.Effect<void, never, never>,
+    handler: (fire: TimerFire<A>) => Effect.Effect<void, unknown, never>,
   ) => Effect.Effect<void>;
   readonly schedule: <A>(
     timer: TimerMetadata<A>,
@@ -339,7 +339,7 @@ export const TimerHostRuntime: Layer.Layer<TimerHost> = Layer.effect(
 export const subscribe = <A>(
   name: string,
   payload: Schema.Codec<A, unknown, never, never>,
-  handler: (fire: TimerFire<A>) => Effect.Effect<void, never, Runtime>,
+  handler: (fire: TimerFire<A>) => Effect.Effect<void, unknown, Runtime>,
   options: Omit<TimerOptions<A>, "payload"> = {},
 ): Effect.Effect<Timer<A>, never, TimerHost> => {
   const source = captureSource(2);

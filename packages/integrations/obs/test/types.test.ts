@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import type { Runtime } from "@ballast/core";
+import type { ConnectionRequestError, Runtime } from "@ballast/core";
 import {
   GetSceneListResponseSchema,
   SetCurrentProgramSceneResponseSchema,
@@ -13,7 +13,7 @@ import {
  */
 const firstSceneName = (
   obs: ObsClient,
-): Effect.Effect<string, never, Runtime> =>
+): Effect.Effect<string, ConnectionRequestError, Runtime> =>
   obs.GetSceneList().pipe(
     Effect.map((response) => {
       const scene = response.scenes[0];

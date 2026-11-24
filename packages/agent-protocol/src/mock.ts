@@ -28,6 +28,7 @@ import type {
 } from "./logs.ts";
 import type {
   ManifestDatabaseUnit,
+  ManifestTopicUnit,
   ProjectConsentRequest,
   ProjectManifest,
   ProjectRequirement,
@@ -124,6 +125,34 @@ const mainProject: ProjectSummary = {
   unitCount: 8,
   createdAt: base - 30 * 24 * HOUR,
   updatedAt: base + 2 * HOUR,
+  issues: [
+    {
+      id: "unit-failed:redemption",
+      kind: "unit-failed",
+      severity: "error",
+      title: "redemption failed",
+      detail: "Twitch chat request failed before the redemption was redeemed",
+      unit: "redemption",
+      at: base + 2 * HOUR + 5 * MINUTE,
+    },
+    {
+      id: "change-not-applied",
+      kind: "change-not-applied",
+      severity: "error",
+      title: "Latest change not applied",
+      detail: "ballast.ts:42:3 — Type 'string' is not assignable to type 'number'.",
+      source: { file: "ballast.ts", line: 42, column: 3 },
+      at: base + 2 * HOUR + 10 * MINUTE,
+    },
+    {
+      id: "needs-consent",
+      kind: "needs-consent",
+      severity: "warning",
+      title: "Consent required",
+      detail: "Adds scopes: twitch:chat:read",
+      at: base + 2 * HOUR + 15 * MINUTE,
+    },
+  ],
 };
 
 const altProject: ProjectSummary = {
@@ -132,10 +161,72 @@ const altProject: ProjectSummary = {
   root: "/Users/streamer/Ballast/second",
   entry: "ballast.ts",
   enabled: false,
-  status: "stopped",
+  status: "needs-user",
   unitCount: 3,
   createdAt: base - 12 * 24 * HOUR,
   updatedAt: base + 55 * MINUTE,
+  issues: [
+    {
+      id: "connection-offline:obs/secondary",
+      kind: "connection-offline",
+      severity: "warning",
+      title: "Second PC (secondary) offline",
+      detail: "Connection obs/secondary is unconfigured",
+      integration: "obs",
+      slot: "secondary",
+      connectionId: "obs/secondary",
+      at: base + 54 * MINUTE,
+    },
+    {
+      id: "needs-binding:obs/main",
+      kind: "needs-binding",
+      severity: "warning",
+      title: "OBS (main) needs a connection",
+      detail: "The Main Channel project is already using OBS main",
+      integration: "obs",
+      slot: "main",
+      at: base + 54 * MINUTE + 30_000,
+    },
+    {
+      id: "start-failed",
+      kind: "start-failed",
+      severity: "error",
+      title: "Failed to start",
+      detail: "Worker 2 exited before reporting ready",
+      at: base + 55 * MINUTE,
+    },
+    {
+      id: "worker-exited",
+      kind: "worker-exited",
+      severity: "error",
+      title: "Worker exited",
+      detail: "worker exited: exit code 1",
+      at: base + 55 * MINUTE + 1_000,
+    },
+  ],
+};
+
+/** A project whose last worker exited; no auto-restart in the mock either. */
+const failedProject: ProjectSummary = {
+  id: "proj_failed",
+  name: "Failed Channel",
+  root: "/Users/streamer/Ballast/failed",
+  entry: "ballast.ts",
+  enabled: true,
+  status: "failed",
+  unitCount: 0,
+  createdAt: base - 6 * 24 * HOUR,
+  updatedAt: base + 40 * MINUTE,
+  issues: [
+    {
+      id: "worker-exited",
+      kind: "worker-exited",
+      severity: "error",
+      title: "Worker exited",
+      detail: "worker exited: exit code 1",
+      at: base + 40 * MINUTE,
+    },
+  ],
 };
 
 const param = (input: ParamView): ParamView => input;
@@ -414,7 +505,16 @@ const rotationManifest: ScriptManifest = {
       connectionStatus: "unconfigured",
     },
   ],
-  topics: [],
+  topics: [
+    {
+      integration: "obs",
+      slot: "secondary",
+      topic: "obs/CurrentProgramSceneChanged",
+      scopes: [],
+      onStale: "drop",
+      maxAgeMs: 60_000,
+    },
+  ],
   requests: [
     {
       integration: "obs",
@@ -889,8 +989,9 @@ const initialState = (): MockState => ({
   projects: new Map([
     [mainProject.id, mainProject],
     [altProject.id, altProject],
+    [failedProject.id, failedProject],
   ]),
-  projectOrder: [mainProject.id, altProject.id],
+  projectOrder: [mainProject.id, altProject.id, failedProject.id],
   scripts: initialScripts(),
   scriptOrder: [
     scriptKey(mainProject.id, "scripts/redeem-to-scene.ts"),
@@ -926,9 +1027,13 @@ const healthOf = (state: MockState): HealthStatus => {
     uptimeMs: Math.max(0, Date.now() - state.info.startedAt),
     projects: {
       total: state.projectOrder.length,
+      stopped: 0,
+      starting: 0,
       running: 1,
-      needsConsent: 0,
-      error: 0,
+      needsUser: 1,
+      failed: 1,
+      needsConsent: 1,
+      error: 1,
     },
     connections: {
       total: connections.length,
@@ -1012,6 +1117,7 @@ const topicUnitNames: ReadonlyMap<string, string> = new Map([
   ["twitch/channel.channel_points_custom_reward_redemption.add", "redemption"],
   ["twitch/channel.cheer", "cheer"],
   ["fake/tick", "tick"],
+  ["obs/CurrentProgramSceneChanged", "scene"],
 ]);
 
 /**
@@ -1038,16 +1144,39 @@ const projectManifestOf = (
   project: ProjectSummary,
 ): ProjectManifest => {
   const params = new Map<string, ParamView>();
+  const topics = new Map<string, ManifestTopicUnit>();
   for (const detail of projectScripts(state, project.id)) {
     for (const param of detail.manifest.params) {
       if (!params.has(param.key)) params.set(param.key, param);
     }
+    for (const topic of detail.manifest.topics) {
+      const name = topicUnitNames.get(topic.topic) ?? topic.topic;
+      if (topics.has(name)) continue;
+      topics.set(name, {
+        name,
+        integration: topic.integration,
+        slot: topic.slot,
+        topic: topic.topic,
+        scopes: topic.scopes,
+        onStale: topic.onStale,
+        maxAgeMs: topic.maxAgeMs,
+        ...(topic.condition === undefined ? {} : { condition: topic.condition }),
+        ...withSource(sourceFor(project.id, name)),
+      });
+    }
   }
   const base = emptyProjectManifest(project.id, project.entry ?? "ballast.ts");
-  if (project.id !== mainProject.id) return { ...base, params: [...params.values()] };
+  if (project.id !== mainProject.id) {
+    return {
+      ...base,
+      params: [...params.values()],
+      topics: [...topics.values()],
+    };
+  }
   return {
     ...base,
     params: [...params.values()],
+    topics: [...topics.values()],
     stores: [
       { name: "sceneSwitches", kind: "counter", initial: 0, ...withSource(mainSourceOf("sceneSwitches")) },
     ],
@@ -1178,27 +1307,44 @@ const handlers = Effect.gen(function* () {
     manifest: projectManifestOf(state, project),
     requirements: requirementsOf(state, project.id),
     units: unitsOf(state, project.id),
+    issues: project.issues,
   });
 
   const unitsOf = (
     state: MockState,
     projectId: string,
-  ): ReadonlyArray<UnitSummary> =>
-    projectScripts(state, projectId).flatMap((detail) => {
+  ): ReadonlyArray<UnitSummary> => {
+    const project = state.projects.get(projectId);
+    const failureFor = (name: string) =>
+      project?.issues.find(
+        (issue) => issue.kind === "unit-failed" && issue.unit === name,
+      );
+    return projectScripts(state, projectId).flatMap((detail) => {
       const status = detail.summary.status === "running" ? "active" : "waiting";
       return [
         ...detail.manifest.topics.map(
           (topic): UnitSummary => {
             const name = topicUnitNames.get(topic.topic) ?? topic.topic;
-            return { kind: "topic", name, status, ...withSource(sourceFor(projectId, name)) };
+            const failed = failureFor(name);
+            return {
+              kind: "topic",
+              name,
+              status: failed === undefined ? status : "failed",
+              ...(failed?.detail === undefined ? {} : { lastError: failed.detail }),
+              ...withSource(sourceFor(projectId, name)),
+            };
           },
         ),
         ...detail.manifest.timers.map(
-          (timer): UnitSummary => ({
-            kind: "timer",
-            name: timer.name,
-            status,
-          }),
+          (timer): UnitSummary => {
+            const failed = failureFor(timer.name);
+            return {
+              kind: "timer",
+              name: timer.name,
+              status: failed === undefined ? status : "failed",
+              ...(failed?.detail === undefined ? {} : { lastError: failed.detail }),
+            };
+          },
         ),
         ...detail.manifest.params.map(
           (param): UnitSummary => ({
@@ -1219,6 +1365,7 @@ const handlers = Effect.gen(function* () {
         }),
       ),
     );
+  };
 
   return {
     GetServiceInfo: () => Effect.map(Ref.get(store.state), (state) => state.info),
@@ -1240,6 +1387,7 @@ const handlers = Effect.gen(function* () {
           manifest: projectManifestOf(state, project),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
+          issues: project.issues,
         };
       }),
 
@@ -1252,6 +1400,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: project.issues,
           };
         }),
       ),
@@ -1269,6 +1418,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, next),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: next.issues,
           };
         }),
       ),
@@ -1286,6 +1436,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, next),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: next.issues,
           };
         }),
       ),
@@ -1299,6 +1450,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: project.issues,
           };
         }),
       ),
@@ -1312,6 +1464,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: project.issues,
           };
         }),
       ),
@@ -1333,6 +1486,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, next),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: next.issues,
           };
         }),
       ),
@@ -1412,6 +1566,7 @@ const handlers = Effect.gen(function* () {
           manifest: projectManifestOf(state, project),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
+          issues: project.issues,
               };
       }),
 
@@ -1428,6 +1583,7 @@ const handlers = Effect.gen(function* () {
             manifest: projectManifestOf(state, project),
             requirements: requirementsOf(state, project.id),
             units: unitsOf(state, project.id),
+            issues: project.issues,
                   };
         }),
       ),
@@ -1452,6 +1608,7 @@ const handlers = Effect.gen(function* () {
           unitCount: 0,
           createdAt: now,
           updatedAt: now,
+          issues: [],
         };
         const projects = new Map(state.projects);
         projects.set(id, project);
@@ -1466,6 +1623,7 @@ const handlers = Effect.gen(function* () {
           manifest: projectManifestOf(state, project),
           requirements: [],
           units: [],
+          issues: project.issues,
         };
       }),
 
@@ -1524,6 +1682,7 @@ const handlers = Effect.gen(function* () {
           unitCount: 0,
           createdAt: now,
           updatedAt: now,
+          issues: [],
         };
         const projects = new Map(state.projects);
         projects.set(project.id, project);
@@ -1553,6 +1712,7 @@ const handlers = Effect.gen(function* () {
           manifest: projectManifestOf(state, project),
           requirements: requirementsOf(state, project.id),
           units: unitsOf(state, project.id),
+          issues: project.issues,
         };
       }),
 

@@ -145,8 +145,11 @@ describe("service shutdown", () => {
         const added = yield* call(root, (client) =>
           client.AddProject({ path: project, name: "Shutdown" }),
         );
-        if (added.summary.lastError !== undefined) {
-          return yield* Effect.fail(new Error(added.summary.lastError));
+        const addError = added.summary.issues.find(
+          (issue) => issue.severity === "error",
+        );
+        if (addError !== undefined) {
+          return yield* Effect.fail(new Error(addError.detail ?? addError.title));
         }
         yield* call(root, (client) =>
           client.SetProjectBinding({

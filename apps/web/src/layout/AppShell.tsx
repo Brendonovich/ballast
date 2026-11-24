@@ -7,7 +7,10 @@ import { getDesktopBridge } from "../bridge.ts";
 import type { HomeRoute } from "../bridge.ts";
 import { useAgent } from "../state/context.tsx";
 import { connectionNeedsAttention } from "../lib/format.ts";
-import { projectDisplayStatus } from "../lib/project-status.ts";
+import { issueTarget } from "../lib/project-health.ts";
+import { focusConnection, requestProjectIntent } from "../lib/project-intent.ts";
+import type { ProjectIssue } from "@ballast/agent-protocol";
+import { ProjectStatusButton } from "./IssuesPopover.tsx";
 import { TRAFFIC_LIGHT_INSET, insetTitleBar } from "../lib/titlebar.ts";
 import { ConnectionsIcon, ProjectsIcon, SettingsIcon } from "../ui/icons.tsx";
 import {
@@ -179,6 +182,24 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
     navigate(projectPath(target));
   };
 
+  /**
+   * An issue picked in the status popover. Connection issues open
+   * Connections; everything else is shown by the project view.
+   */
+  const openIssue = (issue: ProjectIssue): void => {
+    const id = projectId();
+    if (id === undefined) return;
+    const target = issueTarget(issue);
+    if (target.kind === "none") return;
+    if (target.kind === "connection") {
+      focusConnection(target.connectionId);
+      navigate(projectSectionPath(id, "connections"));
+      return;
+    }
+    requestProjectIntent(id, { kind: "target", target });
+    if (section() !== undefined) navigate(projectPath(id));
+  };
+
   const reconnecting = (): boolean => store.watchStatus() === "reconnecting";
   const attention = (): number =>
     store.connections().filter((connection) => connectionNeedsAttention(connection)).length;
@@ -340,32 +361,9 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
                 onNewProject={() => setCreating(true)}
               />
               <Show when={store.project(projectId() ?? "")}>
-                {(project) => {
-                  const status = () =>
-                    projectDisplayStatus(
-                      project(),
-                      store.projectDetail(project().id),
-                      store.projectConsent(project().id),
-                    );
-                  return (
-                    <>
-                      <span
-                        data-testid="top-bar-status"
-                        class="hidden shrink-0 text-[11px] text-muted md:inline"
-                      >
-                        {status().label}
-                      </span>
-                      <span
-                        class="hidden min-w-0 flex-1 truncate font-mono text-[10px] text-faint xl:block"
-                        title={project().root}
-                      >
-                        {project().root}
-                      </span>
-                    </>
-                  );
-                }}
+                {(project) => <ProjectStatusButton project={project()} onSelect={openIssue} />}
               </Show>
-              <span class="min-w-0 flex-1 xl:hidden" />
+              <span class="min-w-0 flex-1" />
               <div ref={setActionSlot} data-testid="top-bar-actions" class="flex shrink-0 items-center" />
               <nav class="flex shrink-0 items-center gap-0.5" aria-label="Service">
                 <For each={sections}>

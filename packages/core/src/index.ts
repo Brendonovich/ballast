@@ -61,6 +61,19 @@ export type {
 export { ScriptPhase, currentPhase } from "./phase.ts";
 export { Runtime, provideRuntime } from "./runtime.ts";
 export type { RuntimeService } from "./runtime.ts";
+export {
+  ConnectionUnavailable,
+  ConnectionRequestFailed,
+  ConnectionUnavailableSchema,
+  ConnectionRequestFailedSchema,
+  ConnectionRequestErrorSchema,
+  connectionRequestError,
+  connectionRequestErrorFromWire,
+} from "./errors.ts";
+export type {
+  ConnectionRequestError,
+  ConnectionRequestErrorWire,
+} from "./errors.ts";
 export { Artifact, ArtifactDeclarationError } from "./artifact.ts";
 export type { ArtifactOptions } from "./artifact.ts";
 export * as Api from "./api.ts";

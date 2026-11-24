@@ -10,13 +10,15 @@ describe("WebSocket JSON topic", () => {
     Effect.gen(function* () {
       const User = Schema.Struct({ name: Schema.String });
       const values: Array<{ readonly name: string }> = [];
-      let handler: ((message: WebSocketMessage) => Effect.Effect<void>) | undefined;
+      let handler:
+        | ((message: WebSocketMessage) => Effect.Effect<void, unknown>)
+        | undefined;
 
       const host = Ballast.EventHost.of({
         subscribe: <A, I extends string>(
           _topic: Ballast.TopicMetadata<A, I>,
           _connection: Ballast.ConnectionRef<I>,
-          next: (event: A) => Effect.Effect<void>,
+          next: (event: A) => Effect.Effect<void, unknown>,
           _name: string,
         ) =>
           Effect.sync(() => {

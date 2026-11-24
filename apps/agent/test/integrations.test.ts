@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,22 +57,6 @@ export default Effect.gen(function* () {
   yield* WebSocket.Message.subscribe("client-message", upstream, (message) =>
     message.text === undefined ? Effect.void : Effect.log("ws client " + message.text),
   );
-});
-`;
-
-const httpClientScript = `import * as Ballast from "@ballast/core";
-import * as Http from "@ballast/module-http";
-import { Effect, Schema } from "effect";
-
-const Summary = Schema.Struct({ total: Schema.Number });
-
-export default Effect.gen(function* () {
-  const api = yield* Http.Client("api", { hosts: ["127.0.0.1"] });
-  yield* Ballast.run("http-loop", Effect.gen(function* () {
-    const response = yield* api.get("/summary", { schema: Summary });
-    yield* Effect.log("http total " + response.body.total);
-    yield* Effect.never;
-  }));
 });
 `;
 
@@ -235,7 +218,7 @@ const vtsHandler = (request: MockVtsRequest): MockVtsReply => {
 
 describe("integration drivers through the service", () => {
   it.live(
-    "VTS, WebSocket client/server and HTTP client/local webhook",
+    "VTS, WebSocket client/server and HTTP webhook",
     () =>
       Effect.gen(function* () {
         const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-drivers-")));
@@ -248,37 +231,12 @@ describe("integration drivers through the service", () => {
           "vts.ts": vtsScript,
           "ws-server.ts": wsServerScript,
           "ws-client.ts": wsClientScript,
-          "http-client.ts": httpClientScript,
           "http-webhook.ts": httpWebhookScript,
         });
 
         const vts = yield* Effect.acquireRelease(
           startMockVtsServer(vtsHandler),
           (server) => Effect.sync(() => server.server.close()),
-        );
-
-        const httpServer = yield* Effect.acquireRelease(
-          Effect.promise(() => new Promise<{ url: string; close: () => Promise<void> }>((resolve, reject) => {
-            const server = createServer((request, response) => {
-              if (request.url === "/summary") {
-                response.writeHead(200, { "content-type": "application/json" });
-                response.end(JSON.stringify({ total: 5 }));
-                return;
-              }
-              response.writeHead(404);
-              response.end();
-            });
-            server.on("error", reject);
-            server.listen(0, "127.0.0.1", () => {
-              const address = server.address();
-              if (address === null || typeof address === "string") return reject(new Error("no address"));
-              resolve({
-                url: "http://127.0.0.1:" + address.port,
-                close: () => new Promise<void>((done) => server.close(() => done())),
-              });
-            });
-          })),
-          (server) => Effect.promise(() => server.close()),
         );
 
         const wsServer = yield* Effect.acquireRelease(
@@ -338,27 +296,14 @@ describe("integration drivers through the service", () => {
         );
         const bridgeConnection = yield* call((client) =>
           client.ConfigureConnection({
-            connectionId: "websocket/bridge",
-            values: [
-              { key: "mode", value: "server" },
-              { key: "serverPort", value: "0" },
-              { key: "serverPath", value: "/bridge" },
-            ],
+            connectionId: "websocket-server/bridge",
+            values: [{ key: "port", value: "0" }],
           }),
         );
         const upstreamConnection = yield* call((client) =>
           client.ConfigureConnection({
-            connectionId: "websocket/upstream",
-            values: [
-              { key: "mode", value: "client" },
-              { key: "url", value: wsServer.url },
-            ],
-          }),
-        );
-        const apiConnection = yield* call((client) =>
-          client.ConfigureConnection({
-            connectionId: "http/api",
-            values: [{ key: "baseUrl", value: httpServer.url }],
+            connectionId: "websocket-client/upstream",
+            values: [{ key: "url", value: wsServer.url }],
           }),
         );
         const kofiConnection = yield* call((client) =>
@@ -375,9 +320,8 @@ describe("integration drivers through the service", () => {
         );
         for (const [integration, slot, instanceId] of [
           ["vts", "main", vtsConnection.id],
-          ["websocket", "bridge", bridgeConnection.id],
-          ["websocket", "upstream", upstreamConnection.id],
-          ["http", "api", apiConnection.id],
+          ["websocket-server", "bridge", bridgeConnection.id],
+          ["websocket-client", "upstream", upstreamConnection.id],
           ["http", "kofi", kofiConnection.id],
         ] as const) {
           yield* call((client) =>
@@ -409,7 +353,7 @@ describe("integration drivers through the service", () => {
 
         const bridge = yield* waitFor(
           "websocket bridge address",
-          call((client) => client.GetConnection({ connectionId: "websocket/bridge" })).pipe(
+          call((client) => client.GetConnection({ connectionId: "websocket-server/bridge" })).pipe(
             Effect.map((connection) => connection.detail),
             Effect.map((detail) => (detail?.includes("/bridge") === true ? detail : undefined)),
           ),
@@ -443,14 +387,6 @@ describe("integration drivers through the service", () => {
         yield* call((client) =>
           client.StreamLogs({ projectId }).pipe(
             Stream.filter((entry) => entry.message.includes("ws client hello client")),
-            Stream.take(1),
-            Stream.runCollect,
-          ),
-        ).pipe(Effect.timeout("20 seconds"));
-
-        yield* call((client) =>
-          client.StreamLogs({ projectId }).pipe(
-            Stream.filter((entry) => entry.message.includes("http total 5")),
             Stream.take(1),
             Stream.runCollect,
           ),

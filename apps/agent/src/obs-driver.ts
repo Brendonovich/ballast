@@ -13,6 +13,11 @@ import {
 import type { Scope } from "effect/Scope";
 import { Socket } from "effect/socket";
 import {
+  ConnectionUnavailable,
+  ConnectionRequestFailed,
+  type ConnectionRequestError,
+} from "@ballast/core";
+import {
   INTEGRATION,
   RequestSchemas,
   isRequestName,
@@ -37,7 +42,10 @@ export interface ObsDriver {
   /** Completes on the first successful Identify. Later reconnects keep it completed. */
   readonly ready: Effect.Effect<void>;
   /** Call an obs-websocket request by its protocol name. */
-  readonly request: (request: string, input: unknown) => Effect.Effect<unknown, string>;
+  readonly request: (
+    request: string,
+    input: unknown,
+  ) => Effect.Effect<unknown, ConnectionRequestError>;
   /** Replayed lifecycle status for the agent connection manager. */
   readonly statuses: Stream.Stream<ObsDriverStatus>;
 }
@@ -167,26 +175,52 @@ export const startObsDriver = (
 
     yield* Effect.forkScoped(loop);
 
-    const request = (request: string, input: unknown): Effect.Effect<unknown, string> =>
+    const request = (
+      request: string,
+      input: unknown,
+    ): Effect.Effect<unknown, ConnectionRequestError> =>
       Effect.gen(function* () {
         if (!isRequestName(request)) {
-          return yield* Effect.fail('Unknown OBS request "' + request + '"');
+          return yield* Effect.fail(
+            new ConnectionRequestFailed({
+              integration: INTEGRATION,
+              slot: options.slot,
+              message: 'Unknown OBS request "' + request + '"',
+            }),
+          );
         }
 
         const schemas = RequestSchemas[request];
         const decoded = yield* Effect.try({
           try: () => Schema.decodeUnknownSync(schemas.input)(input ?? {}),
           catch: (cause) =>
-            "Invalid " + request + " input: " + errorMessage(cause),
+            new ConnectionRequestFailed({
+              integration: INTEGRATION,
+              slot: options.slot,
+              message: "Invalid " + request + " input: " + errorMessage(cause),
+            }),
         });
 
         const client = yield* Ref.get(current);
         if (client === undefined) {
-          return yield* Effect.fail("OBS " + options.slot + " is not connected");
+          return yield* Effect.fail(
+            new ConnectionUnavailable({
+              integration: INTEGRATION,
+              slot: options.slot,
+              message: "OBS " + options.slot + " is not connected",
+            }),
+          );
         }
 
         return yield* client.request(request, decoded).pipe(
-          Effect.mapError((error) => errorMessage(error)),
+          Effect.mapError(
+            (error) =>
+              new ConnectionRequestFailed({
+                integration: INTEGRATION,
+                slot: options.slot,
+                message: errorMessage(error),
+              }),
+          ),
         );
       });
 
