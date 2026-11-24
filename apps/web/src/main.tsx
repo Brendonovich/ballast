@@ -7,6 +7,8 @@ import { createAgentRuntime, resolvePageTransport } from "./agent/client.ts";
 import type { TransportConfig } from "./agent/client.ts";
 import { errorMessage } from "./agent/errors.ts";
 import { createAgentStore } from "./state/store.ts";
+import type { AgentStore } from "./state/store.ts";
+import type { LogLevel } from "@ballast/agent-protocol";
 import { toast } from "./ui/toast.tsx";
 import { initialiseTheme } from "./ui/theme.ts";
 
@@ -27,6 +29,28 @@ const projectIdFromHash = (): string | undefined => {
   }
 };
 
+const logLevels: ReadonlyArray<LogLevel> = ["debug", "info", "warn", "error"];
+const isLogLevel = (value: unknown): value is LogLevel =>
+  logLevels.some((level) => level === value);
+
+/**
+ * Mock mode only: `window.ballastMock.log({ level, message })` appends a line
+ * to the current project's logs, so e2e tests can exercise live log UI.
+ */
+const installMockHooks = (store: AgentStore): void => {
+  Reflect.set(window, "ballastMock", {
+    log: (input: unknown): void => {
+      const projectId = projectIdFromHash();
+      if (projectId === undefined || typeof input !== "object" || input === null) return;
+      const level: unknown = Reflect.get(input, "level");
+      const message: unknown = Reflect.get(input, "message");
+      if (!isLogLevel(level) || typeof message !== "string") return;
+      const seq = (store.logs().at(-1)?.seq ?? 0) + 1;
+      store.receiveLog({ seq, at: Date.now(), level, source: "worker", message, projectId });
+    },
+  });
+};
+
 const mount = (view: () => JSX.Element): void => {
   rootElement.replaceChildren();
   render(view, rootElement);
@@ -42,6 +66,7 @@ const boot = async (): Promise<void> => {
       ...(logProjectId === undefined ? {} : { logProjectId }),
     });
     store.start();
+    if (transport.kind === "mock") installMockHooks(store);
     mount(() => <App store={store} />);
   } catch (error) {
     mount(() => <BootError transport={transport} message={errorMessage(error)} />);

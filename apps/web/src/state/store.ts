@@ -53,6 +53,11 @@ export interface AgentStore {
   readonly logs: Accessor<ReadonlyArray<LogEntry>>;
   readonly pending: Accessor<ReadonlyArray<string>>;
   readonly setLogProject: (projectId: string | undefined) => void;
+  /**
+   * Append a line as if the service had streamed it. Used by the mock-mode
+   * dev hook so e2e tests can produce project log lines on demand.
+   */
+  readonly receiveLog: (entry: LogEntry) => void;
   readonly projects: () => ReadonlyArray<ProjectSummary>;
   readonly project: (projectId: string) => ProjectSummary | undefined;
   readonly projectDetail: (projectId: string) => ProjectDetail | undefined;
@@ -530,6 +535,13 @@ export const createAgentStore = (
     logHandle = undefined;
   };
 
+  const appendLog = (entry: LogEntry): void => {
+    setLogs((current) => {
+      const next = [...current, entry];
+      return next.length > 2_000 ? next.slice(next.length - 2_000) : next;
+    });
+  };
+
   const startLogs = (): void => {
     stopLogs();
     setLogs([]);
@@ -557,10 +569,7 @@ export const createAgentStore = (
                 if (entry.seq <= lastLogSeq) return;
                 lastLogSeq = entry.seq;
                 setLogStatus("live");
-                setLogs((current) => {
-                  const next = [...current, entry];
-                  return next.length > 2_000 ? next.slice(next.length - 2_000) : next;
-                });
+                appendLog(entry);
               }),
             ),
           );
@@ -1153,6 +1162,7 @@ export const createAgentStore = (
     logs,
     pending,
     setLogProject,
+    receiveLog: appendLog,
     projects,
     project,
     projectDetail,

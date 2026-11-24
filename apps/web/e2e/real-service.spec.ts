@@ -403,6 +403,39 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.screenshot({ path: `screenshots/real-${theme}-04-source-jump.png` });
     }
 
+    // A ~1000-line file paints as plain text at once and is highlighted soon after.
+    await applyTheme(page, "dark");
+    const bigLines: Array<string> = [];
+    for (let index = 0; bigLines.length < 1_000; index += 1) {
+      // Valid on its own, so the project keeps planning cleanly.
+      bigLines.push(
+        `// Block ${index}: generated to measure highlighting.`,
+        `export const handler${index} = function* (): Generator<number, { index: number; label: string }> {`,
+        `  yield* [${index}];`,
+        `  return { index: ${index}, label: \`item \${${index} + 1}\` } satisfies { index: number; label: string };`,
+        "};",
+      );
+    }
+    await mkdir(join(info.projectsDir, projectSlug(mainName), "src"), { recursive: true });
+    await writeFile(join(info.projectsDir, projectSlug(mainName), "src", "big.ts"), bigLines.join("\n") + "\n", "utf8");
+    await page.getByTestId("source-panel").getByRole("button", { name: "Refresh source" }).click();
+    const bigFile = page.locator('[data-testid="source-file"][data-path="src/big.ts"]');
+    await expect(bigFile).toBeVisible({ timeout: 20_000 });
+    const clickedAt = Date.now();
+    await bigFile.click();
+    await expect(page.locator('[data-line="1000"]')).toBeAttached({ timeout: 10_000 });
+    const plainMs = Date.now() - clickedAt;
+    const highlighted = page.locator('[data-testid="code-view"][data-highlight="tokens"]');
+    await expect(highlighted).toHaveAttribute("data-highlight-ms", /\d+/, { timeout: 10_000 });
+    const highlightMs = Number(await highlighted.getAttribute("data-highlight-ms"));
+    test.info().annotations.push({
+      type: "source-paint",
+      description: `1000 lines: plain ${plainMs}ms after click, highlighted ${highlightMs}ms after load`,
+    });
+    console.log(`[source-paint] 1000 lines: plain ${plainMs}ms after click, highlighted ${highlightMs}ms after load`);
+    expect(highlightMs).toBeLessThan(3_000);
+    await page.locator('[data-testid="source-file"][data-path="ballast.ts"]').click();
+
     // Add a second OBS instance and capture the add form in both themes.
     await applyTheme(page, "light");
     await fillObsForm(page, "Backup OBS", obs.url);

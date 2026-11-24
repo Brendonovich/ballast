@@ -1,11 +1,13 @@
-import { For, Show, createEffect, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import type { LogEntry, LogLevel, UnitSummary } from "@ballast/agent-protocol";
 
 import { useAgent } from "../../state/context.tsx";
 import { formatTime, unitKindLabel } from "../../lib/format.ts";
+import { newLinesSince } from "../../lib/logs-layout.ts";
 import {
   ArrowDownIcon,
+  ChevronDownIcon,
   CloseIcon,
   MaximizeIcon,
   MinimizeIcon,
@@ -30,7 +32,9 @@ export const LogsPanel = (props: {
   readonly units: ReadonlyArray<UnitSummary>;
   readonly selected: UnitSummary | undefined;
   readonly onSelect: (unit: UnitSummary | undefined) => void;
+  /** Only the header shows: collapsed by the user, or source is maximized. */
   readonly collapsed: boolean;
+  readonly onToggleCollapsed: () => void;
   readonly maximized: boolean;
   readonly onToggleMaximize: () => void;
 }): JSX.Element => {
@@ -50,6 +54,30 @@ export const LogsPanel = (props: {
             (entry.unitKind === props.selected.kind &&
               entry.unitName === props.selected.name)),
       );
+
+  // While collapsed, count what arrived since, so the header can say so.
+  const [baseline, setBaseline] = createSignal<number>();
+  createEffect(() => {
+    if (!props.collapsed) {
+      setBaseline(undefined);
+      return;
+    }
+    if (baseline() !== undefined) return;
+    const latest = store
+      .logs()
+      .filter((entry) => entry.projectId === props.projectId)
+      .at(-1)?.seq;
+    setBaseline(latest ?? 0);
+  });
+  const newLines = createMemo(() => {
+    const since = baseline();
+    return since === undefined ? undefined : newLinesSince(projectLogs(), since);
+  });
+  const newLinesTone: Record<"info" | "warn" | "error", string> = {
+    info: "text-muted",
+    warn: "text-warning",
+    error: "text-danger",
+  };
 
   const selectedIndex = (): string => {
     const selected = props.selected;
@@ -101,7 +129,20 @@ export const LogsPanel = (props: {
       data-testid="log-panel"
     >
       <div class="flex h-8 shrink-0 items-center gap-2 border-b border-edge px-2.5 text-[11px] text-faint">
-        <span class="shrink-0 font-medium text-body">Logs</span>
+        <button
+          type="button"
+          data-testid="logs-collapse-toggle"
+          aria-expanded={!props.collapsed}
+          title={props.collapsed ? "Expand logs" : "Collapse logs"}
+          class="-ml-1 flex h-6 shrink-0 items-center gap-1 rounded px-1 hover:bg-hover"
+          onClick={() => props.onToggleCollapsed()}
+        >
+          <ChevronDownIcon
+            size={12}
+            class={cx("text-faint transition-transform", props.collapsed && "rotate-180")}
+          />
+          <span class="font-medium text-body">Logs</span>
+        </button>
         <StatusDot tone={store.logStatus() === "live" ? "success" : "warning"} />
         <span class="hidden sm:inline">
           {store.logStatus() === "live" ? "Live" : "Reconnecting"}
@@ -133,6 +174,22 @@ export const LogsPanel = (props: {
           >
             <CloseIcon size={11} />
           </IconButton>
+        </Show>
+        <Show when={newLines()}>
+          {(lines) => (
+            <Show when={lines().count > 0}>
+              <span
+                data-testid="logs-new-lines"
+                data-level={lines().level}
+                class={cx(
+                  "tabular shrink-0 rounded bg-layer-2 px-1.5 text-[10px] font-medium",
+                  newLinesTone[lines().level ?? "info"],
+                )}
+              >
+                {lines().count} new
+              </span>
+            </Show>
+          )}
         </Show>
         <span class="tabular ml-auto">
           {projectLogs().length === 1 ? "1 line" : `${projectLogs().length} lines`}

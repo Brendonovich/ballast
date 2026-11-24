@@ -73,12 +73,13 @@
   --v2-elevation-button-contrast: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.2);
 
   /* OpenCode syntax palette (light) */
-  --syntax-comment: #5c5c5c;
-  --syntax-keyword: #5c5c5c;
+  --syntax-comment: #6f6f6f;
+  --syntax-keyword: #c83d8b;
   --syntax-string: #006656;
-  --syntax-primitive: #fb4804;
-  --syntax-property: #c83d8b;
+  --syntax-primitive: #c44000;
+  --syntax-property: #007b80;
   --syntax-type: #596600;
+  --syntax-function: #3d5fc4;
   --syntax-constant: #007b80;
   --syntax-punctuation: #5c5c5c;
   --syntax-variable: #161616;
@@ -136,12 +137,13 @@
   --v2-elevation-button-contrast: 0 1px 2px rgb(0 0 0 / 0.4), 0 0 0 0.5px rgb(255 255 255 / 0.3);
 
   /* OpenCode syntax palette (dark) */
-  --syntax-comment: #aeaeae;
-  --syntax-keyword: #aeaeae;
+  --syntax-comment: #8a8a8a;
+  --syntax-keyword: #ff9ae2;
   --syntax-string: #00ceb9;
   --syntax-primitive: #ffba92;
-  --syntax-property: #ff9ae2;
+  --syntax-property: #93e9f6;
   --syntax-type: #ecf58c;
+  --syntax-function: #a9c4ff;
   --syntax-constant: #93e9f6;
   --syntax-punctuation: #aeaeae;
   --syntax-variable: #fafafa;
@@ -284,69 +286,6 @@
 
 .tabular {
   font-variant-numeric: tabular-nums;
-}
-
-/* highlight.js token classes mapped to OpenCode's syntax variables. */
-.code-view .hljs-comment,
-.code-view .hljs-quote {
-  color: var(--syntax-comment);
-  font-style: italic;
-}
-
-.code-view .hljs-keyword,
-.code-view .hljs-selector-tag,
-.code-view .hljs-literal,
-.code-view .hljs-section,
-.code-view .hljs-link,
-.code-view .hljs-doctag {
-  color: var(--syntax-keyword);
-}
-
-.code-view .hljs-string,
-.code-view .hljs-regexp,
-.code-view .hljs-addition,
-.code-view .hljs-attribute {
-  color: var(--syntax-string);
-}
-
-.code-view .hljs-number,
-.code-view .hljs-built_in,
-.code-view .hljs-symbol,
-.code-view .hljs-bullet {
-  color: var(--syntax-primitive);
-}
-
-.code-view .hljs-title,
-.code-view .hljs-name,
-.code-view .hljs-selector-id,
-.code-view .hljs-selector-class {
-  color: var(--syntax-property);
-}
-
-.code-view .hljs-type,
-.code-view .hljs-class .hljs-title {
-  color: var(--syntax-type);
-}
-
-.code-view .hljs-attr,
-.code-view .hljs-variable,
-.code-view .hljs-template-variable,
-.code-view .hljs-params {
-  color: var(--syntax-constant);
-}
-
-.code-view .hljs-meta {
-  color: var(--syntax-comment);
-}
-
-.code-view .hljs-operator,
-.code-view .hljs-punctuation {
-  color: var(--syntax-punctuation);
-}
-
-.code-view .hljs-variable.language_,
-.code-view .hljs-title.function_ {
-  color: var(--syntax-variable);
 }
 
 /* The macOS desktop top bar is the title bar: drag it, but not its controls. */

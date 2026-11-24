@@ -1,12 +1,11 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import type { ProjectFile, ProjectFileContent } from "@ballast/agent-protocol";
-import hljs from "highlight.js/lib/core";
-import json from "highlight.js/lib/languages/json";
-import typescript from "highlight.js/lib/languages/typescript";
 
 import { useAgent } from "../../state/context.tsx";
 import { formatDateTime, formatRelative } from "../../lib/format.ts";
+import { languageForPath, tokenizeSource } from "../../lib/highlight.ts";
+import type { SourceLanguage, SourceToken } from "../../lib/highlight.ts";
 import {
   CopyIcon,
   MaximizeIcon,
@@ -15,30 +14,14 @@ import {
 } from "../../ui/icons.tsx";
 import { Button, IconButton, Spinner, cx } from "../../ui/primitives.tsx";
 
-hljs.registerLanguage("typescript", typescript);
-hljs.registerLanguage("json", json);
-
 export interface SourceJump {
   readonly file: string;
   readonly line: number;
   readonly token: number;
 }
 
-const escapeHtml = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-
-const highlightLine = (line: string, language: ProjectFileContent["language"]): string => {
-  if (line === "") return " ";
-  if (language === "text") return escapeHtml(line);
-  try {
-    return hljs.highlight(line, { language, ignoreIllegals: true }).value || " ";
-  } catch {
-    return escapeHtml(line);
-  }
-};
+const languageOf = (file: ProjectFileContent): SourceLanguage | undefined =>
+  file.language === "text" ? undefined : (languageForPath(file.path) ?? file.language);
 
 const fileDepth = (path: string): number => path.split("/").length - 1;
 
@@ -73,6 +56,34 @@ export const SourcePanel = (props: {
   );
 
   const lines = createMemo(() => source()?.content.split("\n") ?? []);
+
+  // The file paints as plain text at once; tokens replace it when Shiki is
+  // ready. The whole file is tokenized together so multi-line strings and
+  // comments keep their colors.
+  const [tokens, setTokens] = createSignal<ReadonlyArray<ReadonlyArray<SourceToken>>>();
+  const [highlightMs, setHighlightMs] = createSignal<number>();
+  let highlightRequest = 0;
+  createEffect(() => {
+    const file = source();
+    const current = ++highlightRequest;
+    setTokens(undefined);
+    setHighlightMs(undefined);
+    if (file === undefined) return;
+    const language = languageOf(file);
+    if (language === undefined) return;
+    const started = performance.now();
+    void tokenizeSource(file.content, language)
+      .then((result) => {
+        if (current !== highlightRequest) return;
+        setTokens(result);
+        requestAnimationFrame(() => {
+          if (current === highlightRequest) setHighlightMs(Math.round(performance.now() - started));
+        });
+      })
+      .catch(() => {
+        // Plain text stays; highlighting is cosmetic.
+      });
+  });
 
   const scrollToLine = (line: number): void => {
     const scroller = codeScroller;
@@ -262,9 +273,14 @@ export const SourcePanel = (props: {
               </div>
             }
           >
-            {(value) => (
+            {(_file) => (
               <div ref={codeScroller} class="min-h-0 flex-1 overflow-auto bg-canvas">
-                <div class="code-view min-w-max py-2 font-mono text-[12px] leading-5">
+                <div
+                  data-testid="code-view"
+                  data-highlight={tokens() === undefined ? "plain" : "tokens"}
+                  data-highlight-ms={highlightMs()}
+                  class="code-view min-w-max py-2 font-mono text-[12px] leading-5"
+                >
                   <For each={lines()}>
                     {(line, index) => {
                       const lineNumber = (): number => index() + 1;
@@ -281,10 +297,24 @@ export const SourcePanel = (props: {
                           <span class="w-12 shrink-0 select-none pr-2 text-right text-faint">
                             {lineNumber()}
                           </span>
-                          <code
-                            class="block whitespace-pre px-3 text-body"
-                            innerHTML={highlightLine(line, value().language)}
-                          />
+                          <code class="block whitespace-pre px-3 text-[var(--syntax-variable)]">
+                            <Show when={tokens()?.[index()]} fallback={line === "" ? " " : line}>
+                              {(lineTokens) => (
+                                <Show when={lineTokens().length > 0} fallback=" ">
+                                  <For each={lineTokens()}>
+                                    {(token) => (
+                                      <span
+                                        style={token.color === undefined ? undefined : { color: token.color }}
+                                        class={token.italic ? "italic" : undefined}
+                                      >
+                                        {token.content}
+                                      </span>
+                                    )}
+                                  </For>
+                                </Show>
+                              )}
+                            </Show>
+                          </code>
                         </div>
                       );
                     }}

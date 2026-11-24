@@ -43,12 +43,17 @@ import type { SourceJump } from "./project/SourcePanel.tsx";
 import { ProjectNavigator } from "./project/ProjectNavigator.tsx";
 import { buildOutline, unitKey } from "../lib/outline.ts";
 import type { OutlineItem } from "../lib/outline.ts";
+import {
+  DEFAULT_LOGS_LAYOUT,
+  clampSplit,
+  logsStorageKey,
+  parseLogsLayout,
+} from "../lib/logs-layout.ts";
+import type { LogsLayout } from "../lib/logs-layout.ts";
 import { ConnectionDialog } from "./connections/ConnectionDialog.tsx";
 import { ArtifactPanel } from "./project/ArtifactPanel.tsx";
 
-const SPLIT_KEY = "ballast.projectSplit";
 const SIDEBAR_KEY = "ballast.projectSidebarCollapsed";
-const DEFAULT_SPLIT = 0.58;
 
 const safeDecode = (value: string): string => {
   try {
@@ -58,19 +63,17 @@ const safeDecode = (value: string): string => {
   }
 };
 
-const readSplit = (): number => {
-  if (typeof window === "undefined") return DEFAULT_SPLIT;
+const readLogsLayout = (projectId: string): LogsLayout => {
   try {
-    const value = Number(window.localStorage.getItem(SPLIT_KEY));
-    return Number.isFinite(value) && value >= 0.22 && value <= 0.82 ? value : DEFAULT_SPLIT;
+    return parseLogsLayout(window.localStorage.getItem(logsStorageKey(projectId)));
   } catch {
-    return DEFAULT_SPLIT;
+    return DEFAULT_LOGS_LAYOUT;
   }
 };
 
-const writeSplit = (value: number): void => {
+const writeLogsLayout = (projectId: string, layout: LogsLayout): void => {
   try {
-    window.localStorage.setItem(SPLIT_KEY, String(value));
+    window.localStorage.setItem(logsStorageKey(projectId), JSON.stringify(layout));
   } catch {
     // Non-critical.
   }
@@ -122,7 +125,12 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
       .replace(/^\s*[—-]\s*/, "");
   };
 
-  const [split, setSplit] = createSignal(readSplit());
+  // The screen remounts per project, so the layout is read once for it.
+  const initialLogs = readLogsLayout(safeDecode(props.projectId));
+  const [split, setSplit] = createSignal(initialLogs.split);
+  const [logsCollapsed, setLogsCollapsed] = createSignal(initialLogs.collapsed);
+  const saveLogsLayout = (): void =>
+    writeLogsLayout(projectId(), { collapsed: logsCollapsed(), split: split() });
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(readSidebar());
   const [maximized, setMaximized] = createSignal<"source" | "logs">();
   const [selectedUnit, setSelectedUnit] = createSignal<UnitSummary>();
@@ -221,7 +229,28 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   };
 
   const toggleMaximize = (pane: "source" | "logs"): void => {
+    // Maximizing collapsed logs opens them; the split is unchanged underneath.
+    if (pane === "logs" && logsCollapsed()) {
+      setLogsCollapsed(false);
+      saveLogsLayout();
+      setMaximized("logs");
+      return;
+    }
     setMaximized((current) => (current === pane ? undefined : pane));
+  };
+
+  /** Logs show only their header while collapsed or while source is maximized. */
+  const logsHidden = (): boolean => maximized() === "source" || logsCollapsed();
+
+  const toggleLogsCollapsed = (): void => {
+    if (logsHidden()) {
+      setMaximized(undefined);
+      setLogsCollapsed(false);
+    } else {
+      setMaximized(undefined);
+      setLogsCollapsed(true);
+    }
+    saveLogsLayout();
   };
 
   const openHome = (): void => {
@@ -288,20 +317,20 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     const rect = splitArea.getBoundingClientRect();
     const move = (moveEvent: PointerEvent): void => {
       const ratio = (moveEvent.clientY - rect.top) / rect.height;
-      setSplit(Math.min(0.82, Math.max(0.22, ratio)));
+      setSplit(clampSplit(ratio));
     };
     const end = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
-      writeSplit(split());
+      saveLogsLayout();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
   };
 
   const resetSplit = (): void => {
-    setSplit(DEFAULT_SPLIT);
-    writeSplit(DEFAULT_SPLIT);
+    setSplit(DEFAULT_LOGS_LAYOUT.split);
+    saveLogsLayout();
   };
 
   const start = async (): Promise<void> => {
@@ -356,14 +385,16 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   };
 
   const sourceStyle = (): JSX.CSSProperties => {
-    if (maximized() === "source") return { flex: "1 1 0%" };
+    if (maximized() === "source" || (logsCollapsed() && maximized() !== "logs")) {
+      return { flex: "1 1 0%" };
+    }
     if (maximized() === "logs") return { height: "32px", flex: "0 0 32px" };
     return { "flex-grow": split(), "flex-basis": "0%", "min-height": "96px" };
   };
 
   const logsStyle = (): JSX.CSSProperties => {
     if (maximized() === "logs") return { flex: "1 1 0%" };
-    if (maximized() === "source") return { height: "32px", flex: "0 0 32px" };
+    if (logsHidden()) return { height: "32px", flex: "0 0 32px" };
     return { "flex-grow": 1 - split(), "flex-basis": "0%", "min-height": "96px" };
   };
 
@@ -549,7 +580,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                         onToggleMaximize={() => toggleMaximize("source")}
                       />
                     </div>
-                    <Show when={maximized() === undefined}>
+                    <Show when={maximized() === undefined && !logsCollapsed()}>
                       <div
                         role="separator"
                         aria-orientation="horizontal"
@@ -568,7 +599,8 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                         units={units()}
                         selected={selectedUnit()}
                         onSelect={filterLogs}
-                        collapsed={maximized() === "source"}
+                        collapsed={logsHidden()}
+                        onToggleCollapsed={toggleLogsCollapsed}
                         maximized={maximized() === "logs"}
                         onToggleMaximize={() => toggleMaximize("logs")}
                       />

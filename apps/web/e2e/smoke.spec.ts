@@ -332,8 +332,11 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await page.mouse.up();
   const sourceAfter = await boxOf(page.getByTestId("source-panel"));
   expect(sourceAfter.height).toBeGreaterThan(sourceBefore.height + 40);
-  const storedSplit = await page.evaluate(() => localStorage.getItem("ballast.projectSplit"));
-  expect(storedSplit === null ? 0 : Number(storedSplit)).toBeGreaterThan(0.58);
+  const storedLogs = await page.evaluate(() => localStorage.getItem("ballast.projectLogs.proj_main"));
+  const storedSplit: unknown = storedLogs === null ? null : JSON.parse(storedLogs);
+  expect(
+    typeof storedSplit === "object" && storedSplit !== null ? Reflect.get(storedSplit, "split") : 0,
+  ).toBeGreaterThan(0.58);
 
   // Maximize/restore each pane; Esc restores.
   await page.getByTestId("source-maximize").click();
@@ -447,7 +450,27 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-03-project.png` });
   await page.screenshot({ path: `screenshots/${theme}-13-outline-collapsed.png` });
+  await expect(page.locator('[data-testid="code-view"][data-highlight="tokens"]')).toBeVisible();
   await page.screenshot({ path: `screenshots/${theme}-16-top-bar.png` });
+  await page.screenshot({ path: `screenshots/${theme}-20-source-highlight.png` });
+  const codeBox = await boxOf(page.getByTestId("code-view"));
+  await page.screenshot({
+    path: `screenshots/${theme}-20-source-highlight-crop.png`,
+    clip: { x: codeBox.x, y: codeBox.y, width: 700, height: 360 },
+  });
+
+  // Logs collapsed to their header, with new lines counted.
+  await page.getByTestId("logs-collapse-toggle").click();
+  await mockLog(page, "info", "tick 4");
+  await mockLog(page, "warn", "OBS scene list is stale");
+  await expect(page.getByTestId("logs-new-lines")).toHaveText("2 new");
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-19-logs-collapsed.png` });
+  await page.screenshot({
+    path: `screenshots/${theme}-19-logs-collapsed-strip.png`,
+    clip: { x: 0, y: 900, width: 1440, height: 100 },
+  });
+  await page.getByTestId("logs-collapse-toggle").click();
   await page.screenshot({
     path: `screenshots/${theme}-16-top-bar-strip.png`,
     clip: { x: 0, y: 0, width: 1440, height: 120 },
@@ -654,6 +677,170 @@ test("the project switcher re-scopes the window, lists projects and creates one"
   await page.getByTestId("project-switcher-all").click();
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   await expect(page.getByTestId("project-row")).toHaveCount(3);
+  expect(errors).toEqual([]);
+});
+
+test("source highlighting is consistent and keeps line jumps", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await useTheme(page, "dark");
+  await openProjects(page);
+  await openProject(page, "Main Channel");
+  const code = page.locator('[data-testid="code-view"][data-highlight="tokens"]');
+  await expect(code).toBeVisible();
+  await expect(code).toHaveAttribute("data-highlight-ms", /\d+/);
+
+  // Every token text maps to the set of colors it is painted with.
+  const colors = await code.evaluate((element) => {
+    const map: Record<string, Array<string>> = {};
+    for (const span of element.querySelectorAll("code span")) {
+      const text = (span.textContent ?? "").trim();
+      if (text === "") continue;
+      const color = getComputedStyle(span).color;
+      // Keys are recorded as "key:" so member access (event.reward.title) stays separate.
+      const next = (span.nextElementSibling?.textContent ?? "").trim();
+      const key = next.startsWith(":") ? `${text}:` : text;
+      const list = map[key] ?? [];
+      if (!list.includes(color)) list.push(color);
+      map[key] = list;
+    }
+    return map;
+  });
+  const one = (text: string): string => {
+    const list = colors[text] ?? [];
+    expect(list, text).toHaveLength(1);
+    return list[0] ?? "";
+  };
+  // yield* and function* are keywords like export/default/satisfies.
+  expect(one("yield*")).toBe(one("function*"));
+  expect(one("export")).toBe(one("yield*"));
+  expect(one("satisfies")).toBe(one("yield*"));
+  // Namespaces are one color wherever they appear.
+  expect(one("Ballast")).toBe(one("OBS"));
+  // Keys are one color, distinct from keywords and strings.
+  expect(one("title:")).toBe(one("default:"));
+  expect(one("title:")).toBe(one("entry:"));
+  expect(one("title:")).not.toBe(one("yield*"));
+
+  // The outline still highlights and scrolls to a declaration.
+  await page.getByTestId("outline-toggle").click();
+  await page
+    .locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="cheer"]')
+    .click();
+  const target = page.locator('[data-highlighted="true"]');
+  await expect(target).toContainText('subscribe("cheer"');
+  await expect(target).toBeInViewport();
+  await expect(target.locator("span").first()).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+/** Mock mode: append a line to the current project's logs. */
+const mockLog = (page: Page, level: "info" | "warn" | "error", message: string): Promise<void> =>
+  page.evaluate(
+    ({ level: value, message: text }) => {
+      const hooks: unknown = Reflect.get(window, "ballastMock");
+      if (typeof hooks !== "object" || hooks === null) throw new Error("ballastMock is missing");
+      const log: unknown = Reflect.get(hooks, "log");
+      if (typeof log !== "function") throw new Error("ballastMock.log is missing");
+      log.call(hooks, { level: value, message: text });
+    },
+    { level, message },
+  );
+
+test("the logs panel collapses to its header and counts new lines", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await useTheme(page, "dark");
+  await openProjects(page);
+  await openProject(page, "Main Channel");
+  const logs = page.getByTestId("log-panel");
+  const toggle = page.getByTestId("logs-collapse-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(await cursorOf(toggle)).toBe("default");
+  const sourceOpen = await boxOf(page.getByTestId("source-panel"));
+
+  // Collapse: only the header bar stays, the source pane takes the height.
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("log-line")).toHaveCount(0);
+  await expect(page.getByTestId("project-splitter")).toHaveCount(0);
+  await expect.poll(async () => (await boxOf(logs)).height).toBeLessThan(40);
+  expect((await boxOf(page.getByTestId("source-panel"))).height).toBeGreaterThan(
+    sourceOpen.height + 150,
+  );
+  await expect(logs).toContainText("Live");
+  await expect(page.getByTestId("logs-new-lines")).toHaveCount(0);
+
+  // New lines are counted, tinted by the worst level.
+  await mockLog(page, "info", "collapsed info");
+  await expect(page.getByTestId("logs-new-lines")).toHaveText("1 new");
+  await expect(page.getByTestId("logs-new-lines")).toHaveAttribute("data-level", "info");
+  await mockLog(page, "warn", "collapsed warn");
+  await expect(page.getByTestId("logs-new-lines")).toHaveText("2 new");
+  await expect(page.getByTestId("logs-new-lines")).toHaveAttribute("data-level", "warn");
+  await mockLog(page, "error", "collapsed error");
+  await mockLog(page, "info", "after the error");
+  await expect(page.getByTestId("logs-new-lines")).toHaveText("4 new");
+  await expect(page.getByTestId("logs-new-lines")).toHaveAttribute("data-level", "error");
+
+  // An outline item filters the logs without opening them; the header shows the filter.
+  await page.getByTestId("outline-toggle").click();
+  await page
+    .locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="redemption"]')
+    .click();
+  await expect(page.locator('[data-highlighted="true"]')).toContainText('subscribe("redemption"');
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
+    "Topic · redemption",
+  );
+  await expect(page.getByTestId("log-filter-clear")).toBeVisible();
+  // The new lines were not from that unit, so the count follows the filter.
+  await expect(page.getByTestId("logs-new-lines")).toHaveCount(0);
+  await page.getByTestId("log-filter-clear").click();
+  await expect(page.getByTestId("logs-new-lines")).toHaveText("4 new");
+
+  // Collapsed state persists for this project across a reload.
+  await page.reload();
+  await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("project-splitter")).toHaveCount(0);
+
+  // Expanding restores the previous height and the resize handle.
+  await page.getByTestId("logs-collapse-toggle").click();
+  await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("project-splitter")).toBeVisible();
+  await expect
+    .poll(async () => Math.abs((await boxOf(page.getByTestId("source-panel"))).height - sourceOpen.height))
+    .toBeLessThan(4);
+  await expect(page.getByTestId("log-line").first()).toBeVisible();
+  await expect(page.getByTestId("logs-new-lines")).toHaveCount(0);
+
+  // The splitter still resizes, and the new height survives collapse/expand.
+  const splitter = await boxOf(page.getByTestId("project-splitter"));
+  await page.mouse.move(splitter.x + splitter.width / 2, splitter.y + splitter.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(splitter.x + splitter.width / 2, splitter.y - 120, { steps: 5 });
+  await page.mouse.up();
+  const resized = await boxOf(page.getByTestId("source-panel"));
+  expect(resized.height).toBeLessThan(sourceOpen.height - 60);
+  await page.getByTestId("logs-collapse-toggle").click();
+  await page.getByTestId("logs-collapse-toggle").click();
+  await expect
+    .poll(async () => Math.abs((await boxOf(page.getByTestId("source-panel"))).height - resized.height))
+    .toBeLessThan(4);
+
+  // Maximize still works, including straight from collapsed.
+  await page.getByTestId("logs-collapse-toggle").click();
+  await page.getByTestId("logs-maximize").click();
+  await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(async () => (await boxOf(page.getByTestId("source-panel"))).height).toBeLessThan(50);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("project-splitter")).toBeVisible();
+  await page.getByTestId("source-maximize").click();
+  await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "false");
+  await page.getByTestId("logs-collapse-toggle").click();
+  await expect(page.getByTestId("project-splitter")).toBeVisible();
+
+  // Another project keeps its own layout.
+  await page.goto("/#/projects/proj_alt");
+  await expect(page.getByTestId("logs-collapse-toggle")).toHaveAttribute("aria-expanded", "true");
   expect(errors).toEqual([]);
 });
 

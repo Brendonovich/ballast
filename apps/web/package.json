@@ -15,7 +15,7 @@
     "@ballast/agent-protocol": "workspace:*",
     "@solidjs/router": "catalog:",
     "effect": "catalog:",
-    "highlight.js": "catalog:",
+    "shiki": "4.6.0",
     "solid-js": "catalog:"
   },
   "devDependencies": {
