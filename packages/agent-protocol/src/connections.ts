@@ -79,6 +79,8 @@ export const ConnectionSummary = Schema.Struct({
   account: Schema.optionalKey(ConnectionAccount),
   detail: Schema.optionalKey(Schema.String),
   lastError: Schema.optionalKey(Schema.String),
+  /** When a disconnected connection will try again. */
+  nextRetryAt: Schema.optionalKey(Schema.Number),
   lastConnectedAt: Schema.optionalKey(Schema.Number),
   /**
    * A pending out-of-app approval, for example VTube Studio's Allow dialog or

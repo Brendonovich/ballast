@@ -142,6 +142,7 @@ interface ConnectionRecord {
   readonly status: ConnectionSummary["status"];
   readonly lastError: string | undefined;
   readonly lastConnectedAt: number | undefined;
+  readonly nextRetryAt: number | undefined;
   readonly identity: TwitchIdentity | undefined;
   readonly grantedScopes: ReadonlyArray<string>;
   readonly account: { readonly id: string; readonly login: string; readonly displayName?: string } | undefined;
@@ -301,6 +302,7 @@ const noneRecord = (
   status: "unconfigured",
   lastError: undefined,
   lastConnectedAt: undefined,
+  nextRetryAt: undefined,
   identity: undefined,
   grantedScopes: [],
   account: undefined,
@@ -557,7 +559,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 updateRecord(record.id, (current) => ({
                   ...current,
                   driver: undefined,
-                  status: current.integration === "twitch" ? "disconnected" : "disconnected",
+                  status: "disconnected",
+                  nextRetryAt: undefined,
                 })),
               ),
               Effect.asVoid,
@@ -635,7 +638,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           return requiredFieldsSet(record) ? "disconnected" : "unconfigured";
         }
         if (record.driver !== undefined) {
-          return record.status === "connecting" ? "connecting" : "connected";
+          return record.status;
         }
         return requiredFieldsSet(record) ? "disconnected" : "unconfigured";
       };
@@ -705,6 +708,9 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           ...(record.account === undefined ? {} : { account: record.account }),
           ...(detail === undefined ? {} : { detail }),
           ...(record.lastError === undefined ? {} : { lastError: record.lastError }),
+          ...(record.nextRetryAt === undefined
+            ? {}
+            : { nextRetryAt: record.nextRetryAt }),
           ...(record.lastConnectedAt === undefined
             ? {}
             : { lastConnectedAt: record.lastConnectedAt }),
@@ -1191,24 +1197,68 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             cloudApi: undefined,
             cloudConnectionId: undefined,
           };
-          yield* Effect.gen(function* () {
-            yield* driver.ready;
-            yield* updateRecord(record.id, (current) =>
-              current.driver === state
-                ? { ...current, status: "connected", lastConnectedAt: Date.now() }
-                : current,
-            );
-            yield* logs.write({
-              level: "info",
-              source: "connection",
-              message: `${record.id} connected (${resolved.url})`,
-            });
-          }).pipe(Effect.forkIn(scope));
+          yield* driver.statuses.pipe(
+            Stream.runForEach((status) =>
+              Effect.gen(function* () {
+                const lastError =
+                  status._tag === "disconnected"
+                    ? status.error +
+                      " · retrying at " +
+                      new Date(status.retryAt).toLocaleTimeString()
+                    : status._tag === "error"
+                      ? status.error
+                      : undefined;
+                yield* updateRecord(record.id, (current) =>
+                  current.driver === state
+                    ? {
+                        ...current,
+                        status:
+                          status._tag === "connected"
+                            ? "connected"
+                            : status._tag === "error"
+                              ? "error"
+                              : status._tag === "disconnected"
+                                ? "disconnected"
+                                : "connecting",
+                        lastError,
+                        nextRetryAt:
+                          status._tag === "disconnected" ? status.retryAt : undefined,
+                        detailText:
+                          status._tag === "connected"
+                            ? resolved.url
+                            : status._tag === "disconnected" || status._tag === "error"
+                              ? status.error
+                              : current.detailText,
+                        ...(status._tag === "connected"
+                          ? { lastConnectedAt: Date.now() }
+                          : {}),
+                      }
+                    : current,
+                );
+                if (status._tag === "connected") {
+                  yield* logs.write({
+                    level: "info",
+                    source: "connection",
+                    message: `${record.id} connected (${resolved.url})`,
+                  });
+                }
+                if (status._tag === "error") {
+                  yield* logs.write({
+                    level: "error",
+                    source: "connection",
+                    message: `${record.id}: ${status.error}`,
+                  });
+                }
+              }),
+            ),
+            Effect.forkIn(scope),
+          );
           return yield* updateRecord(record.id, (current) => ({
             ...current,
             driver: state,
             status: "connecting",
             lastError: undefined,
+            nextRetryAt: undefined,
           }));
         });
 

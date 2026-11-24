@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
-import { DEFAULT_TWITCH_CALLBACK_PORT, type ProjectDetail } from "@ballast/agent-protocol";
+import {
+  DEFAULT_TWITCH_CALLBACK_PORT,
+  type ConnectionSummary,
+  type ProjectDetail,
+} from "@ballast/agent-protocol";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
@@ -426,6 +430,76 @@ describe("connection instances", () => {
       yield* call(root, (client) => client.StartProject({ projectId: added.summary.id }));
       const running = yield* call(root, (client) => client.GetProject({ projectId: added.summary.id }));
       expect(running.requirements[0]?.boundInstanceId).toBe(instance.id);
+    }),
+    120_000,
+  );
+  it.live("reports an unreachable OBS as disconnected and recovers", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-obs-down-")));
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore));
+      const service = yield* startService(root);
+      yield* Effect.addFinalizer(() => service.stop());
+
+      const obs = yield* Effect.promise(() => startMockObsServer());
+      const port = obs.port;
+
+      const instance = yield* call(root, (client) =>
+        client.CreateConnection({
+          integration: "obs",
+          label: "Down OBS",
+          config: { url: "ws://127.0.0.1:" + String(port) },
+        }),
+      );
+      const project = yield* makeProject(root, "obs-down");
+      const added = yield* call(root, (client) =>
+        client.AddProject({ path: project, name: "OBS Down" }),
+      );
+      yield* call(root, (client) =>
+        client.SetProjectBinding({
+          projectId: added.summary.id,
+          integration: "obs",
+          slot: "main",
+          instanceId: instance.id,
+        }),
+      );
+      yield* call(root, (client) => client.StartProject({ projectId: added.summary.id }));
+      yield* call(root, (client) => approve(client, added.summary.id));
+      const running = yield* call(root, (client) =>
+        client.GetProject({ projectId: added.summary.id }),
+      );
+      expect(running.summary.status).toBe("running");
+
+      yield* Effect.promise(() => obs.close());
+
+      const waitForStatus = (status: string): Effect.Effect<ConnectionSummary, unknown> =>
+        Effect.gen(function* () {
+          for (let attempt = 0; attempt < 150; attempt += 1) {
+            const listed = yield* call(root, (client) => client.ListConnections());
+            const connection = listed.connections.find((entry) => entry.id === instance.id);
+            if (connection?.status === status) return connection;
+            yield* Effect.sleep("100 millis");
+          }
+          return yield* Effect.fail(new Error("connection never became " + status));
+        });
+
+      const down = yield* waitForStatus("disconnected");
+      expect(down.lastError).toContain("OBS not reachable");
+      expect(typeof down.nextRetryAt).toBe("number");
+
+      // Do not flip back to connecting on each backoff attempt.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.sleep("200 millis");
+        const listed = yield* call(root, (client) => client.ListConnections());
+        const connection = listed.connections.find((entry) => entry.id === instance.id);
+        expect(connection?.status).toBe("disconnected");
+      }
+
+      const restarted = yield* Effect.promise(() => startMockObsServer({ port }));
+      yield* Effect.addFinalizer(() => Effect.promise(() => restarted.close()));
+
+      const up = yield* waitForStatus("connected");
+      expect(up.lastError).toBeUndefined();
+      expect(up.nextRetryAt).toBeUndefined();
     }),
     120_000,
   );

@@ -60,6 +60,21 @@ const IncomingPacketSchema = Schema.Union([
 
 type IncomingPacket = Schema.Schema.Type<typeof IncomingPacketSchema>;
 
+const AUTH_FAILURE = /(?:4009|Authentication failed|requires a password)/i;
+
+/** A configuration problem that retrying cannot fix. */
+export class ObsAuthenticationError extends Error {
+  readonly _tag = "ObsAuthenticationError";
+  constructor(message: string) {
+    super(message);
+    this.name = "ObsAuthenticationError";
+  }
+}
+
+export const isObsAuthenticationError = (error: unknown): boolean =>
+  error instanceof ObsAuthenticationError ||
+  (error instanceof Error && AUTH_FAILURE.test(error.message));
+
 export interface ObsEventPacket {
   readonly eventType: string;
   readonly eventIntent: number;
@@ -165,7 +180,9 @@ export const connectObsSocket = (
           const authentication = packet.d.authentication;
           if (authentication !== undefined && password === undefined) {
             return Effect.fail(
-              new Error("OBS requires a password, but none was provided (use --connection-secret or BALLAST_OBS_<SLOT>_PASSWORD)"),
+              new ObsAuthenticationError(
+                "OBS requires a password, but none was provided (use --connection-secret or BALLAST_OBS_<SLOT>_PASSWORD)",
+              ),
             );
           }
 
@@ -234,9 +251,12 @@ export const connectObsSocket = (
     yield* Effect.forkScoped(
       readLoop.pipe(
         Effect.onExit((exit) => {
-          const error = Exit.isFailure(exit)
-            ? new Error("OBS WebSocket connection closed: " + errorMessage(Cause.squash(exit.cause)))
-            : new Error("OBS WebSocket connection closed");
+          const reason = Exit.isFailure(exit)
+            ? "OBS WebSocket connection closed: " + errorMessage(Cause.squash(exit.cause))
+            : "OBS WebSocket connection closed";
+          const error = isObsAuthenticationError(reason)
+            ? new ObsAuthenticationError(reason)
+            : new Error(reason);
           return Effect.sync(() => {
             failPending(error);
             Deferred.doneUnsafe(ready, Exit.fail(error));

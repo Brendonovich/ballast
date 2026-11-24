@@ -1,4 +1,15 @@
-import { Cause, Crypto, Deferred, Effect, Exit, Queue, Ref, Schema } from "effect";
+import {
+  Cause,
+  Crypto,
+  Deferred,
+  Effect,
+  Exit,
+  PubSub,
+  Queue,
+  Ref,
+  Schema,
+  Stream,
+} from "effect";
 import type { Scope } from "effect/Scope";
 import { Socket } from "effect/socket";
 import {
@@ -7,7 +18,18 @@ import {
   isRequestName,
   subscriptionMaskForTopics,
 } from "@ballast/module-obs";
-import { connectObsSocket } from "./obs-protocol.ts";
+import { connectObsSocket, isObsAuthenticationError } from "./obs-protocol.ts";
+
+/** Truthful lifecycle for the connection row and OBS.ConnectionState. */
+export type ObsDriverStatus =
+  | { readonly _tag: "connecting" }
+  | { readonly _tag: "connected"; readonly reconnected: boolean }
+  | {
+      readonly _tag: "disconnected";
+      readonly error: string;
+      readonly retryAt: number;
+    }
+  | { readonly _tag: "error"; readonly error: string };
 
 export interface ObsDriver {
   readonly slot: string;
@@ -16,6 +38,8 @@ export interface ObsDriver {
   readonly ready: Effect.Effect<void>;
   /** Call an obs-websocket request by its protocol name. */
   readonly request: (request: string, input: unknown) => Effect.Effect<unknown, string>;
+  /** Replayed lifecycle status for the agent connection manager. */
+  readonly statuses: Stream.Stream<ObsDriverStatus>;
 }
 
 export interface ObsDriverOptions {
@@ -49,6 +73,9 @@ export const startObsDriver = (
     const current = yield* Ref.make<
       import("./obs-protocol.ts").ObsSocketClient | undefined
     >(undefined);
+    const statuses = yield* PubSub.unbounded<ObsDriverStatus>({ replay: 8 });
+    const publishStatus = (status: ObsDriverStatus): Effect.Effect<void> =>
+      PubSub.publish(statuses, status).pipe(Effect.asVoid);
     const ready = yield* Deferred.make<void>();
     const connected = yield* Ref.make(false);
     const everConnected = yield* Ref.make(false);
@@ -72,8 +99,15 @@ export const startObsDriver = (
 
     const loop = Effect.gen(function* () {
       let attempt = 0;
+      let announcedAttempt = false;
 
       while (true) {
+        // Show `connecting` for the initial attempt only. Retries keep the
+        // truthful disconnected state, so the row never flickers each backoff.
+        if (!announcedAttempt) {
+          announcedAttempt = true;
+          yield* publishStatus({ _tag: "connecting" });
+        }
         console.log("[obs:" + options.slot + "] connecting to " + options.url);
         const result = yield* Effect.scoped(
           Effect.gen(function* () {
@@ -89,6 +123,7 @@ export const startObsDriver = (
             yield* Ref.set(connected, true);
             const reconnected = yield* Ref.getAndSet(everConnected, true);
             publishState("connected", reconnected);
+            yield* publishStatus({ _tag: "connected", reconnected });
             yield* Deferred.succeed(ready, undefined);
 
             yield* Effect.forkScoped(
@@ -108,14 +143,24 @@ export const startObsDriver = (
         if (yield* Ref.getAndSet(connected, false)) {
           publishState("disconnected", false);
         }
-        const reason = Exit.isFailure(result)
-          ? errorMessage(Cause.squash(result.cause))
-          : "connection closed";
+        const failure = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined;
+        const reason = failure === undefined ? "connection closed" : errorMessage(failure);
+        if (isObsAuthenticationError(failure)) {
+          const message =
+            "OBS authentication failed at " + options.url + ": " + reason;
+          console.error("[obs:" + options.slot + "] " + message + "; not retrying");
+          yield* publishStatus({ _tag: "error", error: message });
+          return;
+        }
+
         const delay = backoffMs(attempt);
         attempt += 1;
+        const retryAt = Date.now() + delay;
+        const message = "OBS not reachable at " + options.url + " (" + reason + ")";
         console.log(
-          "[obs:" + options.slot + "] " + reason + "; reconnecting in " + delay + "ms",
+          "[obs:" + options.slot + "] " + message + "; reconnecting in " + delay + "ms",
         );
+        yield* publishStatus({ _tag: "disconnected", error: message, retryAt });
         yield* Effect.sleep(delay);
       }
     });
@@ -150,5 +195,6 @@ export const startObsDriver = (
       url: options.url,
       ready: Deferred.await(ready),
       request,
+      statuses: Stream.fromPubSub(statuses),
     };
   });
