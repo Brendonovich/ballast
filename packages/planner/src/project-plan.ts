@@ -62,9 +62,12 @@ export const planProject = (
       ),
     );
     if (!checked.ok) {
+      const failures = checked.diagnostics.filter(
+        (diagnostic) => diagnostic.kind !== "config",
+      );
       const runtimeOnly =
-        checked.diagnostics.length > 0 &&
-        checked.diagnostics.every((diagnostic) =>
+        failures.length > 0 &&
+        failures.every((diagnostic) =>
           diagnostic.message.startsWith("TS_INIT_RUNTIME:"),
         );
       if (runtimeOnly) {
@@ -86,7 +89,7 @@ export const planProject = (
           }
         }
       }
-      const first = checked.diagnostics[0];
+      const first = failures[0] ?? checked.diagnostics[0];
       return yield* Effect.fail(
         new ProjectPlanError({
           message:

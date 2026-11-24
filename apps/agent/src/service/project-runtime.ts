@@ -37,7 +37,7 @@ import {
   type UnitSummary,
 } from "@ballast/agent-protocol";
 import { emptyManifest, type Manifest, type ParamManifest, type TimerManifest } from "@ballast/core";
-import { diffProject, planProject, resolveProjectEntry } from "@ballast/planner";
+import { decodeManifest, diffProject, planProject, resolveProjectEntry } from "@ballast/planner";
 import { bundleScript } from "../bundle.ts";
 import { startRuntimeSession } from "../runtime-session.ts";
 import { ProjectStores } from "./artifact-stores.ts";
@@ -176,35 +176,65 @@ const readSettings = (
   return { enabled: value["enabled"] === true, params };
   });
 
-const isProjectManifest = (value: unknown): value is Manifest => {
-  if (!isRecord(value) || !isRecord(value["project"])) return false;
-  return (
-    typeof value["project"]["id"] === "string" &&
-    typeof value["project"]["entry"] === "string" &&
-    Array.isArray(value["params"]) &&
-    Array.isArray(value["connections"]) &&
-    Array.isArray(value["topics"]) &&
-    Array.isArray(value["requests"]) &&
-    Array.isArray(value["unresolved"]) &&
-    Array.isArray(value["timers"]) &&
-    Array.isArray(value["workflows"]) &&
-    Array.isArray(value["runs"])
-  );
-};
+interface AppliedRead {
+  readonly applied: AppliedFile | undefined;
+  readonly error: string | undefined;
+}
+
+const quarantineApplied = (
+  path: Path.Path,
+  file: string,
+  reason: string,
+): Effect.Effect<string, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const quarantine = file + ".corrupt-" + Date.now();
+    const moved = yield* fs.rename(file, quarantine).pipe(
+      Effect.as(true),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+    return moved
+      ? `${path.basename(file)} was invalid (${reason}); moved it to ${path.basename(quarantine)}`
+      : `${path.basename(file)} was invalid (${reason}); could not quarantine it`;
+  });
 
 const readApplied = (
   project: ProjectRecord,
-): Effect.Effect<AppliedFile | undefined, never, FileSystem.FileSystem | Path.Path> =>
+): Effect.Effect<AppliedRead, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
-  const path = yield* Path.Path;
-  const value = yield* readJson(appliedPath(path, project)).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-  if (!isRecord(value) || !isProjectManifest(value["manifest"])) return undefined;
-  const appliedAt = value["appliedAt"];
-  return { version: 1, manifest: value["manifest"], appliedAt: typeof appliedAt === "number" ? appliedAt : Date.now() };
+    const path = yield* Path.Path;
+    const file = appliedPath(path, project);
+    const value = yield* readJson(file).pipe(
+      Effect.map((decoded) => ({ decoded })),
+      Effect.catch((error: Error) => Effect.succeed({ error: error.message })),
+    );
+    if ("error" in value) {
+      const message = yield* quarantineApplied(path, file, value.error);
+      return { applied: undefined, error: message };
+    }
+    if (value.decoded === undefined) return { applied: undefined, error: undefined };
+    if (!isRecord(value.decoded) || !isRecord(value.decoded["manifest"])) {
+      const message = yield* quarantineApplied(path, file, "manifest is missing");
+      return { applied: undefined, error: message };
+    }
+    let manifest: Manifest;
+    try {
+      manifest = decodeManifest(value.decoded["manifest"]);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      const message = yield* quarantineApplied(path, file, reason);
+      return { applied: undefined, error: message };
+    }
+    const appliedAt = value.decoded["appliedAt"];
+    return {
+      applied: {
+        version: 1,
+        manifest,
+        appliedAt: typeof appliedAt === "number" ? appliedAt : Date.now(),
+      },
+      error: undefined,
+    };
   });
-
 const readBindings = (
   project: ProjectRecord,
 ): Effect.Effect<
@@ -821,7 +851,16 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         const existing = yield* getRecord(project.id);
         if (existing !== undefined) return existing;
         const settings = yield* provide(readSettings(project));
-        const applied = yield* provide(readApplied(project));
+        const appliedRead = yield* provide(readApplied(project));
+        if (appliedRead.error !== undefined) {
+          yield* logs.write({
+            level: "warn",
+            source: "agent",
+            projectId: project.id,
+            message: "Could not load .ballast/applied.json: " + appliedRead.error,
+          });
+        }
+        const applied = appliedRead.applied;
         const bindings = yield* provide(readBindings(project));
         const record: ProjectRuntimeRecord = {
           project,
@@ -1229,7 +1268,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       }));
 
     const diagnosticOf = (message: string): { code: string; message: string } => {
-      const match = /^(TS\d+):\s+(.*)$/.exec(message);
+      const match = /^([A-Z][A-Z0-9_]*):\s+(.*)$/.exec(message);
       if (match === null) return { code: "TS", message };
       const code = match[1];
       const text = match[2];
@@ -1366,7 +1405,16 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           missingScopes: [...diff.units.scopes.added],
           availableConnections,
           ...(record.pendingConsent === undefined ? {} : { pendingConsent: record.pendingConsent }),
-          diagnostics: [],
+          diagnostics: next.typecheck.map((diagnostic) => {
+            const parsed = diagnosticOf(diagnostic.message);
+            return {
+              file: diagnostic.file,
+              line: diagnostic.line,
+              column: diagnostic.column,
+              code: parsed.code,
+              message: parsed.message,
+            };
+          }),
         };
       }));
 

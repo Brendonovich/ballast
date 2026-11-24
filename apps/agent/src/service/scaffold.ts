@@ -7,6 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { agentError } from "@ballast/agent-protocol";
+import { generatedConfigText } from "@ballast/planner";
 import type { AgentError } from "@ballast/agent-protocol";
 import { isNotFound } from "./fs.ts";
 
@@ -181,98 +182,70 @@ const entry = (name: string): string =>
   ].join("\n");
 
 const tsconfig = (path: Path.Path, typesDir: string): string =>
-  JSON.stringify(
-    {
-      compilerOptions: {
-        target: "ES2024",
-        module: "ESNext",
-        moduleResolution: "bundler",
-        lib: ["ES2024"],
-        strict: true,
-        exactOptionalPropertyTypes: true,
-        noUncheckedIndexedAccess: true,
-        noUnusedLocals: true,
-        noUnusedParameters: true,
-        verbatimModuleSyntax: true,
-        skipLibCheck: true,
-        noEmit: true,
-        composite: false,
-        allowImportingTsExtensions: true,
-        paths: {
-          "@ballast/*": [path.join(typesDir, "@ballast", "*", "src", "index.ts")],
-          "@ballast/artifact/protocol": [
-            path.join(typesDir, "@ballast", "artifact", "src", "protocol.ts"),
-          ],
-          "@ballast/artifact/solid": [
-            path.join(typesDir, "@ballast", "artifact", "src", "solid.ts"),
-          ],
-          "solid-js": [path.join(typesDir, "solid-js", "types", "index.d.ts")],
-          "solid-js/web": [path.join(typesDir, "solid-js", "web", "types", "index.d.ts")],
-          "solid-js/jsx-runtime": [path.join(typesDir, "solid-js", "jsx-runtime.d.ts")],
-          effect: [path.join(typesDir, "effect", "dist", "index.d.ts")],
-          "effect/*": [
-            path.join(typesDir, "effect", "dist", "*.d.ts"),
-            path.join(typesDir, "effect", "dist", "*", "index.d.ts"),
-          ],
-        },
-        typeRoots: [path.join(typesDir, "@types")],
-        types: ["node"],
+  generatedConfigText({
+    compilerOptions: {
+      target: "ES2024",
+      module: "ESNext",
+      moduleResolution: "bundler",
+      lib: ["ES2024"],
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: true,
+      noUnusedLocals: true,
+      noUnusedParameters: true,
+      verbatimModuleSyntax: true,
+      skipLibCheck: true,
+      noEmit: true,
+      composite: false,
+      allowImportingTsExtensions: true,
+      paths: {
+        "@ballast/*": [path.join(typesDir, "@ballast", "*", "src", "index.ts")],
+        "@ballast/artifact/protocol": [
+          path.join(typesDir, "@ballast", "artifact", "src", "protocol.ts"),
+        ],
+        "@ballast/artifact/solid": [
+          path.join(typesDir, "@ballast", "artifact", "src", "solid.ts"),
+        ],
+        "solid-js": [path.join(typesDir, "solid-js", "types", "index.d.ts")],
+        "solid-js/web": [path.join(typesDir, "solid-js", "web", "types", "index.d.ts")],
+        "solid-js/jsx-runtime": [path.join(typesDir, "solid-js", "jsx-runtime.d.ts")],
+        effect: [path.join(typesDir, "effect", "dist", "index.d.ts")],
+        "effect/*": [
+          path.join(typesDir, "effect", "dist", "*.d.ts"),
+          path.join(typesDir, "effect", "dist", "*", "index.d.ts"),
+        ],
       },
-      include: ["**/*.ts"],
-      exclude: ["node_modules", "dist", ".ballast", "artifacts"],
+      typeRoots: [path.join(typesDir, "@types")],
+      types: ["node"],
     },
-    null,
-    2,
-  ) + "\n";
+    include: ["**/*.ts"],
+    exclude: ["node_modules", "dist", ".ballast", "artifacts"],
+  });
 
 /**
  * Editor config for browser artifact code. The root tsconfig excludes the
  * artifacts directory, so editors open this file for artifact TSX sources. It
  * uses the same type-root paths as the root config and inherits strictness.
  */
-const artifactsTsconfig = (path: Path.Path, typesDir: string): string =>
-  JSON.stringify(
-    {
-      extends: "../tsconfig.json",
-      compilerOptions: {
-        lib: ["ES2024", "DOM", "DOM.Iterable"],
-        jsx: "preserve",
-        jsxImportSource: "solid-js",
-        types: [],
-        noEmit: true,
-        composite: false,
-        declaration: false,
-        declarationMap: false,
-        emitDeclarationOnly: false,
-        sourceMap: false,
-        incremental: false,
-        paths: {
-          "@ballast/*": [path.join(typesDir, "@ballast", "*", "src", "index.ts")],
-          "@ballast/artifact": [
-            path.join(typesDir, "@ballast", "artifact", "src", "index.ts"),
-          ],
-          "@ballast/artifact/protocol": [
-            path.join(typesDir, "@ballast", "artifact", "src", "protocol.ts"),
-          ],
-          "@ballast/artifact/solid": [
-            path.join(typesDir, "@ballast", "artifact", "src", "solid.ts"),
-          ],
-          "solid-js": [path.join(typesDir, "solid-js", "types", "index.d.ts")],
-          "solid-js/web": [path.join(typesDir, "solid-js", "web", "types", "index.d.ts")],
-          "solid-js/jsx-runtime": [path.join(typesDir, "solid-js", "jsx-runtime.d.ts")],
-          effect: [path.join(typesDir, "effect", "dist", "index.d.ts")],
-          "effect/*": [
-            path.join(typesDir, "effect", "dist", "*.d.ts"),
-            path.join(typesDir, "effect", "dist", "*", "index.d.ts"),
-          ],
-        },
-      },
-      include: ["**/*.ts", "**/*.tsx", "../src/**/*.ts"],
-      exclude: ["../node_modules", "../dist", "../.ballast"],
+const artifactsTsconfig = (): string =>
+  generatedConfigText({
+    extends: "../tsconfig.json",
+    compilerOptions: {
+      lib: ["ES2024", "DOM", "DOM.Iterable"],
+      jsx: "preserve",
+      jsxImportSource: "solid-js",
+      types: [],
+      noEmit: true,
+      composite: false,
+      declaration: false,
+      declarationMap: false,
+      emitDeclarationOnly: false,
+      sourceMap: false,
+      incremental: false,
     },
-    null,
-    2,
-  ) + "\n";
+    include: ["**/*.ts", "**/*.tsx"],
+    exclude: ["../node_modules", "../dist", "../.ballast"],
+  });
 
 const agents = (name: string): string =>
   [
@@ -353,7 +326,7 @@ export const scaffoldProject = (input: {
         yield* fs.makeDirectory(path.join(root, "artifacts"), { recursive: true });
         yield* fs.writeFileString(
           path.join(root, "artifacts", "tsconfig.json"),
-          artifactsTsconfig(path, input.typesDir),
+          artifactsTsconfig(),
         );
       }
       yield* fs.writeFileString(path.join(root, "AGENTS.md"), agents(name));

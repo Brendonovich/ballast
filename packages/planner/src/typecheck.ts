@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
+import { parseConfigText, writeGeneratedConfig } from "./generated-config.ts";
+import type { ConfigObject } from "./generated-config.ts";
 
 export interface TypecheckDiagnostic {
   readonly file: string;
@@ -13,7 +15,7 @@ export interface TypecheckDiagnostic {
   readonly column: number;
   readonly message: string;
   /** Which pass reported it; older callers can ignore it. */
-  readonly kind?: "worker" | "artifact";
+  readonly kind?: "worker" | "artifact" | "config";
 }
 
 export interface TypecheckResult {
@@ -118,58 +120,6 @@ const walk = async (directory: string, files: Array<string>): Promise<void> => {
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/**
- * tsconfig is JSONC in practice. Strip comments and trailing commas before
- * reading the few fields that affect type resolution; a malformed config still
- * keys the cache by its bytes, it just yields no resolved targets.
- */
-const parseTsconfig = (text: string): Readonly<Record<string, unknown>> | undefined => {
-  let stripped = "";
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index] ?? "";
-    const next = text[index + 1];
-    if (inString) {
-      stripped += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      stripped += character;
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      while (index < text.length && text[index] !== "\n") index += 1;
-      stripped += "\n";
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      index += 2;
-      while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1;
-      index += 1;
-      stripped += " ";
-      continue;
-    }
-    if (character === ",") {
-      let lookahead = index + 1;
-      while (lookahead < text.length && /\s/.test(text[lookahead] ?? "")) lookahead += 1;
-      const following = text[lookahead];
-      if (following === "}" || following === "]") continue;
-    }
-    stripped += character;
-  }
-  try {
-    const parsed: unknown = JSON.parse(stripped);
-    return isRecord(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 const probeResolution = async (candidate: string): Promise<string> => {
   const wildcard = candidate.indexOf("*");
   const prefix = wildcard === -1 ? candidate : candidate.slice(0, wildcard);
@@ -240,7 +190,7 @@ const hashProject = async (
     hash.update("config\u0000" + configPath + "\u0000");
     hash.update(configText);
     hash.update("\u0000");
-    const parsedConfig = parseTsconfig(configText);
+    const parsedConfig = parseConfigText(configText);
     if (parsedConfig !== undefined) {
       hash.update("resolution\u0000" + (await resolutionKey(projectRoot, parsedConfig)) + "\u0000");
     }
@@ -280,6 +230,23 @@ const parseDiagnostics = (
   return diagnostics;
 };
 
+const artifactDiagnosticsFor = (
+  output: string,
+  projectRoot: string,
+): ReadonlyArray<TypecheckDiagnostic> => {
+  const workerOnly =
+    /Cannot find (?:module|name) ['"]node:|Cannot find name ['"](?:process|Buffer|__dirname|__filename|require|global|MessagePort)['"]|Cannot find namespace ['"]NodeJS['"]/;
+  return parseDiagnostics(output, projectRoot, "artifact").map((diagnostic) =>
+    workerOnly.test(diagnostic.message)
+      ? {
+          ...diagnostic,
+          message:
+            "artifact imports a worker-only module: " + diagnostic.message,
+        }
+      : diagnostic,
+  );
+};
+
 const runTsgo = (
   projectRoot: string,
   config: string,
@@ -310,7 +277,51 @@ const generatedConfig = (projectRoot: string): string => {
   return configPath;
 };
 
-const ensureBaseConfig = async (projectRoot: string): Promise<string> => {
+const configWarning = (
+  projectRoot: string,
+  file: string,
+): TypecheckDiagnostic => ({
+  file: relative(projectRoot, file).split("\\").join("/"),
+  line: 1,
+  column: 1,
+  message:
+    "TS_CONFIG_STALE: This generated config was edited after Ballast created it; Ballast kept it unchanged. Delete it to regenerate.",
+  kind: "config",
+});
+
+const noteConfigWrite = (
+  projectRoot: string,
+  file: string,
+  result: Awaited<ReturnType<typeof writeGeneratedConfig>>,
+  warnings: Array<TypecheckDiagnostic>,
+): void => {
+  if (result.edited) warnings.push(configWarning(projectRoot, file));
+};
+
+/** An unmarked config with Ballast's path map predates the marker. */
+const isGeneratedBaseShape = (config: ConfigObject): boolean => {
+  const compiler = config["compilerOptions"];
+  if (!isRecord(compiler)) return false;
+  const paths = compiler["paths"];
+  return isRecord(paths) && Array.isArray(paths["@ballast/*"]);
+};
+
+/** Older scaffolded artifact configs kept explicit paths and included src. */
+const isGeneratedArtifactShape = (config: ConfigObject): boolean => {
+  const compiler = config["compilerOptions"];
+  const include = config["include"];
+  return (
+    isRecord(compiler) &&
+    compiler["jsxImportSource"] === "solid-js" &&
+    Array.isArray(include) &&
+    include.includes("../src/**/*.ts")
+  );
+};
+
+const ensureBaseConfig = async (
+  projectRoot: string,
+  warnings: Array<TypecheckDiagnostic>,
+): Promise<string> => {
   const projectConfig = join(projectRoot, "tsconfig.json");
   if (existsSync(projectConfig)) return projectConfig;
   const configPath = generatedConfig(projectRoot);
@@ -344,55 +355,55 @@ const ensureBaseConfig = async (projectRoot: string): Promise<string> => {
   exactPaths["@ballast/artifact/solid"] = [
     join(toolchain.ballastRoot, "artifact", "src", "solid.ts"),
   ];
-  await writeFile(
-    configPath,
-    JSON.stringify(
-      {
-        compilerOptions: {
-          target: "ES2024",
-          module: "ESNext",
-          moduleResolution: "bundler",
-          lib: ["ES2024"],
-          strict: true,
-          exactOptionalPropertyTypes: true,
-          noUncheckedIndexedAccess: true,
-          noUnusedLocals: true,
-          noUnusedParameters: true,
-          verbatimModuleSyntax: true,
-          declaration: false,
-          declarationMap: false,
-          sourceMap: false,
-          skipLibCheck: true,
-          noEmit: true,
-          composite: false,
-          allowImportingTsExtensions: true,
-          paths: {
-            ...exactPaths,
-            "@ballast/*": packagePaths,
-            ...(solidTypes === undefined
-              ? {}
-              : {
-                  "solid-js": [solidTypes.entry],
-                  "solid-js/web": [join(solidTypes.root, "web", "types", "index.d.ts")],
-                  "solid-js/jsx-runtime": [join(solidTypes.root, "jsx-runtime.d.ts")],
-                }),
-            effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
-            "effect/*": [
-              join(toolchain.effectRoot, "dist", "*.d.ts"),
-              join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
-            ],
-          },
-          ...(nodeTypesRoot === undefined
-            ? {}
-            : { typeRoots: [nodeTypesRoot], types: ["node"] }),
-        },
-        include: ["../**/*.ts"],
-        exclude: ["../node_modules", "../dist", "../.ballast"],
+  const config: ConfigObject = {
+    compilerOptions: {
+      target: "ES2024",
+      module: "ESNext",
+      moduleResolution: "bundler",
+      lib: ["ES2024"],
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: true,
+      noUnusedLocals: true,
+      noUnusedParameters: true,
+      verbatimModuleSyntax: true,
+      declaration: false,
+      declarationMap: false,
+      sourceMap: false,
+      skipLibCheck: true,
+      noEmit: true,
+      composite: false,
+      allowImportingTsExtensions: true,
+      paths: {
+        ...exactPaths,
+        "@ballast/*": packagePaths,
+        ...(solidTypes === undefined
+          ? {}
+          : {
+              "solid-js": [solidTypes.entry],
+              "solid-js/web": [join(solidTypes.root, "web", "types", "index.d.ts")],
+              "solid-js/jsx-runtime": [join(solidTypes.root, "jsx-runtime.d.ts")],
+            }),
+        effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
+        "effect/*": [
+          join(toolchain.effectRoot, "dist", "*.d.ts"),
+          join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
+        ],
       },
-      null,
-      2,
-    ),
-    "utf8",
+      ...(nodeTypesRoot === undefined
+        ? {}
+        : { typeRoots: [nodeTypesRoot], types: ["node"] }),
+    },
+    include: ["../**/*.ts"],
+    exclude: ["../node_modules", "../dist", "../.ballast"],
+  };
+  noteConfigWrite(
+    projectRoot,
+    configPath,
+    await writeGeneratedConfig(configPath, config, {
+      generatedShape: isGeneratedBaseShape,
+    }),
+    warnings,
   );
   return configPath;
 };
@@ -400,7 +411,22 @@ const ensureBaseConfig = async (projectRoot: string): Promise<string> => {
 interface ProjectConfigs {
   readonly worker: string;
   readonly artifact: string | undefined;
+  readonly warnings: ReadonlyArray<TypecheckDiagnostic>;
 }
+
+const artifactCompilerOptions = (): Readonly<Record<string, unknown>> => ({
+  lib: ["ES2024", "DOM", "DOM.Iterable"],
+  jsx: "preserve",
+  jsxImportSource: "solid-js",
+  types: [],
+  noEmit: true,
+  composite: false,
+  declaration: false,
+  declarationMap: false,
+  emitDeclarationOnly: false,
+  sourceMap: false,
+  incremental: false,
+});
 
 /**
  * Artifacts are browser code. Keep them out of the worker config (which has no
@@ -408,98 +434,77 @@ interface ProjectConfigs {
  * JSX. Projects without an `artifacts/` directory keep exactly one config.
  */
 const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
-  const base = await ensureBaseConfig(projectRoot);
+  const warnings: Array<TypecheckDiagnostic> = [];
+  const base = await ensureBaseConfig(projectRoot, warnings);
   if (!existsSync(join(projectRoot, "artifacts"))) {
-    return { worker: base, artifact: undefined };
+    return { worker: base, artifact: undefined, warnings };
   }
   const directory = join(projectRoot, ".ballast");
   await mkdir(directory, { recursive: true });
   const extendsPath = relative(directory, base).split("\\").join("/");
   const extendsValue = extendsPath.startsWith(".") ? extendsPath : "./" + extendsPath;
   const worker = join(directory, "tsconfig.worker.json");
-  await writeFile(
+  noteConfigWrite(
+    projectRoot,
     worker,
-    JSON.stringify(
-      {
-        extends: extendsValue,
-        exclude: ["../node_modules", "../dist", "../.ballast", "../artifacts"],
-      },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
+    await writeGeneratedConfig(worker, {
+      extends: extendsValue,
+      exclude: ["../node_modules", "../dist", "../.ballast", "../artifacts"],
+    }),
+    warnings,
   );
-  // Prefer the editor's artifacts/tsconfig.json. Create it on plan when the
-  // project has a root tsconfig, without overwriting user edits.
+
   const artifactsDirectory = join(projectRoot, "artifacts");
   const projectArtifact = join(artifactsDirectory, "tsconfig.json");
-  if (existsSync(projectArtifact)) {
-    return { worker, artifact: projectArtifact };
-  }
   if (existsSync(join(projectRoot, "tsconfig.json"))) {
+    // Prefer the editor's artifacts/tsconfig.json. Generate it on plan when
+    // missing, and refresh it while it is still exactly what Ballast wrote.
     const artifactsExtends = relative(artifactsDirectory, base).split("\\").join("/");
     const artifactsExtendsValue = artifactsExtends.startsWith(".")
       ? artifactsExtends
       : "./" + artifactsExtends;
-    await writeFile(
+    const config: ConfigObject = {
+      extends: artifactsExtendsValue,
+      compilerOptions: artifactCompilerOptions(),
+      include: ["**/*.ts", "**/*.tsx"],
+      exclude: ["../node_modules", "../dist", "../.ballast"],
+    };
+    // Older generators also included ../src/**/*.ts, which pulled worker-only
+    // modules into the DOM project.
+    const legacy: ConfigObject = {
+      ...config,
+      include: ["**/*.ts", "**/*.tsx", "../src/**/*.ts"],
+    };
+    noteConfigWrite(
+      projectRoot,
       projectArtifact,
-      JSON.stringify(
-        {
-          extends: artifactsExtendsValue,
-          compilerOptions: {
-            lib: ["ES2024", "DOM", "DOM.Iterable"],
-            jsx: "preserve",
-            jsxImportSource: "solid-js",
-            types: [],
-            noEmit: true,
-            composite: false,
-            declaration: false,
-            declarationMap: false,
-            emitDeclarationOnly: false,
-            sourceMap: false,
-            incremental: false,
-          },
-          include: ["**/*.ts", "**/*.tsx", "../src/**/*.ts"],
-          exclude: ["../node_modules", "../dist", "../.ballast"],
-        },
-        null,
-        2,
-      ) + "\n",
-      "utf8",
+      await writeGeneratedConfig(projectArtifact, config, {
+        legacy: [legacy],
+        generatedShape: isGeneratedArtifactShape,
+      }),
+      warnings,
     );
-    return { worker, artifact: projectArtifact };
+    return { worker, artifact: projectArtifact, warnings };
+  }
+  if (existsSync(projectArtifact)) {
+    return { worker, artifact: projectArtifact, warnings };
   }
 
   // Projects without a root config (tests, ad-hoc folders) keep the generated
   // hidden artifact config.
   const artifact = join(directory, "tsconfig.artifacts.json");
-  await writeFile(
+  noteConfigWrite(
+    projectRoot,
     artifact,
-    JSON.stringify(
-      {
-        extends: extendsValue,
-        compilerOptions: {
-          lib: ["ES2024", "DOM", "DOM.Iterable"],
-          jsx: "preserve",
-          jsxImportSource: "solid-js",
-          types: [],
-          noEmit: true,
-          composite: false,
-          declaration: false,
-          declarationMap: false,
-          emitDeclarationOnly: false,
-          sourceMap: false,
-          incremental: false,
-        },
-        include: ["../artifacts/**/*.ts", "../artifacts/**/*.tsx"],
-        exclude: ["../node_modules", "../dist", "../.ballast"],
-      },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
+    await writeGeneratedConfig(artifact, {
+      extends: extendsValue,
+      compilerOptions: artifactCompilerOptions(),
+      include: ["../artifacts/**/*.ts", "../artifacts/**/*.tsx"],
+      exclude: ["../node_modules", "../dist", "../.ballast"],
+    }),
+    warnings,
   );
-  return { worker, artifact };
+  return { worker, artifact, warnings };
 };
 
 /**
@@ -669,15 +674,14 @@ export const typecheckProject = (
       if (runtimeCheck.length === 0) return withoutCheck;
       return [{ file: entryFile, line: 1, column: 1, message: runtimeMessage }];
     })();
+
     const artifactDiagnostics =
-      artifactResult === undefined
-        ? []
-        : parseDiagnostics(artifactResult.output, root, "artifact");
+      artifactResult === undefined ? [] : artifactDiagnosticsFor(artifactResult.output, root);
     const checked: TypecheckResult = {
       ok:
         result.code === 0 &&
         (artifactResult === undefined || artifactResult.code === 0),
-      diagnostics: [...workerDiagnostics, ...artifactDiagnostics],
+      diagnostics: [...workerDiagnostics, ...artifactDiagnostics, ...configs.warnings],
       raw: [result.output, artifactResult?.output].filter((value) => value !== undefined).join("\n"),
     };
     if (cacheable(checked)) cache.set(key, checked);

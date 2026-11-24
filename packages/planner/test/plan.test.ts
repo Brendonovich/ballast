@@ -443,6 +443,33 @@ describe("plan", () => {
     }),
   );
 
+  it.effect("does not pull worker modules under src into the artifact project", () =>
+    Effect.gen(function* () {
+      const project = yield* planProject(
+        fileURLToPath(new URL("./fixtures/artifact-worker-ok", import.meta.url)),
+      );
+      expect(project.artifacts.map((artifact) => artifact.name)).toEqual(["ok"]);
+      expect(project.typecheck.filter((diagnostic) => diagnostic.kind !== "config")).toEqual([]);
+    }),
+  );
+
+  it.effect("reports an artifact import of a worker-only module clearly", () =>
+    Effect.gen(function* () {
+      const error = yield* planProject(
+        fileURLToPath(new URL("./fixtures/artifact-worker-import", import.meta.url)),
+      ).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(ProjectPlanError);
+      if (!(error instanceof ProjectPlanError)) return;
+      expect(error.message).toContain("artifact imports a worker-only module");
+      expect(
+        error.diagnostics.some((diagnostic) =>
+          diagnostic.message.includes("artifact imports a worker-only module"),
+        ),
+      ).toBe(true);
+    }),
+  );
+
   it.effect("fails artifact typecheck with a file/line diagnostic", () =>
     Effect.gen(function* () {
       const error = yield* planProject(

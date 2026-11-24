@@ -11,6 +11,8 @@
     "test/fixtures/project",
     "test/fixtures/duplicate",
     "test/fixtures/artifact-type-error",
+    "test/fixtures/artifact-worker-import",
+    "test/fixtures/artifact-worker-ok",
     "test/fixtures/duplicate-api",
     "test/fixtures/runtime-helper"
   ],

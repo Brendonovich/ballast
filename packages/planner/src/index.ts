@@ -20,6 +20,16 @@ export { runPlan, runPlanInfo, decodeManifest, PlanError } from "./plan.ts";
 export type { PlanOptions, PlannedScript } from "./plan.ts";
 export { bundlePlanScript } from "./bundle.ts";
 export type { BundledPlanScript } from "./bundle.ts";
+export {
+  GENERATED_CONFIG_NOTICE,
+  generatedConfigText,
+  writeGeneratedConfig,
+} from "./generated-config.ts";
+export type {
+  ConfigObject,
+  GeneratedConfigOptions,
+  GeneratedConfigWrite,
+} from "./generated-config.ts";
 export { diff } from "./diff.ts";
 export type { ManifestDiff, DiffSet } from "./diff.ts";
 export { makeManifestRecorder, normalizeManifest } from "./recorder.ts";
