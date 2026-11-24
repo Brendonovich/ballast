@@ -78,7 +78,7 @@ const openProject = async (page: Page, name: string): Promise<void> => {
   const row = page.getByTestId("project-row").filter({ hasText: name });
   await row.getByRole("button").first().click();
   await expect(page.getByRole("heading", { name })).toBeVisible();
-  await expect(page.getByTestId("units-panel")).toBeVisible();
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
 };
 
 const goHome = async (page: Page): Promise<void> => {
@@ -101,7 +101,7 @@ const goConnections = async (page: Page): Promise<void> => {
   await expect(page.getByTestId("connection-row").first()).toBeVisible();
 };
 
-test("reduced mock workspace: projects, units, source, logs and a connection dialog", async ({
+test("reduced mock workspace: projects, artifacts, outline, source, logs and a connection dialog", async ({
   page,
 }) => {
   const errors = collectPageErrors(page);
@@ -124,19 +124,28 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   expect(layout.documentHeight).toBeLessThanOrEqual(layout.viewportHeight + 1);
   expect(await cursorOf(page.getByTestId("source-panel"))).toBe("default");
   expect(await cursorOf(page.getByTestId("project-splitter"))).toBe("row-resize");
-  await expect(page.getByTestId("unit-row").first()).toBeVisible();
-  await expect(page.getByTestId("source-panel")).toContainText("mock source");
+  await expect(page.getByTestId("source-panel")).toContainText('Ballast.Database("main")');
   await expect(page.getByTestId("log-line").first()).toBeVisible();
 
-  // Artifacts are listed beside units; opening one replaces source and logs.
+  // View source is the default view; the outline starts collapsed.
+  await expect(page.getByTestId("view-source")).toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
+  await expect(page.getByTestId("outline-row")).toHaveCount(0);
+  expect(await cursorOf(page.getByTestId("outline-toggle"))).toBe("default");
+  expect(await cursorOf(page.getByTestId("view-source"))).toBe("default");
+
+  // Artifacts come first in the left column; opening one replaces source and logs.
   const artifactRow = page
     .getByTestId("artifact-row")
     .filter({ hasText: "Stream dashboard" });
   await expect(artifactRow).toHaveAttribute("data-status", "ready");
   await expect(artifactRow).toContainText("Ready · dashboard");
-  await expect(artifactRow.getByTestId("artifact-source")).toContainText("main.tsx:12");
+  await expect(artifactRow.getByTestId("artifact-source")).toContainText(/ballast\.ts:\d+/);
+  expect(await cursorOf(artifactRow.getByRole("button").first())).toBe("default");
   await artifactRow.getByRole("button").first().click();
   await expect(page.getByTestId("artifact-panel")).toBeVisible();
+  await expect(artifactRow).toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("view-source")).not.toHaveAttribute("data-selected", "true");
   await expect(page.getByTestId("source-panel")).toHaveCount(0);
   await expect(page.getByTestId("log-panel")).toHaveCount(0);
   await expect(
@@ -145,10 +154,10 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
 
   // Full screen hides both side panels, and Esc restores them.
   await page.getByTestId("artifact-fullscreen").click();
-  await expect(page.getByTestId("units-panel")).toHaveCount(0);
+  await expect(page.getByTestId("project-navigator")).toHaveCount(0);
   await expect(page.getByTestId("project-sidebar")).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("units-panel")).toBeVisible();
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
   await expect(page.getByTestId("project-sidebar")).toBeVisible();
 
   // Persistent URLs sit behind the overflow menu; action URLs need approval.
@@ -220,11 +229,83 @@ test("reduced mock workspace: projects, units, source, logs and a connection dia
   await popup.close();
   await page.getByTestId("artifact-panel").getByRole("button", { name: "Back to source" }).click();
 
-  // Clicking a unit selects it as the log filter.
-  const firstUnit = page.getByTestId("unit-row").first();
-  const unitName = await firstUnit.getAttribute("data-unit-name");
-  await firstUnit.getByRole("button").first().click();
-  await expect(page.getByTestId("log-unit-filter")).toContainText(unitName ?? "");
+  // View source switches the main area back from an open artifact.
+  await artifactRow.getByRole("button").first().click();
+  await expect(page.getByTestId("artifact-panel")).toBeVisible();
+  await page.getByTestId("view-source").click();
+  await expect(page.getByTestId("artifact-panel")).toHaveCount(0);
+  await expect(page.getByTestId("source-panel")).toBeVisible();
+  await expect(page.getByTestId("log-panel")).toBeVisible();
+  await expect(page.getByTestId("view-source")).toHaveAttribute("data-selected", "true");
+
+  // Expanding the outline lists everything else the project declares.
+  await page.getByTestId("outline-toggle").click();
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
+  await expect(page.getByTestId("outline-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-testid="outline-group"]')).toHaveCount(5);
+  for (const group of ["topic", "param", "api", "store", "database"]) {
+    await expect(page.locator(`[data-testid="outline-group"][data-group="${group}"]`)).toBeVisible();
+  }
+  const allLines = await page.getByTestId("log-line").count();
+
+  // An outline item opens the source view, highlights its line and filters logs,
+  // even from an open artifact.
+  await artifactRow.getByRole("button").first().click();
+  await expect(page.getByTestId("artifact-panel")).toBeVisible();
+  const redemption = page.locator(
+    '[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="redemption"]',
+  );
+  await redemption.click();
+  await expect(page.getByTestId("artifact-panel")).toHaveCount(0);
+  await expect(redemption).toHaveAttribute("data-selected", "true");
+  await expect(page.locator('[data-highlighted="true"]')).toContainText(
+    'subscribe("redemption"',
+  );
+  await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
+    "Topic · redemption",
+  );
+  await expect(page.getByTestId("log-line")).toHaveCount(2);
+  expect(allLines).toBeGreaterThan(2);
+  await expect(page.getByTestId("log-line").first()).toContainText("subscription created");
+
+  // A param highlights its declaration too.
+  await page
+    .locator('[data-testid="outline-row"][data-unit-kind="param"][data-unit-name="holdSeconds"]')
+    .click();
+  await expect(page.locator('[data-highlighted="true"]')).toContainText(
+    'Param.number("holdSeconds"',
+  );
+  await expect(page.getByTestId("log-line")).toHaveCount(0);
+
+  // The visible clear control drops the filter.
+  await page.getByTestId("log-filter-clear").click();
+  await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
+    "All units",
+  );
+  await expect(page.getByTestId("log-line")).toHaveCount(allLines);
+  await expect(page.getByTestId("log-filter-clear")).toHaveCount(0);
+  await expect(page.locator('[data-testid="outline-row"][data-selected="true"]')).toHaveCount(0);
+
+  // Resize the outline; open state and height persist for this project's window.
+  const outlineBefore = await boxOf(page.getByTestId("outline-panel"));
+  const outlineSplitter = await boxOf(page.getByTestId("outline-splitter"));
+  await page.mouse.move(outlineSplitter.x + outlineSplitter.width / 2, outlineSplitter.y + 3);
+  await page.mouse.down();
+  await page.mouse.move(outlineSplitter.x + outlineSplitter.width / 2, outlineSplitter.y - 80, {
+    steps: 5,
+  });
+  await page.mouse.up();
+  const outlineAfter = await boxOf(page.getByTestId("outline-panel"));
+  expect(outlineAfter.height).toBeGreaterThan(outlineBefore.height + 40);
+  await page.reload();
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "true");
+  expect(Math.abs((await boxOf(page.getByTestId("outline-panel"))).height - outlineAfter.height))
+    .toBeLessThan(3);
+  await page.getByTestId("outline-toggle").click();
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
+  await page.reload();
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
+  await expect(page.getByTestId("source-panel")).toBeVisible();
 
   // Drag the splitter and check the ratio is persisted.
   const splitter = page.getByTestId("project-splitter");
@@ -350,14 +431,16 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
   await openProject(page, "Main Channel");
-  await expect(page.getByTestId("unit-row").first()).toBeVisible();
+  await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
+  await expect(page.getByTestId("source-panel")).toContainText("Ballast.Database");
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-03-project.png` });
+  await page.screenshot({ path: `screenshots/${theme}-13-outline-collapsed.png` });
   await page.screenshot({ path: `screenshots/${theme}-project-window.png` });
 
   const secondWindow = await page.context().newPage();
   await secondWindow.goto("/#/projects/proj_alt");
-  await expect(secondWindow.getByTestId("units-panel")).toBeVisible();
+  await expect(secondWindow.getByTestId("project-navigator")).toBeVisible();
   await secondWindow.waitForTimeout(150);
   await secondWindow.screenshot({
     path: `screenshots/${theme}-project-second.png`,
@@ -397,6 +480,27 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
     .getByRole("button", { name: "Back to source" })
     .click();
 
+  // Outline expanded with an item selected: its line highlighted, logs filtered.
+  await page.getByTestId("outline-toggle").click();
+  await page
+    .locator('[data-testid="outline-row"][data-unit-kind="topic"][data-unit-name="redemption"]')
+    .click();
+  await expect(page.locator('[data-highlighted="true"]')).toBeVisible();
+  await expect(page.getByTestId("log-line")).toHaveCount(2);
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `screenshots/${theme}-14-outline-selected.png` });
+  await page.getByTestId("log-filter-clear").click();
+  await page.getByTestId("outline-toggle").click();
+
+  // Connections reached from inside a project window.
+  await page.goto("/#/projects/proj_main/connections");
+  await expect(page.getByTestId("project-section")).toBeVisible();
+  await expect(page.getByTestId("connection-row").first()).toBeVisible();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `screenshots/${theme}-15-project-connections.png` });
+  await page.getByTestId("project-back").click();
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
+
   await page.getByTestId("source-maximize").click();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-04-source.png` });
@@ -424,6 +528,40 @@ test("collapses the project sidebar in a narrow window", async ({ page }) => {
   await expect(page.getByTestId("project-sidebar")).toHaveCount(0);
   await page.getByTestId("toggle-project-sidebar").click();
   await expect(page.getByTestId("project-sidebar")).toBeVisible();
+});
+
+test("reaches Connections and Settings from a project in a plain browser and returns", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+  await useTheme(page, "dark");
+  await openProjects(page);
+  await openProject(page, "Main Channel");
+
+  // Without a desktop bridge the rail uses the service-wide routes.
+  await page.getByTestId("project-nav-connections").click();
+  await expect(page).toHaveURL(/#\/connections\?from=proj_main$/);
+  await expect(page.getByTestId("connection-row").first()).toBeVisible();
+  await page.getByTestId("nav-back-project").click();
+  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
+  await expect(page.getByRole("heading", { name: "Main Channel" })).toBeVisible();
+
+  await page.getByTestId("project-nav-settings").click();
+  await expect(page).toHaveURL(/#\/settings\?from=proj_main$/);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByTestId("nav-back-project")).toContainText("Main Channel");
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Main Channel" })).toBeVisible();
+
+  // The project-scoped routes used by desktop windows also work here.
+  await page.goto("/#/projects/proj_main/settings");
+  await expect(page.getByTestId("project-section")).toHaveAttribute("data-section", "settings");
+  await expect(page).toHaveTitle("Settings — Main Channel — Ballast");
+  await expect(page.getByTestId("project-nav-settings")).toHaveAttribute("aria-current", "page");
+  await page.getByTestId("project-nav-project").click();
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
+  await expect(page).toHaveTitle("Main Channel — Ballast");
+  expect(errors).toEqual([]);
 });
 
 test("captures dark screenshots", async ({ page }) => {

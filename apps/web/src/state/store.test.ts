@@ -162,7 +162,7 @@ describe("agent store against MockAgentLayer", () => {
     const file = await store.readProjectFile(main, "ballast.ts");
     expect(file?.path).toBe("ballast.ts");
     expect(file?.language).toBe("typescript");
-    expect(file?.content).toContain("mock source");
+    expect(file?.content).toContain('Ballast.Param.string("rewardTitle"');
     expect(file?.sha256).toMatch(/^[0-9a-f]{64}$/);
 
   });

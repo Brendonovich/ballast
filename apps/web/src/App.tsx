@@ -10,6 +10,10 @@ import { ProjectScreen } from "./screens/ProjectScreen.tsx";
 import { ArtifactWindowScreen } from "./screens/ArtifactWindowScreen.tsx";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen.tsx";
 import { SettingsScreen } from "./screens/SettingsScreen.tsx";
+import {
+  ProjectConnectionsScreen,
+  ProjectSettingsScreen,
+} from "./screens/ProjectSectionScreen.tsx";
 
 export const App = (props: { readonly store: AgentStore }): JSX.Element => (
   <AgentStoreProvider store={props.store}>
@@ -20,6 +24,8 @@ export const App = (props: { readonly store: AgentStore }): JSX.Element => (
         path="/projects/:projectId/artifacts/:artifact"
         component={ArtifactWindowScreen}
       />
+      <Route path="/projects/:projectId/connections" component={ProjectConnectionsScreen} />
+      <Route path="/projects/:projectId/settings" component={ProjectSettingsScreen} />
       <Route path="/projects/:projectId" component={ProjectScreen} />
       <Route path="/connections" component={ConnectionsScreen} />
       <Route path="/settings" component={SettingsScreen} />

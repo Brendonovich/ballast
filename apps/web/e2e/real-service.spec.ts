@@ -165,7 +165,17 @@ const openProject = async (page: Page, name: string): Promise<void> => {
 };
 
 const unit = (page: Page, name: string) =>
-  page.locator(`[data-testid="unit-row"][data-unit-name="${name}"]`);
+  page.locator(`[data-testid="outline-row"][data-unit-name="${name}"]`);
+
+/** The outline starts collapsed; its open state then persists per project. */
+const openOutline = async (page: Page): Promise<void> => {
+  const panel = page.getByTestId("outline-panel");
+  await expect(panel).toBeVisible();
+  if ((await panel.getAttribute("data-open")) !== "true") {
+    await page.getByTestId("outline-toggle").click();
+  }
+  await expect(panel).toHaveAttribute("data-open", "true");
+};
 
 const obsRequirement = (page: Page) =>
   page.locator(
@@ -253,6 +263,8 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     const mainName = "E2E Project";
     await createProject(page, mainName);
     await writeBundle(info.projectsDir, mainName, projectBundle(mainName));
+    await expect(page.getByTestId("outline-panel")).toHaveAttribute("data-open", "false");
+    await openOutline(page);
     await expect(unit(page, "alpha")).toBeVisible({ timeout: 20_000 });
     await expect(unit(page, "beta")).toBeVisible();
     await expect(unit(page, "cooldown")).toBeVisible();
@@ -298,6 +310,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     for (const theme of ["dark", "light"] as const) {
       await applyTheme(page, theme);
       await expect(page.getByRole("heading", { name: mainName })).toBeVisible();
+      await openOutline(page);
       await expect(unit(page, "alpha")).toBeVisible({ timeout: 20_000 });
       await expect(
         page.getByTestId("log-line").filter({ hasText: "hello from alpha" }).first(),
@@ -368,8 +381,12 @@ test("real service: connection instances, project bindings, workers, logs, sourc
         .click();
       await expect(unit(page, "alpha")).toBeVisible();
 
-      await unit(page, "alpha").getByRole("button").first().click();
-      await expect(page.getByTestId("log-unit-filter")).toContainText("alpha");
+      // One click on an outline item filters its logs and shows its declaration.
+      await unit(page, "alpha").click();
+      await expect(unit(page, "alpha")).toHaveAttribute("data-selected", "true");
+      await expect(page.getByTestId("log-unit-filter").locator("option:checked")).toHaveText(
+        "Run · alpha",
+      );
       await expect(
         page.getByTestId("log-line").filter({ hasText: "hello from alpha" }).first(),
       ).toBeVisible();
@@ -379,7 +396,6 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.waitForTimeout(150);
       await page.screenshot({ path: `screenshots/real-${theme}-05-logs-unit.png` });
 
-      await unit(page, "alpha").getByTestId("unit-source").click();
       await expect(page.getByTestId("source-panel")).toContainText("OBS.Connection");
       await expect(page.locator('[data-highlighted="true"]')).toContainText("Ballast.run");
       await page.waitForTimeout(150);

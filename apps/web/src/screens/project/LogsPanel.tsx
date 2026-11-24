@@ -6,6 +6,7 @@ import { useAgent } from "../../state/context.tsx";
 import { formatTime, unitKindLabel } from "../../lib/format.ts";
 import {
   ArrowDownIcon,
+  CloseIcon,
   MaximizeIcon,
   MinimizeIcon,
 } from "../../ui/icons.tsx";
@@ -105,7 +106,7 @@ export const LogsPanel = (props: {
         <span class="hidden sm:inline">
           {store.logStatus() === "live" ? "Live" : "Reconnecting"}
         </span>
-        <div class="ml-1 w-40 shrink-0">
+        <div class="ml-1 w-48 shrink-0">
           <SelectInput
             data-testid="log-unit-filter"
             aria-label="Filter logs by unit"
@@ -123,6 +124,16 @@ export const LogsPanel = (props: {
             </For>
           </SelectInput>
         </div>
+        <Show when={props.selected !== undefined}>
+          <IconButton
+            label="Clear log filter"
+            size="small"
+            testId="log-filter-clear"
+            onClick={() => props.onSelect(undefined)}
+          >
+            <CloseIcon size={11} />
+          </IconButton>
+        </Show>
         <span class="tabular ml-auto">
           {projectLogs().length === 1 ? "1 line" : `${projectLogs().length} lines`}
         </span>

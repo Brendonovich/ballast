@@ -45,7 +45,9 @@ import { LogsPanel } from "./project/LogsPanel.tsx";
 import { ProjectSidebar } from "./project/ProjectSidebar.tsx";
 import { SourcePanel } from "./project/SourcePanel.tsx";
 import type { SourceJump } from "./project/SourcePanel.tsx";
-import { UnitsPanel } from "./project/UnitsPanel.tsx";
+import { ProjectNavigator } from "./project/ProjectNavigator.tsx";
+import { buildOutline, unitKey } from "../lib/outline.ts";
+import type { OutlineItem } from "../lib/outline.ts";
 import { ConnectionDialog } from "./connections/ConnectionDialog.tsx";
 import { ArtifactPanel } from "./project/ArtifactPanel.tsx";
 
@@ -154,6 +156,8 @@ export const ProjectScreen = (): JSX.Element => {
   const [jump, setJump] = createSignal<SourceJump>();
   const [timers, setTimers] = createSignal<ReadonlyArray<TimerSummary>>([]);
   const [selectedArtifactName, setSelectedArtifactName] = createSignal<string>();
+  const [selectedOutlineKey, setSelectedOutlineKey] = createSignal<string>();
+  const outline = createMemo(() => buildOutline(detail()));
   const [artifactFullscreen, setArtifactFullscreen] = createSignal(false);
   const selectedArtifact = createMemo(() => {
     const name = selectedArtifactName();
@@ -200,6 +204,7 @@ export const ProjectScreen = (): JSX.Element => {
   createEffect(() => {
     const pid = projectId();
     setSelectedUnit(undefined);
+    setSelectedOutlineKey(undefined);
     setSelectedArtifactName(undefined);
     setArtifactFullscreen(false);
     setJump(undefined);
@@ -271,6 +276,23 @@ export const ProjectScreen = (): JSX.Element => {
   const closeArtifact = (): void => {
     setSelectedArtifactName(undefined);
     setArtifactFullscreen(false);
+  };
+
+  // Opening an outline item shows its declaration and, for units, its logs.
+  const selectOutlineItem = (item: OutlineItem): void => {
+    setSelectedOutlineKey(item.key);
+    setSelectedUnit(item.unit);
+    if (item.source !== undefined) {
+      openSource(item.source.file, item.source.line);
+    } else {
+      closeArtifact();
+    }
+    if (item.unit !== undefined && maximized() === "source") setMaximized(undefined);
+  };
+
+  const filterLogs = (unit: UnitSummary | undefined): void => {
+    setSelectedUnit(unit);
+    setSelectedOutlineKey(unit === undefined ? undefined : unitKey(unit));
   };
 
   const popOutArtifact = (artifact: ArtifactSummary): void => {
@@ -545,14 +567,16 @@ export const ProjectScreen = (): JSX.Element => {
 
           <div class="flex min-h-0 flex-1 gap-3">
             <Show when={!artifactFullscreen()}>
-              <UnitsPanel
-                units={units()}
-                selected={selectedUnit()}
-                onSelect={setSelectedUnit}
-                onOpenSource={openSource}
+              <ProjectNavigator
+                projectId={projectId()}
                 artifacts={artifacts()}
-                selectedArtifact={selectedArtifactName()}
+                selectedArtifact={selectedArtifact()?.name}
                 onOpenArtifact={openArtifact}
+                onViewSource={closeArtifact}
+                outline={outline()}
+                selectedItem={selectedOutlineKey()}
+                onSelectItem={selectOutlineItem}
+                onOpenSource={openSource}
               />
             </Show>
 
@@ -588,7 +612,7 @@ export const ProjectScreen = (): JSX.Element => {
                         projectId={projectId()}
                         units={units()}
                         selected={selectedUnit()}
-                        onSelect={setSelectedUnit}
+                        onSelect={filterLogs}
                         collapsed={maximized() === "source"}
                         maximized={maximized() === "logs"}
                         onToggleMaximize={() => toggleMaximize("logs")}

@@ -1,0 +1,36 @@
+/** Service-wide screens a project window can show without leaving its project. */
+export type ProjectSection = "connections" | "settings";
+
+const safeDecode = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+export const projectPath = (projectId: string): string =>
+  "/projects/" + encodeURIComponent(projectId);
+
+export const projectSectionPath = (projectId: string, section: ProjectSection): string =>
+  projectPath(projectId) + "/" + section;
+
+/** Plain-browser routes back to a project carry it in the query. */
+export const homeSectionPath = (section: ProjectSection, fromProject?: string): string =>
+  "/" + section + (fromProject === undefined ? "" : "?from=" + encodeURIComponent(fromProject));
+
+export const projectIdFromPath = (path: string): string | undefined => {
+  const match = /^\/projects\/([^/?#]+)/.exec(path);
+  return match?.[1] === undefined ? undefined : safeDecode(match[1]);
+};
+
+export const artifactFromPath = (path: string): string | undefined => {
+  const match = /^\/projects\/[^/?#]+\/artifacts\/([^/?#]+)/.exec(path);
+  return match?.[1] === undefined ? undefined : safeDecode(match[1]);
+};
+
+export const projectSectionFromPath = (path: string): ProjectSection | undefined => {
+  const match = /^\/projects\/[^/?#]+\/(connections|settings)\/?$/.exec(path);
+  const section = match?.[1];
+  return section === "connections" || section === "settings" ? section : undefined;
+};

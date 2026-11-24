@@ -32,6 +32,7 @@ import type {
   ProjectManifest,
   ProjectRequirement,
   ProjectSummary,
+  SourceLocation,
   UnitSummary,
 } from "./project.ts";
 import { emptyProjectManifest } from "./project.ts";
@@ -139,10 +140,91 @@ const altProject: ProjectSummary = {
 
 const param = (input: ParamView): ParamView => input;
 
+/** The main project's entry. Unit sources point at the lines that declare them. */
+const mainSourceLines: ReadonlyArray<string> = [
+  'import * as Ballast from "@ballast/core";',
+  'import * as OBS from "@ballast/module-obs";',
+  'import * as Twitch from "@ballast/module-twitch";',
+  'import { Effect } from "effect";',
+  'import { DashboardApi } from "./src/api.ts";',
+  "",
+  'const db = Ballast.Database("main");',
+  "",
+  "export default Effect.gen(function* () {",
+  '  const rewardTitle = yield* Ballast.Param.string("rewardTitle", {',
+  '    title: "Reward title",',
+  '    default: "Hydrate",',
+  "  });",
+  '  const scene = yield* Ballast.Param.enum("scene", {',
+  '    title: "Scene",',
+  '    options: OBS.options("main", "scenes"),',
+  "  });",
+  '  const holdSeconds = yield* Ballast.Param.number("holdSeconds", {',
+  '    title: "Hold for (seconds)",',
+  "    default: 5,",
+  "  });",
+  '  const thanks = yield* Ballast.Param.string("message", {',
+  '    title: "Chat message",',
+  '    default: "Thanks for the bits!",',
+  "  });",
+  '  const minBits = yield* Ballast.Param.number("minBits", { title: "Minimum bits", default: 100 });',
+  "",
+  '  const twitch = yield* Twitch.Connection("broadcaster");',
+  '  const obs = yield* OBS.Connection("main");',
+  '  const sceneSwitches = yield* Ballast.Store.counter("sceneSwitches", { initial: 0 });',
+  "",
+  '  yield* Ballast.Artifact("dashboard", {',
+  '    title: "Stream dashboard",',
+  '    entry: "./artifacts/dashboard/main.tsx",',
+  "  });",
+  '  yield* Ballast.Artifact("overlay", {',
+  '    title: "Alert overlay",',
+  '    entry: "./artifacts/overlay/main.ts",',
+  "  });",
+  "",
+  "  yield* Ballast.Api.serve(DashboardApi, {",
+  "    Snapshot: () => Effect.map(sceneSwitches.get, (count) => ({ sceneSwitches: count })),",
+  "    ResetCounters: () => sceneSwitches.reset,",
+  "  });",
+  "",
+  '  yield* Twitch.Redemption.subscribe("redemption", twitch, (event) =>',
+  "    Effect.gen(function* () {",
+  "      if (event.reward.title !== (yield* rewardTitle)) return;",
+  "      yield* obs.setCurrentProgramScene(yield* scene);",
+  "      yield* sceneSwitches.increment(1);",
+  "      yield* db.insert({ kind: \"redemption\", user: event.user_login });",
+  "      yield* Effect.log(`Redeemed ${event.reward.title}, holding ${yield* holdSeconds}s`);",
+  "    }),",
+  "  );",
+  "",
+  '  yield* Twitch.Cheer.subscribe("cheer", twitch, (event) =>',
+  "    Effect.gen(function* () {",
+  "      if (event.bits < (yield* minBits)) return;",
+  "      yield* twitch.sendChatMessage(yield* thanks);",
+  "    }),",
+  "  );",
+  "}) satisfies Ballast.Project;",
+];
+
+const mainSource = mainSourceLines.join("\n") + "\n";
+
+/** The first line declaring `"name"`, as the planner would record it. */
+const mainSourceOf = (name: string): SourceLocation | undefined => {
+  const index = mainSourceLines.findIndex((line) => line.includes(`"${name}"`));
+  const line = index === -1 ? undefined : mainSourceLines[index];
+  if (line === undefined) return undefined;
+  return { file: "ballast.ts", line: index + 1, column: line.search(/\S/) + 1 };
+};
+
+const sourceFor = (projectId: string, name: string): SourceLocation | undefined =>
+  projectId === mainProject.id ? mainSourceOf(name) : undefined;
+
+const withSource = (
+  source: SourceLocation | undefined,
+): { readonly source?: SourceLocation } => (source === undefined ? {} : { source });
+
 const mockDatabases: Readonly<Record<string, ReadonlyArray<ManifestDatabaseUnit>>> = {
-  [mainProject.id]: [
-    { name: "main", source: { file: "ballast.ts", line: 6, column: 14 } },
-  ],
+  [mainProject.id]: [{ name: "main", ...withSource(mainSourceOf("main")) }],
 };
 
 const redeemManifest: ScriptManifest = {
@@ -655,6 +737,8 @@ const initialLogs = (): ReadonlyArray<LogEntry> => [
     source: "cloud",
     projectId: mainProject.id,
     scriptId: "scripts/redeem-to-scene.ts",
+    unitKind: "topic",
+    unitName: "redemption",
     message: "subscription created",
     fields: {
       topic: "twitch/channel.channel_points_custom_reward_redemption.add",
@@ -668,6 +752,8 @@ const initialLogs = (): ReadonlyArray<LogEntry> => [
     source: "worker",
     projectId: mainProject.id,
     scriptId: "scripts/redeem-to-scene.ts",
+    unitKind: "topic",
+    unitName: "redemption",
     message: 'Redeemed "Hydrate" — switching scene to Game',
     fields: { user: "pixel_pal", reward: "Hydrate" },
   },
@@ -678,6 +764,8 @@ const initialLogs = (): ReadonlyArray<LogEntry> => [
     source: "agent",
     projectId: mainProject.id,
     scriptId: "scripts/cheer-alert.ts",
+    unitKind: "topic",
+    unitName: "cheer",
     message: "plan requires consent: bits:read, user:write:chat",
   },
   {
@@ -955,9 +1043,26 @@ const projectManifestOf = (
       if (!params.has(param.key)) params.set(param.key, param);
     }
   }
+  const base = emptyProjectManifest(project.id, project.entry ?? "ballast.ts");
+  if (project.id !== mainProject.id) return { ...base, params: [...params.values()] };
   return {
-    ...emptyProjectManifest(project.id, project.entry ?? "ballast.ts"),
+    ...base,
     params: [...params.values()],
+    stores: [
+      { name: "sceneSwitches", kind: "counter", initial: 0, ...withSource(mainSourceOf("sceneSwitches")) },
+    ],
+    api: {
+      ...withSource(
+        (() => {
+          const index = mainSourceLines.findIndex((line) => line.includes("Ballast.Api.serve"));
+          return index === -1 ? undefined : { file: "ballast.ts", line: index + 1, column: 3 };
+        })(),
+      ),
+      procedures: [
+        { name: "Snapshot", kind: "query", stream: false },
+        { name: "ResetCounters", kind: "action", stream: false },
+      ],
+    },
   };
 };
 
@@ -1083,11 +1188,10 @@ const handlers = Effect.gen(function* () {
       const status = detail.summary.status === "running" ? "active" : "waiting";
       return [
         ...detail.manifest.topics.map(
-          (topic): UnitSummary => ({
-            kind: "topic",
-            name: topicUnitNames.get(topic.topic) ?? topic.topic,
-            status,
-          }),
+          (topic): UnitSummary => {
+            const name = topicUnitNames.get(topic.topic) ?? topic.topic;
+            return { kind: "topic", name, status, ...withSource(sourceFor(projectId, name)) };
+          },
         ),
         ...detail.manifest.timers.map(
           (timer): UnitSummary => ({
@@ -1101,6 +1205,7 @@ const handlers = Effect.gen(function* () {
             kind: "param",
             name: param.key,
             status: "active",
+            ...withSource(sourceFor(projectId, param.key)),
           }),
         ),
       ];
@@ -1243,7 +1348,10 @@ const handlers = Effect.gen(function* () {
 
     ReadProjectFile: (request: { readonly projectId: string; readonly path: string }) =>
       Effect.gen(function* () {
-        const content = `// mock source for ${request.path}\n`;
+        const content =
+          request.projectId === mainProject.id && request.path === "ballast.ts"
+            ? mainSource
+            : `// mock source for ${request.path}\n`;
         return {
           path: request.path,
           content,
@@ -1258,7 +1366,10 @@ const handlers = Effect.gen(function* () {
         Effect.gen(function* () {
           const project = yield* requireProject(state, projectId);
           const path = project.entry ?? "ballast.ts";
-          const content = `// mock source for ${path}\n`;
+          const content =
+            project.id === mainProject.id && path === "ballast.ts"
+              ? mainSource
+              : `// mock source for ${path}\n`;
           return {
             path,
             content,
@@ -1510,7 +1621,7 @@ const handlers = Effect.gen(function* () {
                 name: "dashboard",
                 title: "Stream dashboard",
                 entry: "artifacts/dashboard/main.tsx",
-                source: { file: "artifacts/dashboard/main.tsx", line: 12, column: 3 },
+                ...withSource(mainSourceOf("dashboard")),
                 fingerprint: "mock-dashboard-v1",
                 status: "ready" as const,
               },
@@ -1518,7 +1629,7 @@ const handlers = Effect.gen(function* () {
                 name: "overlay",
                 title: "Alert overlay",
                 entry: "artifacts/overlay/main.ts",
-                source: { file: "artifacts/overlay/main.ts", line: 3, column: 1 },
+                ...withSource(mainSourceOf("overlay")),
                 fingerprint: "mock-overlay-v1",
                 status: "error" as const,
                 error: "artifacts/overlay/main.ts:9:14: Expected a closing tag",

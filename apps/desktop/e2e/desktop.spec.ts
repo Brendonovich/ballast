@@ -464,6 +464,22 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     await expect(page.getByTestId("project-nav-projects")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("ballast-window-1.png"), fullPage: true });
 
+    // Connections and Settings open inside the project window, not a new one.
+    const windowsBefore = ui.windows().length;
+    await page.getByTestId("project-nav-connections").click();
+    await page.waitForURL(
+      new RegExp("#/projects/" + encodeURIComponent(projectId) + "/connections$"),
+    );
+    await expect(page.getByTestId("connection-row").first()).toBeVisible();
+    await expect.poll(() => page.title()).toBe("Connections — E2E Tick — Ballast");
+    await page.screenshot({ path: testInfo.outputPath("ballast-project-connections.png") });
+    expect(ui.windows().length).toBe(windowsBefore);
+    await page.getByTestId("project-back").click();
+    await page.waitForURL(new RegExp("#/projects/" + encodeURIComponent(projectId) + "$"));
+    await expect(page.getByTestId("project-navigator")).toBeVisible();
+    await expect.poll(() => page.title()).toBe("E2E Tick — Ballast");
+    expect(ui.windows().length).toBe(windowsBefore);
+
     await bridgeOpenProject(page, secondProjectId, true);
     const secondPage = await projectPage(ui, secondProjectId);
     await expect.poll(() => secondPage.title()).toBe("E2E Second — Ballast");
@@ -502,6 +518,13 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     );
     expect(focusedArtifact).toContain("/artifacts/dashboard");
     await expect.poll(() => ui.windows().length).toBe(3);
+
+    // Leave the first window on Settings; relaunch must still restore its project.
+    await page.getByTestId("project-nav-settings").click();
+    await page.waitForURL(
+      new RegExp("#/projects/" + encodeURIComponent(projectId) + "/settings$"),
+    );
+    await expect.poll(() => page.title()).toBe("Settings — E2E Tick — Ballast");
 
     const firstBounds = { x: 20, y: 40, width: 900, height: 620 };
     const secondBounds = { x: 700, y: 40, width: 900, height: 620 };
@@ -555,6 +578,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     const restoredSecond = await projectPage(ui, secondProjectId);
     const restoredArtifact = await artifactPage(ui, projectId, "dashboard");
     await expect.poll(() => restoredFirst.title()).toBe("E2E Tick — Ballast");
+    await expect(restoredFirst.getByTestId("project-navigator")).toBeVisible();
     await expect.poll(() => restoredSecond.title()).toBe("E2E Second — Ballast");
     await expect.poll(() => restoredArtifact.title()).toBe(
       "Stream dashboard — E2E Tick — Ballast",

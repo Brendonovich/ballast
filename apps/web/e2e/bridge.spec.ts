@@ -55,7 +55,9 @@ const installBridge = async (page: Page): Promise<void> => {
         context: async () => ({ kind: "home", route: "projects" }),
         openProjectWindow: async () => {},
         openArtifactWindow: async () => {},
-        openHome: async () => {},
+        openHome: async (route?: string) => {
+          localStorage.setItem("ballast.bridge.openHome", route ?? "projects");
+        },
       },
       projects: {
         setMenu: async () => {},
@@ -138,4 +140,30 @@ test("desktop bridge supplies running state and service actions", async ({ page 
   await page.getByTestId("new-project").click();
   await page.getByTestId("create-project-directory-pick").click();
   await expect(page.getByTestId("create-project-directory")).toHaveValue("/tmp/picked-project");
+});
+
+test("a desktop project window switches to Connections and Settings in place", async ({ page }) => {
+  await installBridge(page);
+  await page.goto("/#/projects/proj_main");
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
+  const before = page.context().pages().length;
+
+  await page.getByTestId("project-nav-connections").click();
+  await expect(page).toHaveURL(/#\/projects\/proj_main\/connections$/);
+  await expect(page.getByTestId("project-rail")).toBeVisible();
+  await expect(page.getByTestId("connection-row").first()).toBeVisible();
+  await expect(page).toHaveTitle("Connections — Main Channel — Ballast");
+
+  await page.getByTestId("project-back").click();
+  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
+
+  await page.getByTestId("project-nav-settings").click();
+  await expect(page).toHaveURL(/#\/projects\/proj_main\/settings$/);
+  await page.getByTestId("project-nav-project").click();
+  await expect(page.getByTestId("project-navigator")).toBeVisible();
+
+  // Nothing went through the bridge to open another window.
+  expect(page.context().pages().length).toBe(before);
+  expect(await page.evaluate(() => localStorage.getItem("ballast.bridge.openHome"))).toBeNull();
 });

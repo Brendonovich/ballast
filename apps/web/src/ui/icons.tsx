@@ -49,6 +49,22 @@ export const SettingsIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const CodeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="m8 8-4 4 4 4" />
+    <path d="m16 8 4 4-4 4" />
+    <path d="m13.5 5-3 14" />
+  </Icon>
+);
+
+export const WorkspaceIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+    <path d="M9 13h12" />
+  </Icon>
+);
+
 export const PlayIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="m8 5 11 7-11 7V5Z" />
