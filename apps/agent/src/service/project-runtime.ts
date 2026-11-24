@@ -352,6 +352,12 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
     const clock = yield* Effect.clockWith((value) => Effect.succeed(value));
     const timers = yield* makeTimerManager({ clock, logs, hub });
     const state = yield* Ref.make<ReadonlyMap<string, ProjectRuntimeRecord>>(new Map());
+    const retiring = yield* Ref.make<
+      ReadonlyArray<{
+        readonly session: RuntimeSession;
+        readonly databases: RunDatabases | undefined;
+      }>
+    >([]);
     const semaphore = yield* Semaphore.make(1);
     const context = yield* Effect.context<never>();
     const layerScope = yield* Scope.Scope;
@@ -1144,11 +1150,26 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         yield* timers.activate({ projectId: record.project.id, generation, session, manifest });
         const next = yield* setRecord({ ...record, appliedManifest: manifest, manifest, generation, status: "running", lastError: undefined, lastErrorKind: undefined, lastErrorSource: undefined, pendingConsent: undefined, session, databases });
         if (previous !== undefined && previous !== session) {
-          Effect.runForkWith(context)(Effect.sleep("30 seconds").pipe(
+          // Keep the old generation briefly so an in-flight reload can settle,
+          // but tie the grace timer to the service scope. A detached fiber used
+          // to keep Node alive for up to 30s after SIGTERM.
+          yield* Ref.update(retiring, (current) => [
+            ...current,
+            { session: previous, databases: previousDatabases },
+          ]);
+          yield* Effect.sleep("30 seconds").pipe(
+            Effect.andThen(
+              Ref.update(retiring, (current) =>
+                current.filter((entry) => entry.session !== previous),
+              ),
+            ),
             Effect.andThen(previous.close),
-            Effect.andThen(previousDatabases === undefined ? Effect.void : previousDatabases.close),
+            Effect.andThen(
+              previousDatabases === undefined ? Effect.void : previousDatabases.close,
+            ),
             Effect.catchCause(() => Effect.void),
-          ));
+            Effect.forkIn(layerScope),
+          );
         }
         yield* logs.write({ level: "info", source: "agent", projectId: next.project.id, message: "started project generation " + generation });
         yield* publish(next);
@@ -1736,9 +1757,16 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
 
     const closeAll = (): Effect.Effect<void> =>
       Effect.gen(function* () {
+        const retired = yield* Ref.get(retiring);
+        yield* Ref.set(retiring, []);
+        for (const entry of retired) {
+          yield* entry.session.close;
+          if (entry.databases !== undefined) yield* entry.databases.close;
+        }
         for (const record of yield* records()) {
           if (record.entry !== undefined) yield* timers.deactivate({ projectId: record.project.id, generation: record.generation });
           if (record.session !== undefined) yield* record.session.close;
+          if (record.databases !== undefined) yield* record.databases.close;
         }
       });
 

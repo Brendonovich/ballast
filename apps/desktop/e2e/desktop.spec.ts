@@ -597,7 +597,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
   }
 });
 
-test("shows the bundled fallback page while the service is not running", async () => {
+test("recovers from the bundled fallback once the service starts", async () => {
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-fallback-"));
   const env: NodeJS.ProcessEnv = {
@@ -621,6 +621,7 @@ test("shows the bundled fallback page while the service is not running", async (
     env,
     timeout: 60_000,
   });
+  let servicePid: number | undefined;
   try {
     const page = await ui.firstWindow();
     await expect(page.getByRole("heading", { name: /Starting Ballast/ })).toBeVisible();
@@ -631,8 +632,84 @@ test("shows the bundled fallback page while the service is not running", async (
       return typeof candidate === "object" && candidate !== null && "service" in candidate;
     });
     expect(hasBridge).toBe(true);
+
+    const started = await runDemo("start", env);
+    expect(started.ok, started.message).toBe(true);
+    servicePid = started.status.pid ?? undefined;
+    if (servicePid === undefined) throw new Error("started service has no pid");
+
+    // No Retry click: the shell polls and navigates on its own.
+    await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 30_000 });
+    await page.waitForLoadState("domcontentloaded");
+    expect(new URL(page.url()).protocol).toBe("http:");
   } finally {
     await ui.close().catch(() => undefined);
+    if (servicePid !== undefined && alive(servicePid)) {
+      await runDemo("stop", env).catch(() => undefined);
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && alive(servicePid)) await sleep(100);
+      if (alive(servicePid)) {
+        try {
+          process.kill(servicePid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("waits for the initial service before loading the window", async () => {
+  test.setTimeout(120_000);
+  const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-first-window-"));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    BALLAST_APP_ID: "dev.ballast.agent.e2e-first." + process.pid,
+    BALLAST_USER_DATA_DIR: path.join(root, "userData"),
+    BALLAST_STATE_DIR: path.join(root, "state"),
+    BALLAST_DATA_DIR: path.join(root, "data"),
+    BALLAST_LOG_DIR: path.join(root, "logs"),
+    BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.BALLAST_UI_URL;
+  delete env.BALLAST_SERVICE_VERSION;
+  delete env.BALLAST_AUTOSTART;
+
+  let servicePid: number | undefined;
+  const ui = await electron.launch({
+    executablePath: electronPath,
+    args: ["."],
+    cwd: desktopRoot,
+    env,
+    timeout: 60_000,
+  });
+  try {
+    const page = await ui.firstWindow();
+    await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 45_000 });
+    await page.waitForLoadState("domcontentloaded");
+    expect(new URL(page.url()).protocol).toBe("http:");
+    const status = await runDemo("status", env);
+    servicePid = status.status.pid ?? undefined;
+    expect(status.status.running).toBe(true);
+  } finally {
+    await ui.close().catch(() => undefined);
+    if (servicePid === undefined) {
+      const status = await runDemo("status", env).catch(() => undefined);
+      servicePid = status?.status.pid ?? undefined;
+    }
+    if (servicePid !== undefined && alive(servicePid)) {
+      await runDemo("stop", env).catch(() => undefined);
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && alive(servicePid)) await sleep(100);
+      if (alive(servicePid)) {
+        try {
+          process.kill(servicePid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

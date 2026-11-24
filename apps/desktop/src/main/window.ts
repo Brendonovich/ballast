@@ -70,6 +70,8 @@ export interface WindowController {
   openHome(route?: HomeRoute): Promise<void>;
   contextFor(sender?: WebContents): WindowContext;
   sync(status: ServiceStatus): Promise<void>;
+  /** True while any window is on the bundled fallback page. */
+  hasFallback(): boolean;
   openUi(): Promise<void>;
   retry(): Promise<void>;
   broadcastServiceStatus(status: ServiceStatus): void;
@@ -588,6 +590,8 @@ export function createWindowController(options: WindowControllerOptions): Window
       lastStatus = status;
       for (const record of records) await syncRecord(record, status);
     },
+    hasFallback: () =>
+      records.some((record) => !record.window.isDestroyed() && record.mode === "fallback"),
     openUi: async () => {
       show();
       const record = focusedRecord();

@@ -268,11 +268,11 @@ async function start(): Promise<void> {
   });
 
   const initialStatus = await refreshStatus();
-  if (!background) windowsController.showInitial();
 
   // Like the OpenCode background service: adopt a running service of the
   // shipped version, replace one of another version, or spawn a new one.
-  // A relaunch after an app update lands here too.
+  // A relaunch after an app update lands here too. Wait for this before the
+  // first window so a replacement never strands it on the fallback page.
   if (autostart && (!initialStatus.running || initialStatus.updateAvailable)) {
     logger.info("starting background service", {
       phase: initialStatus.phase,
@@ -282,12 +282,27 @@ async function start(): Promise<void> {
     await perform("Start Ballast", () => launcher.start());
   }
 
-  const timer = setInterval(() => {
-    void refreshStatus().catch((cause: unknown) => {
-      logger.warn("status refresh failed", { message: cause instanceof Error ? cause.message : String(cause) });
-    });
-  }, 5_000);
-  app.on("will-quit", () => clearInterval(timer));
+  if (!background) windowsController.showInitial();
+
+  let statusTimer: NodeJS.Timeout | undefined;
+  const scheduleRefresh = (delayMs: number): void => {
+    statusTimer = setTimeout(() => {
+      void refreshStatus()
+        .catch((cause: unknown) => {
+          logger.warn("status refresh failed", {
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
+        })
+        .finally(() => {
+          scheduleRefresh(windowsController.hasFallback() ? 1_000 : 5_000);
+        });
+    }, delayMs);
+    statusTimer.unref();
+  };
+  scheduleRefresh(5_000);
+  app.on("will-quit", () => {
+    if (statusTimer !== undefined) clearTimeout(statusTimer);
+  });
 
   // Stage the shipped service and clean old versions in the background.
   void launcher.prepare().then(() => refreshStatus()).catch(() => undefined);

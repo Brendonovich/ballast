@@ -333,10 +333,19 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       yield* Effect.log(`Ballast service listening on ${url}`);
 
       const code = yield* lifecycle.wait;
+      // Never let a wedged finalizer or a stray timer hold the process open:
+      // the desktop replaces services with SIGTERM and waits only seconds.
+      const watchdog = setTimeout(() => {
+        console.error("Ballast service forced exit after shutdown timeout");
+        process.exit(code);
+      }, 2_000);
+      watchdog.unref();
       yield* Effect.log(`Ballast service stopping (exit ${code})`);
-      yield* runtime.closeAll();
-      yield* connections.close();
-      yield* cloud.close();
+      const bounded = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<void> =>
+        effect.pipe(Effect.timeoutOption("1 second"), Effect.ignore);
+      yield* bounded(runtime.closeAll());
+      yield* bounded(connections.close());
+      yield* bounded(cloud.close());
       return code;
     });
 

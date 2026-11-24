@@ -954,8 +954,11 @@ export const ArtifactGatewayLive = Layer.effect(
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         for (const socket of sockets.keys()) socket.close();
+        for (const client of wss.clients) client.terminate();
         wss.close();
         server.close();
+        // Do not let idle page/asset keep-alive connections delay shutdown.
+        server.closeAllConnections();
       }),
     );
 
