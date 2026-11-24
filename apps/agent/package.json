@@ -38,8 +38,9 @@
     "@effect/sql-sqlite-node": "catalog:",
     "effect": "catalog:",
     "rolldown": "catalog:",
-    "solid-js": "catalog:",
-    "ws": "catalog:"
+    "solid-js": "2.0.3",
+    "ws": "catalog:",
+    "@solidjs/web": "2.0.3"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

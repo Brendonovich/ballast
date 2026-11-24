@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "effect": "catalog:",
-    "solid-js": "catalog:"
+    "solid-js": "2.0.3",
+    "@solidjs/web": "2.0.3"
   },
   "devDependencies": {
     "@ballast/core": "workspace:*",

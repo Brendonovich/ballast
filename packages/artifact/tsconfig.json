@@ -9,7 +9,7 @@
       "DOM.Iterable"
     ],
     "jsx": "preserve",
-    "jsxImportSource": "solid-js",
+    "jsxImportSource": "@solidjs/web",
     "types": [],
     "paths": {
       "@ballast/artifact": [

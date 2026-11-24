@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { transformAsync } from "@babel/core";
-import solid from "babel-preset-solid";
+import solid from "@solidjs/babel-plugin";
 import { rolldown } from "rolldown";
 import type { Plugin } from "rolldown";
 import type { ArtifactManifest } from "@ballast/core";
@@ -35,7 +35,7 @@ const solidPlugin = (): Plugin => ({
       babelrc: false,
       configFile: false,
       sourceMaps: true,
-      presets: [[solid, { generate: "dom", hydratable: false }]],
+      plugins: [[solid, { generate: "dom", hydratable: false, moduleName: "@solidjs/web" }]],
       parserOpts: { plugins: ["jsx", "typescript"] },
     });
     if (result?.code === null || result?.code === undefined) return null;

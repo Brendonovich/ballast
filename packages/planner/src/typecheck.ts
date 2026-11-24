@@ -102,6 +102,47 @@ const solidTypes = ((): { readonly root: string; readonly entry: string } | unde
   }
 })();
 
+const webTypes = ((): { readonly entry: string; readonly jsx: string } | undefined => {
+  try {
+    // @solidjs/web has no ./package.json export, so resolve its entry and walk
+    // back out of dist/.
+    const root = dirname(dirname(requireFromPlanner.resolve("@solidjs/web")));
+    return {
+      entry: join(root, "types", "index.d.ts"),
+      jsx: join(root, "types", "jsx.d.ts"),
+    };
+  } catch {
+    return undefined;
+  }
+})();
+
+const solidPaths: Readonly<Record<string, ReadonlyArray<string>>> = {
+  ...(solidTypes === undefined ? {} : { "solid-js": [solidTypes.entry] }),
+  ...(webTypes === undefined
+    ? {}
+    : {
+        "@solidjs/web": [webTypes.entry],
+        "@solidjs/web/jsx-runtime": [webTypes.jsx],
+        "@solidjs/web/jsx-dev-runtime": [webTypes.jsx],
+      }),
+};
+
+const artifactPaths: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "@ballast/artifact": [join(toolchain.ballastRoot, "artifact", "src", "index.ts")],
+  "@ballast/artifact/protocol": [join(toolchain.ballastRoot, "artifact", "src", "protocol.ts")],
+  "@ballast/artifact/solid": [join(toolchain.ballastRoot, "artifact", "src", "solid.ts")],
+  ...solidPaths,
+  "@ballast/*": [
+    join(toolchain.ballastRoot, "*", "src", "index.ts"),
+    join(toolchain.ballastRoot, "integrations", "*", "src", "index.ts"),
+  ],
+  effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
+  "effect/*": [
+    join(toolchain.effectRoot, "dist", "*.d.ts"),
+    join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
+  ],
+};
+
 const walk = async (directory: string, files: Array<string>): Promise<void> => {
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
@@ -376,14 +417,8 @@ const ensureBaseConfig = async (
       allowImportingTsExtensions: true,
       paths: {
         ...exactPaths,
+        ...solidPaths,
         "@ballast/*": packagePaths,
-        ...(solidTypes === undefined
-          ? {}
-          : {
-              "solid-js": [solidTypes.entry],
-              "solid-js/web": [join(solidTypes.root, "web", "types", "index.d.ts")],
-              "solid-js/jsx-runtime": [join(solidTypes.root, "jsx-runtime.d.ts")],
-            }),
         effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
         "effect/*": [
           join(toolchain.effectRoot, "dist", "*.d.ts"),
@@ -417,7 +452,7 @@ interface ProjectConfigs {
 const artifactCompilerOptions = (): Readonly<Record<string, unknown>> => ({
   lib: ["ES2024", "DOM", "DOM.Iterable"],
   jsx: "preserve",
-  jsxImportSource: "solid-js",
+  jsxImportSource: "@solidjs/web",
   types: [],
   noEmit: true,
   composite: false,
@@ -426,6 +461,7 @@ const artifactCompilerOptions = (): Readonly<Record<string, unknown>> => ({
   emitDeclarationOnly: false,
   sourceMap: false,
   incremental: false,
+  paths: artifactPaths,
 });
 
 /**

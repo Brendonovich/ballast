@@ -12,12 +12,13 @@
   },
   "dependencies": {
     "@babel/core": "7.29.13",
-    "babel-preset-solid": "1.9.19",
-    "solid-js": "catalog:",
+    "solid-js": "2.0.3",
     "@ballast/core": "workspace:*",
     "effect": "catalog:",
     "rolldown": "catalog:",
-    "source-map-js": "1.2.4"
+    "source-map-js": "1.2.4",
+    "@solidjs/web": "2.0.3",
+    "@solidjs/babel-plugin": "2.0.2"
   },
   "devDependencies": {
     "@ballast/workflow": "workspace:*",

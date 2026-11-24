@@ -1,9 +1,9 @@
-import { createEffect, For, onCleanup, Show } from "solid-js";
-import { render } from "solid-js/web";
-import { Effect } from "effect";
+import { action, createMemo, For, Loading, onSettled, refresh, Show } from "solid-js";
+import { render } from "@solidjs/web";
 import { createArtifact } from "@ballast/artifact";
-import { createQuery, createStream } from "@ballast/artifact/solid";
+import { collect, mutation, query } from "@ballast/artifact/solid";
 import { DashboardApi } from "../../src/api.ts";
+import type { DashboardEvent } from "../../src/api.ts";
 
 const style = `
   :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e6edf7; }
@@ -23,66 +23,71 @@ const style = `
 `;
 
 export default createArtifact(DashboardApi, (client, root) => {
-  const [snapshot, { refetch }] = createQuery(() => client.api.Snapshot());
-  const live = createStream(() => client.api.Chat(), { limit: 50 });
-
-  // Counters change in the worker; poll the snapshot so the cards stay live.
-  createEffect(() => {
-    const timer = setInterval(() => refetch(), 1_000);
-    onCleanup(() => clearInterval(timer));
-  });
-
-  const reset = () => {
-    void Effect.runPromise(client.api.ResetCounters()).then(() => refetch());
-  };
+  const snapshot = createMemo(() => query(() => client.api.Snapshot()));
+  const live = createMemo<ReadonlyArray<DashboardEvent>>(
+    () => collect(() => client.api.Chat(), { limit: 50 }),
+    { loadingValue: [] },
+  );
 
   const events = () => {
     const liveEvents = [...live()].reverse();
     return liveEvents.length > 0 ? liveEvents : (snapshot()?.events ?? []);
   };
 
+  onSettled(() => {
+    const timer = setInterval(() => refresh(snapshot), 1_000);
+    return () => clearInterval(timer);
+  });
+
+  const reset = action(function* () {
+    yield mutation(() => client.api.ResetCounters());
+    refresh(snapshot);
+  });
+
   return render(
     () => (
-      <main class="dashboard">
-        <style>{style}</style>
-        <header>
-          <div>
-            <h1>Stream dashboard</h1>
-            <p>Fake chat history is queried and watched over RPC; ticks drive the scene counter.</p>
-          </div>
-          <button type="button" onClick={reset}>
-            Reset counters
-          </button>
-        </header>
+      <Loading fallback={<main class="dashboard"><p>Loading dashboard…</p></main>}>
+        <main class="dashboard">
+          <style>{style}</style>
+          <header>
+            <div>
+              <h1>Stream dashboard</h1>
+              <p>Fake chat history is queried and watched over RPC; ticks drive the scene counter.</p>
+            </div>
+            <button type="button" onClick={() => void reset()}>
+              Reset counters
+            </button>
+          </header>
 
-        <section class="stats">
-          <article class="card">
-            <span>Scene switches</span>
-            <strong>{snapshot()?.sceneSwitches ?? 0}</strong>
-          </article>
-          <article class="card">
-            <span>Messages</span>
-            <strong>{snapshot()?.messages ?? 0}</strong>
-          </article>
-        </section>
+          <section class="stats">
+            <article class="card">
+              <span>Scene switches</span>
+              <strong>{snapshot()?.sceneSwitches ?? 0}</strong>
+            </article>
+            <article class="card">
+              <span>Messages</span>
+              <strong>{snapshot()?.messages ?? 0}</strong>
+            </article>
+          </section>
 
-        <section class="card">
-          <h2>Event log</h2>
-          <Show when={events().length > 0} fallback={<p>No events yet.</p>}>
-            <ul>
-              <For each={events()}>
-                {(event) => (
-                  <li>
-                    <code>{event.kind}</code>
-                    <span>{event.text}</span>
-                    <time>{new Date(event.at).toLocaleTimeString()}</time>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </Show>
-        </section>
-      </main>
+          <section class="card">
+            <h2>Event log</h2>
+            <Show when={events().length > 0} fallback={<p>No events yet.</p>}>
+              <ul>
+                <For each={events()}>
+                  {(event) => (
+                    <li>
+                      <code>{event.kind}</code>
+                      <span>{event.text}</span>
+                      <time>{new Date(event.at).toLocaleTimeString()}</time>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </section>
+        </main>
+      </Loading>
     ),
     root,
   );

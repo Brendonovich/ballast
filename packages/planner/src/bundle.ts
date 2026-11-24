@@ -14,24 +14,36 @@ const solidBrowserEntry = (
   requireSolid: ReturnType<typeof createRequire>,
   source: string,
 ): string | undefined => {
-  if (source !== "solid-js" && !source.startsWith("solid-js/")) return undefined;
-  let root: string;
-  try {
-    root = dirname(dirname(requireSolid.resolve("solid-js")));
-  } catch {
-    return undefined;
-  }
-  const entries: Readonly<Record<string, string>> = {
-    "solid-js": join(root, "dist", "solid.js"),
-    "solid-js/jsx-runtime": join(root, "dist", "solid.js"),
-    "solid-js/jsx-dev-runtime": join(root, "dist", "solid.js"),
-    "solid-js/web": join(root, "web", "dist", "web.js"),
-    "solid-js/store": join(root, "store", "dist", "store.js"),
+  const packageRoot = (name: string): string | undefined => {
+    try {
+      return dirname(dirname(requireSolid.resolve(name)));
+    } catch {
+      return undefined;
+    }
   };
-  const entry = entries[source];
+  const entries: Readonly<Record<string, () => string | undefined>> = {
+    "solid-js": () => {
+      const root = packageRoot("solid-js");
+      return root === undefined ? undefined : join(root, "dist", "solid.js");
+    },
+    "@solidjs/web": () => {
+      const root = packageRoot("@solidjs/web");
+      return root === undefined ? undefined : join(root, "dist", "web.js");
+    },
+    "@solidjs/web/jsx-runtime": () => {
+      const root = packageRoot("@solidjs/web");
+      return root === undefined ? undefined : join(root, "dist", "web.js");
+    },
+    "@solidjs/web/jsx-dev-runtime": () => {
+      const root = packageRoot("@solidjs/web");
+      return root === undefined ? undefined : join(root, "dist", "web.dev.js");
+    },
+  };
+  const resolveEntry = entries[source];
+  if (resolveEntry === undefined) return undefined;
+  const entry = resolveEntry();
   return entry !== undefined && existsSync(entry) ? entry : undefined;
 };
-
 export const resolverPlugin = (
   resolveDir: string | undefined,
   browser = false,
@@ -47,8 +59,8 @@ export const resolverPlugin = (
         return { id: source, external: true };
       }
       if (source.startsWith(".") || source.startsWith("/")) return null;
-      // Node's require conditions pick solid-js's server build. Artifact
-      // pages are browser code, so resolve the browser entry explicitly.
+      // Node's require conditions pick the server builds. Artifact pages are
+      // browser code, so resolve Solid's browser entries explicitly.
       if (browser) {
         const solid = solidBrowserEntry(fallback, source);
         if (solid !== undefined) return solid;

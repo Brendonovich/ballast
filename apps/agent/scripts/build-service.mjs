@@ -129,6 +129,15 @@ const workerBytes = await bundle(
 
 await copyPackage("effect");
 await copyPackage("solid-js");
+await copyPackage("@solidjs/web");
+{
+  const solidRequire = createRequire(join(await packageRoot("solid-js"), "package.json"));
+  await copyFrom(await packageRootFor(solidRequire, "@solidjs/signals"), "@solidjs/signals");
+  const webRequire = createRequire(join(await packageRoot("@solidjs/web"), "package.json"));
+  for (const name of ["csstype", "seroval", "seroval-plugins"]) {
+    await copyFrom(await packageRootFor(webRequire, name), name);
+  }
+}
 await copyPackage("ws");
 await copyPackage("rolldown");
 await copyPackage("@typescript/native-preview");

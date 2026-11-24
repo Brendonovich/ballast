@@ -1,7 +1,7 @@
-import { render } from "solid-js/web";
-import { Effect } from "effect";
+import { action, createMemo, Loading, refresh } from "solid-js";
+import { render } from "@solidjs/web";
 import { createArtifact } from "@ballast/artifact";
-import { createQuery, createStream } from "@ballast/artifact/solid";
+import { mutation, query, stream } from "@ballast/artifact/solid";
 import { DashboardApi } from "../../src/api.ts";
 
 const style = `
@@ -17,31 +17,35 @@ const style = `
 `;
 
 export default createArtifact(DashboardApi, (client, root) => {
-  const [snapshot, { refetch }] = createQuery(() => client.api.Snapshot());
-  const live = createStream(() => client.api.Events(), { limit: 20 });
+  const snapshot = createMemo(() => query(() => client.api.Snapshot()));
+  const live = createMemo(() => stream(() => client.api.Events()));
+  const current = () => live() ?? snapshot();
 
-  const reset = () => {
-    void Effect.runPromise(client.api.ResetCounters()).then(() => refetch());
-  };
-
-  const current = () => live()[live().length - 1] ?? snapshot();
+  const reset = action(function* () {
+    yield mutation(() => client.api.ResetCounters());
+    refresh(snapshot);
+  });
 
   return render(
     () => (
-      <main class="dashboard">
-        <style>{style}</style>
-        <header>
-          <div>
-            <h1>Stream dashboard</h1>
-            <p>Replace the heartbeat timer with a real project event.</p>
-          </div>
-          <button type="button" onClick={reset}>Reset counters</button>
-        </header>
-        <section class="card">
-          <span>Scene switches</span>
-          <strong>{current()?.sceneSwitches ?? 0}</strong>
-        </section>
-      </main>
+      <Loading fallback={<main class="dashboard"><p>Connecting to the dashboard…</p></main>}>
+        <main class="dashboard">
+          <style>{style}</style>
+          <header>
+            <div>
+              <h1>Stream dashboard</h1>
+              <p>Replace the heartbeat timer with a real project event.</p>
+            </div>
+            <button type="button" onClick={() => void reset()}>
+              Reset counters
+            </button>
+          </header>
+          <section class="card">
+            <span>Scene switches</span>
+            <strong>{current()?.sceneSwitches ?? 0}</strong>
+          </section>
+        </main>
+      </Loading>
     ),
     root,
   );

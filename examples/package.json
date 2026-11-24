@@ -23,6 +23,8 @@
     "@ballast/module-vtube-studio": "workspace:*",
     "@ballast/module-websocket": "workspace:*",
     "@ballast/workflow": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "solid-js": "2.0.3",
+    "@solidjs/web": "2.0.3"
   }
 }
