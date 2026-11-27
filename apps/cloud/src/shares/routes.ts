@@ -1,15 +1,12 @@
 import {
   CreateShareRequest,
   FinalizeDeployRequest,
-  ShareIdRequest,
-  ReportInstalledRequest,
-  SubscribeRequest,
+  SHARE_CODE_PATH_PREFIX,
   type CreateShareResponse,
   type DeployTokenResponse,
   type FinalizeDeployResponse,
-  type ListShareSubscriptionsResponse,
   type ShareInfo,
-  type SubscribeResponse,
+  type SharedProjectResponse,
 } from "@ballast/cloud-protocol";
 import {
   formatShareCode,
@@ -20,15 +17,18 @@ import {
 import { Clock, Effect } from "effect";
 
 import { HttpError, forbidden, notFound, upstreamError } from "../errors.ts";
-import { decodeJson, json } from "../http.ts";
+import { clientIp, decodeJson, json } from "../http.ts";
 import type { HttpRequest, HttpResponse } from "../http.ts";
-import type { RelayGatewayService } from "../relay/gateway.ts";
-import type { MachineRow } from "../store.ts";
+import type { SharePrincipal } from "./auth.ts";
 
-/** Subscribe attempts per machine in one window; share codes are guessable only by brute force. */
-export const SUBSCRIBE_LIMIT = 20;
-export const SUBSCRIBE_WINDOW_MS = 15 * 60_000;
+export const SHARE_WINDOW_MS = 15 * 60_000;
 export const SHARES_PER_WINDOW = 20;
+/**
+ * Share-code reads per client IP in one window. A subscriber polls each
+ * subscription every 5 minutes; codes (60 random bits) are not guessable,
+ * so this bounds cost more than brute force.
+ */
+export const CODE_READS_PER_WINDOW = 300;
 
 export interface ShareRoutesDeps {
   /**
@@ -36,7 +36,6 @@ export interface ShareRoutesDeps {
    * storage, the shares database and manifest diffs.
    */
   readonly api: SharesApiRpc;
-  readonly relay: RelayGatewayService;
   readonly enforceRateLimit: (
     bucket: string,
     limit: number,
@@ -45,13 +44,13 @@ export interface ShareRoutesDeps {
   ) => Effect.Effect<void, HttpError>;
 }
 
-const infoOf = (row: ShareRow, machine: MachineRow): ShareInfo => ({
+const infoOf = (row: ShareRow, who: SharePrincipal | undefined): ShareInfo => ({
   shareId: row.id,
   name: row.name,
   currentSha: row.currentSha,
   message: row.message,
   deployedAt: row.deployedAt,
-  owner: row.ownerUserId === machine.userId,
+  owner: who !== undefined && row.ownerUserId === who.user.id,
 });
 
 /**
@@ -70,172 +69,115 @@ const fromSharesApi = (error: SharesApiError): HttpError =>
     : upstreamError("The shares API could not be reached");
 
 /**
- * `/api/shares/*` (decision 0013). The cloud authenticates the machine
- * and authorizes every call (owner = the share's user; readers = owner
- * or subscribed machines; share codes grant subscribe); the shares API Worker
- * stores and serves the files. Deploys notify subscribers over the relay.
+ * `/api/shares/*` (decisions 0013, 0014). Publishing is for signed-in
+ * people: the owner (the share's user) creates, reads and deploys. Reading
+ * a share needs only its share code, so subscribers never sign in; the
+ * shares API Worker stores and serves the files. Subscribers poll.
  */
 export const makeShareRoutes = (deps: ShareRoutesDeps) => {
-  const { api, relay } = deps;
+  const { api } = deps;
 
-  const share = (id: string) =>
+  const owned = (who: SharePrincipal, id: string) =>
     Effect.flatMap(api.getShare(id), (row) =>
-      row === null ? Effect.fail(notFound("Unknown share")) : Effect.succeed(row),
+      row === null
+        ? Effect.fail(notFound("Unknown share"))
+        : row.ownerUserId === who.user.id
+          ? Effect.succeed(row)
+          : Effect.fail(forbidden("Only the share's owner can do that")),
     );
 
-  const owned = (machine: MachineRow, id: string) =>
-    Effect.flatMap(share(id), (row) =>
-      row.ownerUserId === machine.userId
-        ? Effect.succeed(row)
-        : Effect.fail(forbidden("Only the share's owner can deploy it")),
-    );
-
-  const readable = (machine: MachineRow, id: string) =>
-    Effect.gen(function* () {
-      const row = yield* share(id);
-      if (row.ownerUserId === machine.userId) return row;
-      if (!(yield* api.isSubscribed({ shareId: id, machineId: machine.id })))
-        return yield* forbidden("This machine is not subscribed to that share");
-      return row;
-    });
-
-  const create = (machine: MachineRow, request: HttpRequest) =>
+  const create = (who: SharePrincipal, request: HttpRequest) =>
     Effect.gen(function* () {
       const body = yield* decodeJson(CreateShareRequest, request.body);
-      yield* deps.enforceRateLimit(
-        "share:" + machine.userId,
-        SHARES_PER_WINDOW,
-        SUBSCRIBE_WINDOW_MS,
-        yield* Clock.currentTimeMillis,
-      );
+      yield* deps.enforceRateLimit("share:" + who.user.id, SHARES_PER_WINDOW, SHARE_WINDOW_MS, yield* Clock.currentTimeMillis);
       const row = yield* api
-        .createShare({ ownerUserId: machine.userId, ownerMachineId: machine.id, name: body.name })
+        .createShare({ ownerUserId: who.user.id, name: body.name })
         .pipe(Effect.mapError(fromSharesApi));
       return json(201, {
-        share: infoOf(row, machine),
+        share: infoOf(row, who),
         shareCode: formatShareCode(row.shareCode),
       } satisfies CreateShareResponse);
     });
 
-  const get = (machine: MachineRow, id: string) =>
-    Effect.gen(function* () {
-      const row = yield* readable(machine, id);
-      return json(200, {
-        share: infoOf(row, machine),
-        ...(row.ownerUserId === machine.userId ? { shareCode: formatShareCode(row.shareCode) } : {}),
-      });
-    });
+  const get = (who: SharePrincipal, id: string) =>
+    Effect.map(owned(who, id), (row) =>
+      json(200, { share: infoOf(row, who), shareCode: formatShareCode(row.shareCode) }),
+    );
 
-  const deployToken = (machine: MachineRow, id: string) =>
+  const deployToken = (who: SharePrincipal, id: string) =>
     Effect.gen(function* () {
-      yield* owned(machine, id);
+      yield* owned(who, id);
       const token = yield* api.deployToken(id).pipe(Effect.mapError(fromSharesApi));
       return json(200, token satisfies DeployTokenResponse);
     });
 
-  const finalize = (machine: MachineRow, id: string, request: HttpRequest) =>
+  const finalize = (who: SharePrincipal, id: string, request: HttpRequest) =>
     Effect.gen(function* () {
       const body = yield* decodeJson(FinalizeDeployRequest, request.body);
-      yield* owned(machine, id);
+      yield* owned(who, id);
       const deployed = yield* api
         .recordDeploy({ id, sha: body.sha, message: body.message?.trim().slice(0, 500) || null })
         .pipe(Effect.mapError(fromSharesApi));
-      let notified = 0;
-      const row = deployed.share;
-      for (const machineId of deployed.subscribers) {
-        const sent = yield* relay
-          .notify(machineId, {
-            _tag: "share_update",
-            shareId: row.id,
-            sha: body.sha,
-            message: row.message,
-            deployedAt: row.deployedAt ?? (yield* Clock.currentTimeMillis),
-          })
-          .pipe(Effect.as(true), Effect.catch(() => Effect.succeed(false)));
-        if (sent) notified += 1;
-      }
       return json(200, {
-        share: infoOf(row, machine),
+        share: infoOf(deployed.share, who),
         manifestHash: deployed.manifestHash,
-        notified,
       } satisfies FinalizeDeployResponse);
     });
 
-  const subscribe = (machine: MachineRow, request: HttpRequest) =>
+  const byCode = (request: HttpRequest, code: string) =>
     Effect.gen(function* () {
-      const body = yield* decodeJson(SubscribeRequest, request.body);
       yield* deps.enforceRateLimit(
-        "subscribe:" + machine.id,
-        SUBSCRIBE_LIMIT,
-        SUBSCRIBE_WINDOW_MS,
+        "share-code:" + clientIp(request),
+        CODE_READS_PER_WINDOW,
+        SHARE_WINDOW_MS,
         yield* Clock.currentTimeMillis,
       );
-      const found = yield* api.findShareByCode(body.shareCode);
-      if (found === null) return yield* notFound("Unknown share code");
-      yield* api.subscribe({ shareId: found.id, machineId: machine.id });
-      return json(200, { share: infoOf(found, machine) } satisfies SubscribeResponse);
+      const row = yield* api.findShareByCode(code);
+      if (row === null) return yield* notFound("Unknown share code");
+      return row;
     });
 
-  const unsubscribe = (machine: MachineRow, request: HttpRequest) =>
+  const diff = (row: ShareRow, url: URL) =>
     Effect.gen(function* () {
-      const body = yield* decodeJson(ShareIdRequest, request.body);
-      yield* api.unsubscribe({ shareId: body.shareId, machineId: machine.id });
-      return json(200, { ok: true });
-    });
-
-  const installed = (machine: MachineRow, request: HttpRequest) =>
-    Effect.gen(function* () {
-      const body = yield* decodeJson(ReportInstalledRequest, request.body);
-      yield* readable(machine, body.shareId);
-      yield* api.setInstalledSha({ shareId: body.shareId, machineId: machine.id, sha: body.sha });
-      return json(200, { ok: true });
-    });
-
-  const list = (machine: MachineRow) =>
-    Effect.map(api.listSubscriptions(machine.id), (rows) =>
-      json(200, {
-        subscriptions: rows.map((row) => ({
-          share: infoOf(row.share, machine),
-          installedSha: row.installedSha,
-        })),
-      } satisfies ListShareSubscriptionsResponse),
-    );
-
-  const diff = (machine: MachineRow, id: string, url: URL) =>
-    Effect.gen(function* () {
-      yield* readable(machine, id);
       const from = url.searchParams.get("from");
       const to = url.searchParams.get("to");
       const result = yield* api
-        .diff({ id, from: from === null || from === "" ? null : from, to: to === null || to === "" ? null : to })
+        .diff({ id: row.id, from: from === null || from === "" ? null : from, to: to === null || to === "" ? null : to })
         .pipe(Effect.mapError(fromSharesApi));
       return json(200, result);
     });
 
-  /** Undefined when the path is not a share route. */
+  /** Share-code reads; undefined when the path is not one. No sign-in. */
+  const publicRoute = (request: HttpRequest, url: URL): Effect.Effect<HttpResponse, HttpError> | undefined => {
+    if (request.method !== "GET" || !url.pathname.startsWith(SHARE_CODE_PATH_PREFIX)) return undefined;
+    const match = /^([^/]+)(\/diff)?$/.exec(url.pathname.slice(SHARE_CODE_PATH_PREFIX.length));
+    if (match === null || match[1] === undefined) return undefined;
+    const code = decodeURIComponent(match[1]);
+    return Effect.flatMap(byCode(request, code), (row) =>
+      match[2] === undefined
+        ? Effect.succeed(json(200, { share: infoOf(row, undefined) } satisfies SharedProjectResponse))
+        : diff(row, url),
+    );
+  };
+
+  /** Publishing routes for the signed-in owner; undefined when the path is not one. */
   const route = (
-    machine: MachineRow,
+    who: SharePrincipal,
     request: HttpRequest,
     url: URL,
   ): Effect.Effect<HttpResponse, HttpError> | undefined => {
     const path = url.pathname;
-    if (path !== "/api/shares" && !path.startsWith("/api/shares/")) return undefined;
     const method = request.method;
-    if (method === "POST" && path === "/api/shares") return create(machine, request);
-    if (method === "POST" && path === "/api/shares/subscriptions") return subscribe(machine, request);
-    if (method === "GET" && path === "/api/shares/subscriptions") return list(machine);
-    if (method === "POST" && path === "/api/shares/unsubscribe") return unsubscribe(machine, request);
-    if (method === "POST" && path === "/api/shares/installed") return installed(machine, request);
+    if (method === "POST" && path === "/api/shares") return create(who, request);
     const match = /^\/api\/shares\/([^/]+)(?:\/([a-z-]+))?$/.exec(path);
     if (match === null || match[1] === undefined) return undefined;
     const id = decodeURIComponent(match[1]);
     const action = match[2];
-    if (method === "GET" && action === undefined) return get(machine, id);
-    if (method === "POST" && action === "deploy-token") return deployToken(machine, id);
-    if (method === "POST" && action === "deploys") return finalize(machine, id, request);
-    if (method === "GET" && action === "diff") return diff(machine, id, url);
+    if (method === "GET" && action === undefined) return get(who, id);
+    if (method === "POST" && action === "deploy-token") return deployToken(who, id);
+    if (method === "POST" && action === "deploys") return finalize(who, id, request);
     return undefined;
   };
 
-  return { route };
+  return { route, publicRoute };
 };

@@ -13,8 +13,8 @@ export const DEFAULT_ARTIFACT_PORT = 47831;
 /** 0600 state next to the other project state; never committed. */
 export const ARTIFACT_SECRET_FILE = "artifact-secret";
 
-const TOKEN_PREFIX = "r1";
-const TOKEN_MESSAGE = "ballast-artifact-read-v1:";
+const TOKEN_PREFIX = "a1";
+const TOKEN_MESSAGE = "ballast-artifact-v1:";
 
 export interface ArtifactOrigin {
   readonly port: number;
@@ -75,17 +75,17 @@ export const ensureArtifactSecret = async (projectRoot: string): Promise<string>
   }
 };
 
-export const artifactReadToken = (secret: string, projectId: string): string => {
+export const artifactStableToken = (secret: string, projectId: string): string => {
   const mac = createHmac("sha256", secret).update(TOKEN_MESSAGE + projectId).digest("hex");
   return TOKEN_PREFIX + "." + projectId + "." + mac;
 };
 
-export interface ParsedReadToken {
+export interface ParsedStableToken {
   readonly projectId: string;
 }
 
-/** Parse the self-describing read token, without verifying it. */
-export const parseArtifactReadToken = (token: string): ParsedReadToken | undefined => {
+/** Parse the self-describing stable token, without verifying it. */
+export const parseArtifactStableToken = (token: string): ParsedStableToken | undefined => {
   if (token.length > 256) return undefined;
   const parts = token.split(".");
   if (parts.length !== 3) return undefined;
@@ -96,10 +96,10 @@ export const parseArtifactReadToken = (token: string): ParsedReadToken | undefin
   return { projectId };
 };
 
-export const verifyArtifactReadToken = (token: string, secret: string): boolean => {
-  const parsed = parseArtifactReadToken(token);
+export const verifyArtifactStableToken = (token: string, secret: string): boolean => {
+  const parsed = parseArtifactStableToken(token);
   if (parsed === undefined) return false;
-  const expected = artifactReadToken(secret, parsed.projectId);
+  const expected = artifactStableToken(secret, parsed.projectId);
   const actual = Buffer.from(token, "utf8");
   const wanted = Buffer.from(expected, "utf8");
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);
@@ -134,6 +134,6 @@ export const artifactHostFor = async (
   const secret = await ensureArtifactSecret(project.root);
   return {
     origin: origin.origin,
-    readToken: artifactReadToken(secret, project.id),
+    stableToken: artifactStableToken(secret, project.id),
   };
 };

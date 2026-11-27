@@ -1,6 +1,23 @@
-import { Config, Context, Effect, Layer, Redacted } from "effect";
+import { Config, Context, Effect, Redacted } from "effect";
 
 import { DEFAULT_RETENTION_MS, DEFAULT_TWITCH_MAX_SUBSCRIPTION_COST } from "@ballast/cloud-protocol";
+
+import { parseSigningKey, type ClientSigningKey } from "./shares/oidc.ts";
+
+/** "Sign in with Anomaly" (decision 0014). */
+export const DEFAULT_SHARE_ISSUER = "https://account.anoma.ly";
+
+export interface ShareSignInConfig {
+  /** OpenID Connect issuer people sign in to the share server with. */
+  readonly issuer: string;
+  /**
+   * The registered client id. Unset, the server uses its own client ID
+   * metadata document URL (`/api/shares/auth/client.json`) as the id.
+   */
+  readonly clientId: string | undefined;
+  /** Private ES256 JWK for `private_key_jwt`; unset, sign-in answers 503. */
+  readonly signingKey: ClientSigningKey | undefined;
+}
 
 export interface CloudConfigService {
   readonly publicOrigin: string;
@@ -16,6 +33,7 @@ export interface CloudConfigService {
   readonly retentionMs: number;
   readonly twitchIdBaseUrl: string;
   readonly twitchApiBaseUrl: string;
+  readonly shareSignIn: ShareSignInConfig;
 }
 
 export class CloudConfig extends Context.Service<CloudConfig, CloudConfigService>()(
@@ -51,6 +69,10 @@ export const makeCloudConfig = (values: {
   readonly retentionMs?: number;
   readonly twitchIdBaseUrl?: string;
   readonly twitchApiBaseUrl?: string;
+  readonly shareIssuer?: string;
+  readonly shareClientId?: string;
+  /** Private ES256 JWK as JSON. */
+  readonly shareClientKey?: string;
 }): CloudConfigService => ({
   publicOrigin: (values.publicOrigin ?? DEV_PUBLIC_ORIGIN).replace(/\/$/, ""),
   twitchClientId: values.twitchClientId,
@@ -75,23 +97,30 @@ export const makeCloudConfig = (values: {
   retentionMs: values.retentionMs ?? DEFAULT_RETENTION_MS,
   twitchIdBaseUrl: (values.twitchIdBaseUrl ?? "https://id.twitch.tv").replace(/\/$/, ""),
   twitchApiBaseUrl: (values.twitchApiBaseUrl ?? "https://api.twitch.tv").replace(/\/$/, ""),
+  shareSignIn: {
+    issuer: (values.shareIssuer || DEFAULT_SHARE_ISSUER).replace(/\/$/, ""),
+    clientId: values.shareClientId || undefined,
+    signingKey: values.shareClientKey ? parseKeyOrThrow(values.shareClientKey) : undefined,
+  },
 });
+
+const parseKeyOrThrow = (value: string): ClientSigningKey => {
+  try {
+    return parseSigningKey(value);
+  } catch (cause) {
+    throw new Error("ANOMALY_CLIENT_KEY " + (cause instanceof Error ? cause.message : String(cause)));
+  }
+};
 
 /**
  * Reads the Worker's bound environment. Alchemy captures each `Config` at
  * plan time and reads it back from the Worker's env at runtime. A Worker's
  * Effect init can yield this directly so the bindings are registered without
- * a separate `env` prop.
+ * a separate `env` prop. The public origin is not configured: the Worker
+ * learns its own URL (`Cloudflare.Worker.URL`) and passes it in.
  */
-export const loadCloudConfig = (options: {
-  /** A remote Worker knows its public URL before its env bindings exist. */
-  readonly publicOrigin?: string;
-} = {}) =>
-  Effect.gen(function* () {
+export const loadCloudConfig = Effect.gen(function* () {
     const values = yield* Config.all({
-      publicOrigin: options.publicOrigin === undefined
-        ? Config.String("BALLAST_PUBLIC_ORIGIN").pipe(Config.withDefault(DEV_PUBLIC_ORIGIN))
-        : Config.succeed(options.publicOrigin),
       twitchClientId: Config.String("TWITCH_CLIENT_ID"),
       twitchClientSecret: Config.Redacted("TWITCH_CLIENT_SECRET"),
       tokenKey: Config.Redacted("BALLAST_TOKEN_KEY"),
@@ -105,9 +134,12 @@ export const loadCloudConfig = (options: {
       twitchApiBaseUrl: Config.String("TWITCH_API_BASE_URL").pipe(
         Config.withDefault("https://api.twitch.tv"),
       ),
+      shareIssuer: Config.String("ANOMALY_ISSUER").pipe(Config.withDefault(DEFAULT_SHARE_ISSUER)),
+      shareClientId: Config.String("ANOMALY_CLIENT_ID").pipe(Config.withDefault("")),
+      shareClientKey: Config.Redacted("ANOMALY_CLIENT_KEY").pipe(Config.withDefault(Redacted.make(""))),
     });
-    return makeCloudConfig({
-      publicOrigin: values.publicOrigin,
+    return (publicOrigin: string): CloudConfigService => makeCloudConfig({
+      publicOrigin,
       twitchClientId: values.twitchClientId,
       twitchClientSecret: Redacted.value(values.twitchClientSecret),
       tokenKey: Redacted.value(values.tokenKey),
@@ -115,10 +147,9 @@ export const loadCloudConfig = (options: {
       maxSubscriptionCost: values.maxSubscriptionCost,
       twitchIdBaseUrl: values.twitchIdBaseUrl,
       twitchApiBaseUrl: values.twitchApiBaseUrl,
+      shareIssuer: values.shareIssuer,
+      shareClientId: values.shareClientId,
+      shareClientKey: Redacted.value(values.shareClientKey),
     });
-  });
+});
 
-export const CloudConfigLive = Layer.effect(
-  CloudConfig,
-  Effect.map(loadCloudConfig(), (config) => CloudConfig.of(config)),
-);

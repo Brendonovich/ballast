@@ -1,6 +1,7 @@
 import { Show, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import type { ApplyProjectUpdateResult, ProjectSummary } from "@ballast/agent-protocol";
+import { shareLink } from "@ballast/agent-protocol";
 
 import { useAgent } from "../../state/context.tsx";
 import { AlertIcon, CopyIcon } from "../../ui/icons.tsx";
@@ -58,10 +59,12 @@ export const ShareBar = (props: { readonly project: ProjectSummary }): JSX.Eleme
             </code>
             <button
               type="button"
+              data-testid="copy-share-link"
+              title={shareLink(value().server, value().shareCode)}
               class="inline-flex items-center gap-1 text-accent hover:underline"
-              onClick={() => void copy(value().shareCode)}
+              onClick={() => void copy(shareLink(value().server, value().shareCode))}
             >
-              <CopyIcon size={11} /> {copied() ? "Copied" : "Copy"}
+              <CopyIcon size={11} /> {copied() ? "Copied" : "Copy link"}
             </button>
             <Show when={value().sha}>
               {(sha) => <span class="ml-auto font-mono">deployed {short(sha())}</span>}

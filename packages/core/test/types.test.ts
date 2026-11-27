@@ -4,9 +4,7 @@ import { Rpc, RpcGroup } from "effect/rpc";
 import * as Schema from "effect/Schema";
 import * as Ballast from "../src/index.ts";
 
-const Ping = RpcGroup.make(
-  Ballast.Api.action(Rpc.make("Ping", { success: Schema.Number })),
-);
+const Ping = RpcGroup.make(Rpc.make("Ping", { success: Schema.Number }));
 
 const handlers: RpcGroup.HandlersFrom<RpcGroup.Rpcs<typeof Ping>> = {
   Ping: () =>
@@ -43,14 +41,16 @@ const historyQueryInInit = Effect.gen(function* () {
 const historyProject: Ballast.Project = Effect.asVoid(historyQueryInInit);
 
 describe("artifact type surface", () => {
-  it("accepts Runtime-backed action handlers", () => {
+  it("accepts Runtime-backed API handlers", () => {
     expect(handlers.Ping).toBeTypeOf("function");
     expect(project).toBeDefined();
     expect(historyProject).toBeDefined();
   });
 
-  it("marks annotated procedures as actions", () => {
+  it("records each procedure and whether it streams", () => {
     const manifest = Ballast.Api.toApiManifest(Ping, undefined);
-    expect(manifest.procedures[0]?.kind).toBe("action");
+    expect(manifest.procedures[0]?.name).toBe("Ping");
+    expect(manifest.procedures[0]?.stream).toBe(false);
+    expect(manifest.procedures[0]).not.toHaveProperty("kind");
   });
 });

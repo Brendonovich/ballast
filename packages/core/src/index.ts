@@ -15,7 +15,6 @@ export {
   WorkflowManifestSchema,
   RunManifestSchema,
   ArtifactManifestSchema,
-  ApiProcedureKindSchema,
   ApiProcedureManifestSchema,
   ApiManifestSchema,
   StoreKindSchema,
@@ -50,7 +49,6 @@ export type {
   WorkflowManifest,
   RunManifest,
   ArtifactManifest,
-  ApiProcedureKind,
   ApiProcedureManifest,
   ApiManifest,
   StoreKind,
@@ -86,7 +84,7 @@ export type {
   ApiHostService,
   ApiStart,
 } from "./api.ts";
-export { ApiAction, ApiDeclarationError, ApiHost } from "./api.ts";
+export { ApiDeclarationError, ApiHost } from "./api.ts";
 export * as ConnectionState from "./connection-state.ts";
 export type { ConnectionStatePayload } from "./connection-state.ts";
 export { ConnectionStatePayloadSchema } from "./connection-state.ts";

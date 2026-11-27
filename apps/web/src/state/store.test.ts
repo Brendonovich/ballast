@@ -133,7 +133,6 @@ describe("agent store against MockAgentLayer", () => {
     const artifacts = await store.fetchArtifacts(main, true);
     expect(artifacts?.some((artifact) => artifact.name === "dashboard")).toBe(true);
     const view = await store.getArtifactView(main, "dashboard");
-    expect(view?.scope).toBe("action");
     if (view === undefined) return;
 
     const renewed = await store.renewArtifactView(view.token);

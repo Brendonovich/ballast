@@ -8,7 +8,7 @@ A transparent browser artifact declared directly in an OBS scene:
 - `artifacts/alerts/main.ts` is the overlay page: plain DOM and CSS, no
   dependencies.
 
-`overlay.url` is the artifact's stable, read-only page URL, with
+`overlay.url` is the artifact's stable page URL, with
 `?background=transparent` because the artifact is declared
 `transparent: true`.
 

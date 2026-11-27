@@ -168,12 +168,8 @@ export const ArtifactManifestSchema = Schema.Struct({
 });
 export type ArtifactManifest = Schema.Schema.Type<typeof ArtifactManifestSchema>;
 
-export const ApiProcedureKindSchema = Schema.Literals(["query", "action", "stream"]);
-export type ApiProcedureKind = Schema.Schema.Type<typeof ApiProcedureKindSchema>;
-
 export const ApiProcedureManifestSchema = Schema.Struct({
   name: Schema.String,
-  kind: ApiProcedureKindSchema,
   /** True for an Effect RPC streaming success schema. */
   stream: Schema.Boolean,
   payloadSchema: Schema.Unknown,

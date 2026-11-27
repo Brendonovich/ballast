@@ -97,6 +97,7 @@ describe("project scaffolding and checks", () => {
       const projectRoot = join(root, "projects", "new-stream");
       expect((yield* Effect.promise(() => stat(join(projectRoot, "ballast.ts")))).isFile()).toBe(true);
       expect(yield* Effect.promise(() => readFile(join(projectRoot, "AGENTS.md"), "utf8"))).toContain("ballast_guide");
+      expect(yield* Effect.promise(() => readFile(join(projectRoot, "AGENTS.md"), "utf8"))).toContain("ballast_check");
       expect(yield* Effect.promise(() => readFile(join(projectRoot, "package.json"), "utf8"))).toContain("ballast.ts");
       const scaffold = yield* Effect.promise(() => readFile(join(projectRoot, "ballast.ts"), "utf8"));
       expect(scaffold).toContain("Ballast.Param.string");

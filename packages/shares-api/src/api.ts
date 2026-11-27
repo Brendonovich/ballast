@@ -39,26 +39,18 @@ export interface RecordedDeploy {
   readonly manifestHash: string;
   /** False when `sha` already was the current deploy (an idempotent retry). */
   readonly recorded: boolean;
-  /** Machines subscribed to the share, to notify. */
-  readonly subscribers: ReadonlyArray<string>;
-}
-
-export interface MachineSubscription {
-  readonly share: ShareRow;
-  readonly installedSha: string | null;
 }
 
 /**
  * The shares API's operations (decision 0013): share records,
  * repo storage, deploy validation and manifest diffs. It has no notion of
- * credentials; the Ballast cloud authenticates machines and decides who may
- * call what, then calls these over a service binding.
+ * credentials; the Ballast cloud signs people in (decision 0014), decides who
+ * may call what, then calls these over a service binding.
  */
 // A type alias (not an interface) so it satisfies Worker's indexed RPC shape.
 export type SharesApiRpc = {
   readonly createShare: (input: {
     readonly ownerUserId: string;
-    readonly ownerMachineId: string | null;
     readonly name: string;
   }) => Effect.Effect<ShareRow, SharesApiError>;
   readonly getShare: (id: string) => Effect.Effect<ShareRow | null>;
@@ -70,15 +62,6 @@ export type SharesApiRpc = {
     readonly sha: string;
     readonly message: string | null;
   }) => Effect.Effect<RecordedDeploy, SharesApiError>;
-  readonly subscribe: (input: { readonly shareId: string; readonly machineId: string }) => Effect.Effect<void>;
-  readonly unsubscribe: (input: { readonly shareId: string; readonly machineId: string }) => Effect.Effect<void>;
-  readonly isSubscribed: (input: { readonly shareId: string; readonly machineId: string }) => Effect.Effect<boolean>;
-  readonly listSubscriptions: (machineId: string) => Effect.Effect<ReadonlyArray<MachineSubscription>>;
-  readonly setInstalledSha: (input: {
-    readonly shareId: string;
-    readonly machineId: string;
-    readonly sha: string;
-  }) => Effect.Effect<void>;
   /** Changed files between two deploys by commit SHA; `from` null is a full snapshot, `to` null the current deploy. */
   readonly diff: (input: {
     readonly id: string;
@@ -153,7 +136,6 @@ export const makeSharesApi = (deps: {
         const row: ShareRow = {
           id: "shr_" + suffix,
           ownerUserId: input.ownerUserId,
-          ownerMachineId: input.ownerMachineId,
           name,
           repo: "ballast-" + suffix,
           shareCode: randomShareCode(),
@@ -187,7 +169,7 @@ export const makeSharesApi = (deps: {
         const repos = yield* requireRepos;
         const row = yield* share(input.id);
         if (row.currentSha === input.sha)
-          return { share: row, manifestHash: row.manifestHash ?? "", recorded: false, subscribers: [] };
+          return { share: row, manifestHash: row.manifestHash ?? "", recorded: false };
         const commit = yield* repos.readCommit(row.repo, input.sha).pipe(Effect.mapError(storageError));
         if (commit === undefined)
           return yield* fail(409, "conflict", "Commit " + input.sha + " is not in the share's repo; push it first");
@@ -214,27 +196,8 @@ export const makeSharesApi = (deps: {
           share: { ...row, currentSha: input.sha, manifestHash, message: input.message, deployedAt, updatedAt: deployedAt },
           manifestHash,
           recorded: true,
-          subscribers: yield* store.listSubscribedMachines(row.id),
         };
       }),
-
-    subscribe: ({ shareId, machineId }) =>
-      Effect.flatMap(Clock.currentTimeMillis, (now) =>
-        store.upsertSubscription({ shareId: shareId, machineId, installedSha: null, createdAt: now, updatedAt: now }),
-      ),
-
-    unsubscribe: ({ shareId, machineId }) => store.deleteSubscription(shareId, machineId),
-
-    isSubscribed: ({ shareId, machineId }) =>
-      Effect.map(store.findSubscription(shareId, machineId), Option.isSome),
-
-    listSubscriptions: (machineId) =>
-      Effect.map(store.listSubscriptionsByMachine(machineId), (rows) =>
-        rows.map((row) => ({ share: row.share, installedSha: row.subscription.installedSha })),
-      ),
-
-    setInstalledSha: ({ shareId, machineId, sha }) =>
-      Effect.flatMap(Clock.currentTimeMillis, (now) => store.setInstalledSha(shareId, machineId, sha, now)),
 
     diff: (input) =>
       Effect.gen(function* () {

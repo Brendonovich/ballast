@@ -25,6 +25,18 @@ import {
   planProject,
   resolveProjectEntry,
 } from "@ballast/planner";
+import { CODING_AGENTS } from "@ballast/agent-protocol";
+import { rmSync } from "node:fs";
+import { applyTestOnboarding } from "./test-onboarding.ts";
+
+const testOnboarding = applyTestOnboarding();
+if (testOnboarding?.created === true) {
+  process.stderr.write(
+    `ballast: BALLAST_TEST_ONBOARDING: fresh install in ${testOnboarding.root}\n` +
+      `  reuse it from another shell with BALLAST_TEST_ONBOARDING=1 BALLAST_TEST_ONBOARDING_ROOT=${testOnboarding.root}\n`,
+  );
+}
+
 const NodePlatformLayer = Layer.mergeAll(
   NodeChildProcessSpawner.layer.pipe(
     Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
@@ -57,7 +69,8 @@ import {
 } from "./service/config.ts";
 import type { Environment, ServiceRegistration } from "./service/config.ts";
 import { runServe } from "./service/server.ts";
-import { authorizeTwitchAccount } from "./twitch/auth.ts";
+import { authorizeTwitchAccount, defaultOpenUrl } from "./twitch/auth.ts";
+import { parseShareInput, shareLink } from "@ballast/agent-protocol";
 import { claimPairing } from "./twitch/cloud.ts";
 import {
   isTwitchMode,
@@ -71,14 +84,19 @@ import type { TwitchMode } from "./twitch/config.ts";
 import { requiredScopes } from "./twitch/conditions.ts";
 
 const usage = `Usage:
+  (BALLAST_TEST_ONBOARDING=1 runs any command against a fresh install in a temp dir)
   ballast serve [--port 0] [--dev] [--supervised]
       [--state-dir <dir>] [--data-dir <dir>] [--web-dir <dir>] [--cloud <url>]
+      [--share-server <url>]
   ballast mcp [--state-dir <dir>] [--data-dir <dir>] [--url <url> --token <token>]
   ballast status
   ballast projects list|get <id>|add <path> [--name <name>]|remove <id>
-  ballast projects share <id> [--message <text>]|deploy <id> [--message <text>]
-  ballast projects subscribe <share-code> [--dir <dir>] [--name <name>]
+  ballast projects agents <id> [opencode|claude-code|codex...]
+  ballast projects share <id> [--message <text>] [--server <url>]|deploy <id> [--message <text>]
+  ballast projects subscribe <share-link|share-code> [--server <url>] [--dir <dir>] [--name <name>]
       |update <id>|unsubscribe <id>
+  ballast shares status|login [--server <url>] [--no-open]|logout [--server <url>]
+      |default [<url>]
   ballast connections list|get <id>|configure <id> key=value...
       |connect <id>|disconnect <id>|auth <id>
   ballast cloud status|begin|pair <code>|unpair [--machine-name <name>]
@@ -111,6 +129,11 @@ connection. In local mode the client id comes from --connection
 twitch/<slot>=<client id> or BALLAST_TWITCH_CLIENT_ID; the client secret from
 --connection-secret or BALLAST_TWITCH_CLIENT_SECRET. Tokens live under
 BALLAST_DATA_DIR (default ~/.local/share/ballast).
+
+Sharing: projects are shared through a share server (the Ballast cloud by
+default; BALLAST_SHARE_SERVER, --share-server or 'ballast shares default <url>'
+picks another). Publishing needs 'ballast shares login' once per server (Sign
+in with Anomaly on the hosted cloud); subscribing only needs the share link.
 
 Cloud mode: pair this machine with 'ballast pair <code> --cloud <url>', then
 bind a slot with --connection twitch/<slot>=<login> if the account has more
@@ -732,6 +755,27 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
       console.log(`removed ${id}`);
       return;
     }
+    if (sub === "agents") {
+      const [id, ...names] = positional(rest, []);
+      if (id === undefined) throw new Error("projects agents requires an id");
+      const agents = names.map((name) => {
+        const agent = CODING_AGENTS.find((candidate) => candidate === name);
+        if (agent === undefined) {
+          throw new Error(`unknown agent "${name}"; expected one of ${CODING_AGENTS.join(", ")}`);
+        }
+        return agent;
+      });
+      const setup = yield* service((client) =>
+        agents.length === 0
+          ? client.GetProjectAgentSetup({ projectId: id })
+          : client.WriteProjectAgentConfigs({ projectId: id, agents }),
+      );
+      for (const agent of setup.agents) {
+        console.log(`${agent.configured ? "✓" : " "} ${agent.agent.padEnd(12)} ${agent.file}`);
+      }
+      console.log(`MCP launcher: ${setup.launcher.command}`);
+      return;
+    }
     if (sub === "consents") {
       yield* printJson(
         yield* service((client) =>
@@ -770,30 +814,39 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
       return;
     }
     if (sub === "share" || sub === "deploy") {
-      const id = positional(rest, ["--message"])[0];
+      const id = positional(rest, ["--message", "--server"])[0];
       if (id === undefined) throw new Error(`projects ${sub} requires an id`);
       const message = flagValue(rest, "--message");
-      const request = { projectId: id, ...(message === undefined ? {} : { message }) };
+      const server = flagValue(rest, "--server");
+      const request = {
+        projectId: id,
+        ...(message === undefined ? {} : { message }),
+        ...(server === undefined ? {} : { server }),
+      };
       const result = yield* service((client) =>
         sub === "share" ? client.ShareProject(request) : client.DeployProject(request),
       );
       console.log(
         result.deployed
-          ? `deployed ${result.sha.slice(0, 12)} (${result.files} files, ${result.bytes} bytes); ${result.notified} subscribed machine(s) notified`
+          ? `deployed ${result.sha.slice(0, 12)} to ${result.server} (${result.files} files, ${result.bytes} bytes)`
           : `no changes since ${result.sha.slice(0, 12)}; nothing deployed`,
       );
-      console.log(`share code: ${result.shareCode}  (anyone with a paired Ballast can subscribe with it)`);
+      console.log(`share code: ${result.shareCode}  (anyone with the share link ${shareLink(result.server, result.shareCode)} can subscribe; no sign-in needed)`);
       yield* printJson(result);
       return;
     }
     if (sub === "subscribe") {
-      const shareCode = positional(rest, ["--dir", "--name"])[0];
-      if (shareCode === undefined) throw new Error("projects subscribe requires a share code");
+      const input = positional(rest, ["--dir", "--name", "--server"])[0];
+      const parsed = input === undefined ? undefined : parseShareInput(input);
+      if (parsed === undefined) throw new Error("projects subscribe requires a share link or share code");
+      const shareCode = parsed.shareCode;
       const directory = flagValue(rest, "--dir");
       const name = flagValue(rest, "--name");
+      const server = parsed.server ?? flagValue(rest, "--server");
       const detail = yield* service((client) =>
         client.SubscribeProject({
           shareCode,
+          ...(server === undefined ? {} : { server }),
           ...(directory === undefined ? {} : { directory }),
           ...(name === undefined ? {} : { name }),
         }),
@@ -891,6 +944,47 @@ const cloudCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, C
       return;
     }
     throw new Error(`Unknown cloud command "${sub}"`);
+  });
+
+const sharesCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error, CliServices> =>
+  Effect.gen(function* () {
+    const [sub, ...rest] = args;
+    const server = flagValue(rest, "--server");
+    const target = server === undefined ? {} : { server };
+    if (sub === "status" || sub === undefined) {
+      yield* printJson(yield* service((client) => client.GetShareServers()));
+      return;
+    }
+    if (sub === "login") {
+      const started = yield* service((client) => client.BeginShareSignIn(target));
+      console.log(`Sign in to ${started.server} in your browser:\n  ${started.url}`);
+      if (!rest.includes("--no-open")) yield* defaultOpenUrl(started.url);
+      while (Date.now() < started.expiresAt) {
+        yield* Effect.sleep("1 second");
+        const status = yield* service((client) => client.GetShareServers());
+        const entry = status.servers.find((candidate) => candidate.url === started.server);
+        if (entry?.user !== undefined && (entry.signedInAt ?? 0) >= started.expiresAt - 15 * 60_000) {
+          console.log(`signed in as ${entry.user.username ?? entry.user.name ?? entry.user.id}`);
+          return;
+        }
+      }
+      throw new Error("The sign-in expired; run ballast shares login again");
+    }
+    if (sub === "logout") {
+      const status = yield* service((client) => client.GetShareServers());
+      const url = server ?? status.defaultServer;
+      if (url === undefined) throw new Error("shares logout requires --server <url>");
+      yield* printJson(yield* service((client) => client.SignOutShareServer({ server: url })));
+      return;
+    }
+    if (sub === "default") {
+      const url = positional(rest, [])[0];
+      yield* printJson(
+        yield* service((client) => client.SetDefaultShareServer(url === undefined ? {} : { server: url })),
+      );
+      return;
+    }
+    throw new Error(`Unknown shares command "${sub}"`);
   });
 
 const serviceEnvironmentKeys = [
@@ -1071,6 +1165,11 @@ const program: Effect.Effect<number, Error, CliServices> = Effect.gen(function* 
     return 0;
   }
 
+  if (command === "shares") {
+    yield* sharesCommand(rest);
+    return 0;
+  }
+
   if (command === "service") {
     yield* serviceCommand(rest);
     return 0;
@@ -1121,6 +1220,11 @@ const main = program.pipe(
 NodeRuntime.runMain(main, {
   disableErrorReporting: true,
   teardown: (exit, _onExit) => {
+    // A foreground `serve` that made the test root removes it; a CLI that
+    // started a background service leaves it to that service's run.
+    if (testOnboarding?.created === true && process.argv[2] === "serve") {
+      rmSync(testOnboarding.root, { recursive: true, force: true });
+    }
     if (exit._tag === "Success") {
       process.exit(typeof exit.value === "number" ? exit.value : 0);
     } else {

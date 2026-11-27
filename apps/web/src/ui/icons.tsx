@@ -214,6 +214,20 @@ export const PanelLeftIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const TerminalIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+    <path d="m7.5 9.5 2.5 2.5-2.5 2.5" />
+    <path d="M12.5 15h4" />
+  </Icon>
+);
+
+export const FolderIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" />
+  </Icon>
+);
+
 export const FileIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10Z" />

@@ -2,13 +2,10 @@ import { homedir } from "node:os";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Ref from "effect/Ref";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import {
   agentError,
@@ -19,13 +16,12 @@ import {
   type ProjectShare,
 } from "@ballast/agent-protocol";
 import {
-  ApiErrorBody,
   CreateShareResponse,
   DeployTokenResponse,
   FinalizeDeployResponse,
-  ListShareSubscriptionsResponse,
   ShareDiffResponse,
-  SubscribeResponse,
+  SharedProjectResponse,
+  shareCodePath,
   decodeBase64,
   diffShareManifests,
   validateShareManifest,
@@ -33,7 +29,8 @@ import {
   type ShareManifest,
 } from "@ballast/cloud-protocol";
 
-import { CloudLink } from "./cloud-link.ts";
+import { isMachineAgentConfig } from "./agent-configs.ts";
+import { ShareServers } from "./share-servers.ts";
 import { ProjectManager, type ProjectRecord } from "./projects.ts";
 import { ProjectRuntime } from "./project-runtime.ts";
 import {
@@ -51,22 +48,28 @@ import { projectSlug } from "./scaffold.ts";
 import { Logs, ServiceHub } from "./telemetry.ts";
 
 /**
- * Project sharing (decision 0013): share/deploy a project to the cloud,
- * subscribe to someone's share by share code, and apply updates.
- * Updates are never applied automatically; a `share_update` relay message
- * (or the periodic check) only marks the project "update available".
+ * Project sharing (decisions 0013, 0014): share/deploy a project to a share
+ * server, subscribe to someone's share by share code, and apply updates.
+ * Updates are never applied automatically; the periodic check only marks the
+ * project "update available". Every call goes to the project's own server
+ * with this machine's signed-in session there.
  */
 export interface ProjectSharesService {
-  readonly share: (projectId: string, message?: string) => Effect.Effect<DeployProjectResult, AgentError>;
+  readonly share: (
+    projectId: string,
+    message?: string,
+    server?: string,
+  ) => Effect.Effect<DeployProjectResult, AgentError>;
   readonly deploy: (projectId: string, message?: string) => Effect.Effect<DeployProjectResult, AgentError>;
   readonly subscribe: (input: {
     readonly shareCode: string;
+    readonly server?: string;
     readonly directory?: string;
     readonly name?: string;
   }) => Effect.Effect<ProjectDetail, AgentError>;
   readonly unsubscribe: (projectId: string) => Effect.Effect<ProjectDetail, AgentError>;
   readonly applyUpdate: (projectId: string) => Effect.Effect<ApplyProjectUpdateResult, AgentError>;
-  /** Ask the cloud for the current deploy of every subscription. */
+  /** Ask each share server for the current deploy of every subscription. */
   readonly checkUpdates: Effect.Effect<void, AgentError>;
 }
 
@@ -81,8 +84,9 @@ const CHECK_INTERVAL_MS = 5 * 60_000;
  * path, so they are not shared; a subscriber's planner generates its own.
  */
 const isMachineConfig = (path: string, bytes: Uint8Array): boolean =>
-  /(^|\/)tsconfig[^/]*\.json$/.test(path) &&
-  new TextDecoder().decode(bytes).includes(GENERATED_CONFIG_NOTICE);
+  (/(^|\/)tsconfig[^/]*\.json$/.test(path) &&
+    new TextDecoder().decode(bytes).includes(GENERATED_CONFIG_NOTICE)) ||
+  isMachineAgentConfig(path, bytes);
 
 const errorText = (cause: unknown): string =>
   typeof cause === "object" && cause !== null && "message" in cause && typeof cause.message === "string"
@@ -93,7 +97,7 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
   Layer.effect(
     ProjectShares,
     Effect.gen(function* () {
-      const cloud = yield* CloudLink;
+      const servers = yield* ShareServers;
       const projects = yield* ProjectManager;
       const runtime = yield* ProjectRuntime;
       const hub = yield* ServiceHub;
@@ -104,56 +108,6 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
         Effect.provideContext(effect, platform);
       const fs = yield* FileSystem.FileSystem;
       const layerScope = yield* Scope.Scope;
-
-      const credentials = Effect.flatMap(cloud.credentials, (value) =>
-        value === undefined
-          ? Effect.fail(agentError("invalid", "Sharing needs this machine to be paired with the Ballast cloud"))
-          : Effect.succeed(value),
-      );
-
-      const call = <A>(
-        schema: Schema.Codec<A, unknown>,
-        method: "GET" | "POST",
-        route: string,
-        body?: unknown,
-      ): Effect.Effect<A, AgentError> =>
-        Effect.gen(function* () {
-          const value = yield* credentials;
-          const response = yield* Effect.tryPromise({
-            try: () =>
-              fetch(value.baseUrl.replace(/\/$/, "") + route, {
-                method,
-                headers: {
-                  authorization: "Bearer " + value.machineToken,
-                  accept: "application/json",
-                  ...(body === undefined ? {} : { "content-type": "application/json" }),
-                },
-                ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-              }),
-            catch: (cause) => agentError("upstream", "Could not reach the Ballast cloud: " + errorText(cause)),
-          });
-          const json = yield* Effect.tryPromise({
-            try: async (): Promise<unknown> => {
-              const text = await response.text();
-              return text.trim() === "" ? undefined : JSON.parse(text);
-            },
-            catch: () => agentError("upstream", "The Ballast cloud returned invalid JSON (" + response.status + ")"),
-          });
-          if (!response.ok) {
-            const parsed = Schema.decodeUnknownOption(ApiErrorBody)(json);
-            const message = Option.isSome(parsed) ? parsed.value.error.message : "Ballast cloud request failed (" + response.status + ")";
-            const tag = Option.isSome(parsed) ? parsed.value.error.tag : "upstream";
-            return yield* Effect.fail(
-              agentError(
-                tag === "not_found" ? "not-found" : tag === "conflict" ? "conflict" : tag === "invalid_request" ? "invalid" : tag === "unauthorized" || tag === "forbidden" ? "unauthorized" : "upstream",
-                message,
-              ),
-            );
-          }
-          return yield* Schema.decodeUnknownEffect(schema)(json).pipe(
-            Effect.mapError((cause) => agentError("upstream", "Unexpected cloud response: " + cause.message)),
-          );
-        });
 
       const requireProject = (projectId: string) =>
         Effect.flatMap(projects.get(projectId), (project) =>
@@ -173,6 +127,7 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
 
       const deployProject = (
         project: ProjectRecord,
+        server: string,
         shareId: string,
         shareCode: string,
         message: string | undefined,
@@ -180,7 +135,8 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
         Effect.gen(function* () {
           const files = yield* provide(collectShareFiles(project.root, isMachineConfig)).pipe(Effect.mapError(filesError));
           const manifest = yield* manifestOf(project.name, files).pipe(Effect.mapError(filesError));
-          const token = yield* call(
+          const token = yield* servers.call(
+            server,
             DeployTokenResponse,
             "POST",
             "/api/shares/" + encodeURIComponent(shareId) + "/deploy-token",
@@ -202,12 +158,13 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
               shareCode,
               sha: pushed.sha,
               deployed: false,
+              server,
               files: files.length,
               bytes,
-              notified: 0,
             };
           }
-          const finalized = yield* call(
+          const finalized = yield* servers.call(
+            server,
             FinalizeDeployResponse,
             "POST",
             "/api/shares/" + encodeURIComponent(shareId) + "/deploys",
@@ -215,6 +172,7 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           );
           yield* setShare(project.id, {
             _tag: "shared",
+            server,
             shareId,
             shareCode,
             sha: pushed.sha,
@@ -224,7 +182,7 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
             level: "info",
             source: "cloud",
             projectId: project.id,
-            message: `deployed ${project.name} ${pushed.sha.slice(0, 8)} (${files.length} files, ${finalized.notified} subscribers notified)`,
+            message: `deployed ${project.name} ${pushed.sha.slice(0, 8)} to ${server} (${files.length} files)`,
           });
           return {
             projectId: project.id,
@@ -232,9 +190,9 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
             shareCode,
             sha: pushed.sha,
             deployed: true,
+            server,
             files: files.length,
             bytes,
-            notified: finalized.notified,
           };
         });
 
@@ -246,10 +204,10 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
             return yield* Effect.fail(agentError("invalid", "A subscribed project is read-only and cannot be deployed"));
           if (share === undefined)
             return yield* Effect.fail(agentError("invalid", "Share the project first (ballast projects share)"));
-          return yield* deployProject(project, share.shareId, share.shareCode, message);
+          return yield* deployProject(project, share.server, share.shareId, share.shareCode, message);
         });
 
-      const share = (projectId: string, message?: string) =>
+      const share = (projectId: string, message?: string, server?: string) =>
         Effect.gen(function* () {
           const project = yield* requireProject(projectId);
           if (project.share?._tag === "subscribed")
@@ -258,24 +216,27 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           // Fail before creating a share when the folder cannot be shared.
           const files = yield* provide(collectShareFiles(project.root, isMachineConfig)).pipe(Effect.mapError(filesError));
           yield* manifestOf(project.name, files).pipe(Effect.mapError(filesError));
-          const created = yield* call(CreateShareResponse, "POST", "/api/shares", {
+          const target = yield* servers.resolve(server);
+          const created = yield* servers.call(target, CreateShareResponse, "POST", "/api/shares", {
             name: project.name,
           });
           const shared = yield* setShare(projectId, {
             _tag: "shared",
+            server: target,
             shareId: created.share.shareId,
             shareCode: created.shareCode,
           });
-          return yield* deployProject(shared, created.share.shareId, created.shareCode, message);
+          return yield* deployProject(shared, target, created.share.shareId, created.shareCode, message);
         });
 
-      const fetchDiff = (shareId: string, from: string | undefined, to: string) =>
+      /** Reads take the share code only: subscribers do not sign in (decision 0014). */
+      const fetchDiff = (server: string, shareCode: string, from: string | undefined, to: string) =>
         Effect.gen(function* () {
           const query = new URLSearchParams({ to, ...(from === undefined ? {} : { from }) });
-          const diff = yield* call(
+          const diff = yield* servers.fetchPublic(
+            server,
             ShareDiffResponse,
-            "GET",
-            "/api/shares/" + encodeURIComponent(shareId) + "/diff?" + query.toString(),
+            shareCodePath(shareCode) + "/diff?" + query.toString(),
           );
           const manifest = yield* validateShareManifest(diff.manifest).pipe(Effect.mapError(filesError));
           const files: Array<ShareFile> = [];
@@ -330,32 +291,24 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           return yield* Effect.fail(agentError("conflict", "No free folder for " + base));
         });
 
-      const reportInstalled = (shareId: string, sha: string) =>
-        call(Schema.Unknown, "POST", "/api/shares/installed", { shareId, sha }).pipe(
-          Effect.catch((error) =>
-            logs.write({ level: "warn", source: "cloud", message: "could not report the installed share: " + error.message }),
-          ),
-          Effect.asVoid,
-        );
-
       const subscribe = (input: {
         readonly shareCode: string;
+        readonly server?: string;
         readonly directory?: string;
         readonly name?: string;
       }) =>
         Effect.gen(function* () {
-          const subscribed = yield* call(SubscribeResponse, "POST", "/api/shares/subscriptions", {
-            shareCode: input.shareCode,
-          });
-          const share = subscribed.share;
+          const server = yield* servers.resolve(input.server);
+          const shareCode = input.shareCode.trim();
+          const { share } = yield* servers.fetchPublic(server, SharedProjectResponse, shareCodePath(shareCode));
           if (share.currentSha === null)
             return yield* Effect.fail(agentError("invalid", `"${share.name}" has not been deployed yet`));
           const existing = (yield* projects.projects).find(
-            (project) => project.share?.shareId === share.shareId,
+            (project) => project.share?.server === server && project.share.shareId === share.shareId,
           );
           if (existing !== undefined)
             return yield* Effect.fail(agentError("conflict", `Already subscribed as project ${existing.id}`));
-          const { manifest, files, diff } = yield* fetchDiff(share.shareId, undefined, share.currentSha);
+          const { manifest, files, diff } = yield* fetchDiff(server, shareCode, undefined, share.currentSha);
           yield* checkCompleteness(undefined, manifest, files, diff.deleted);
           const name = input.name?.trim() || share.name;
           const root = yield* freeDirectory(input.directory, name);
@@ -370,7 +323,9 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
             name,
             share: {
               _tag: "subscribed",
+              server,
               shareId: share.shareId,
+              shareCode,
               installedSha: share.currentSha,
               installedAt: Date.now(),
             },
@@ -378,7 +333,6 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           yield* runtime.syncProject(project.id);
           const summary = yield* runtime.summary(project.id);
           if (summary !== undefined) yield* hub.publish({ _tag: "project", project: summary });
-          yield* reportInstalled(share.shareId, share.currentSha);
           yield* logs.write({
             level: "info",
             source: "cloud",
@@ -394,14 +348,13 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           const share = project.share;
           if (share?._tag !== "subscribed")
             return yield* Effect.fail(agentError("invalid", "The project is not a subscription"));
-          yield* call(Schema.Unknown, "POST", "/api/shares/unsubscribe", {
-            shareId: share.shareId,
-          });
+          // Subscriptions are not recorded on the server; forgetting the code is enough.
           yield* setShare(projectId, undefined);
           return yield* runtime.detail(projectId);
         });
 
       const markAvailable = (deployed: {
+        readonly server: string;
         readonly shareId: string;
         readonly sha: string;
         readonly message: string | null;
@@ -410,7 +363,8 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
         Effect.gen(function* () {
           for (const project of yield* projects.projects) {
             const share = project.share;
-            if (share?._tag !== "subscribed" || share.shareId !== deployed.shareId) continue;
+            if (share?._tag !== "subscribed" || share.server !== deployed.server || share.shareId !== deployed.shareId)
+              continue;
             if (share.installedSha === deployed.sha || share.available?.sha === deployed.sha) continue;
             const update = { sha: deployed.sha, message: deployed.message, deployedAt: deployed.deployedAt };
             yield* setShare(project.id, { ...share, available: update });
@@ -429,21 +383,25 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           }
         }).pipe(Effect.catch(() => Effect.void));
 
-      const fromInfo = (share: ShareInfo) =>
+      const fromInfo = (server: string, share: ShareInfo) =>
         share.currentSha === null
           ? Effect.void
           : markAvailable({
+              server,
               shareId: share.shareId,
               sha: share.currentSha,
               message: share.message,
               deployedAt: share.deployedAt ?? Date.now(),
             });
 
+      /** Ask each subscribed project's server for its current deploy, by share code. */
       const checkUpdates = Effect.gen(function* () {
-        const subscribed = (yield* projects.projects).some((project) => project.share?._tag === "subscribed");
-        if (!subscribed) return;
-        const list = yield* call(ListShareSubscriptionsResponse, "GET", "/api/shares/subscriptions");
-        for (const entry of list.subscriptions) yield* fromInfo(entry.share);
+        for (const project of yield* projects.projects) {
+          const share = project.share;
+          if (share?._tag !== "subscribed") continue;
+          const found = yield* servers.fetchPublic(share.server, SharedProjectResponse, shareCodePath(share.shareCode));
+          yield* fromInfo(share.server, found.share);
+        }
       });
 
       const applyUpdate = (projectId: string) =>
@@ -460,7 +418,7 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
 
           const installed = yield* provide(readInstalledManifest(project.root));
           const base = installed === undefined ? undefined : share.installedSha;
-          const { manifest, files, diff } = yield* fetchDiff(share.shareId, base, target.sha);
+          const { manifest, files, diff } = yield* fetchDiff(share.server, share.shareCode, base, target.sha);
           yield* checkCompleteness(installed, manifest, files, diff.deleted);
 
           // Read-only copy: local edits to files this update touches are
@@ -489,7 +447,9 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
               yield* provide(writeInstalledManifest(project.root, manifest)).pipe(Effect.mapError(filesError));
               yield* setShare(projectId, {
                 _tag: "subscribed",
+                server: share.server,
                 shareId: share.shareId,
+                shareCode: share.shareCode,
                 installedSha: target.sha,
                 installedAt: Date.now(),
               });
@@ -499,7 +459,6 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
             }),
           );
           const generationAfter = (yield* runtime.generation(projectId)) ?? 0;
-          yield* reportInstalled(share.shareId, target.sha);
           const bytes = files.reduce((total, file) => total + file.bytes.byteLength, 0);
           yield* logs.write({
             level: "info",
@@ -519,51 +478,15 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
           };
         });
 
-      // Relay listener plus a periodic check: `share_update` is not
-      // buffered by the relay, so a machine that was offline catches up here.
-      const listener = yield* Ref.make<Scope.Closeable | undefined>(undefined);
-      const lastCheck = yield* Ref.make(0);
-      yield* Effect.addFinalizer(() =>
-        Effect.flatMap(Ref.get(listener), (scope) => (scope === undefined ? Effect.void : Scope.close(scope, Exit.void))),
-      );
-      const tick = Effect.gen(function* () {
-        const relay = yield* cloud.relay;
-        if (relay === undefined) {
-          const scope = yield* Ref.get(listener);
-          if (scope !== undefined) {
-            yield* Scope.close(scope, Exit.void);
-            yield* Ref.set(listener, undefined);
-          }
-          return;
-        }
-        if ((yield* Ref.get(listener)) === undefined) {
-          const scope = yield* Scope.make();
-          yield* relay
-            .listen((message) =>
-              message._tag === "share_update"
-                ? markAvailable({
-                    shareId: message.shareId,
-                    sha: message.sha,
-                    message: message.message,
-                    deployedAt: message.deployedAt,
-                  })
-                : Effect.void,
-            )
-            .pipe(Effect.provideService(Scope.Scope, scope));
-          yield* Ref.set(listener, scope);
-          yield* Ref.set(lastCheck, 0);
-        }
-        const now = Date.now();
-        if (now - (yield* Ref.get(lastCheck)) < CHECK_INTERVAL_MS) return;
-        yield* Ref.set(lastCheck, now);
-        yield* checkUpdates.pipe(
-          Effect.catch((error) =>
-            logs.write({ level: "warn", source: "cloud", message: "update check failed: " + error.message }),
-          ),
-        );
-      });
+      // Share servers do not push deploys (decision 0014): poll by share code.
       yield* Effect.forever(
-        tick.pipe(Effect.catchCause(() => Effect.void), Effect.andThen(Effect.sleep("2 seconds"))),
+        checkUpdates.pipe(
+          Effect.catch((error) =>
+            logs.write({ level: "warn", source: "agent", message: "update check failed: " + error.message }),
+          ),
+          Effect.catchCause(() => Effect.void),
+          Effect.andThen(Effect.sleep(CHECK_INTERVAL_MS)),
+        ),
       ).pipe(Effect.forkIn(layerScope));
 
       return ProjectShares.of({

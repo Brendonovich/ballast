@@ -125,14 +125,17 @@ using a non-default install. For an Electron-shipped start, set
 | `ballast_guide` | none | The authoring contract: imports, entry and modules, params, connections, named subscribe/run, Twitch scopes, durable timers, init/handlers, plan/apply/consent, an example. |
 | `ballast_catalog` | `integration?`, `kind?`, `search?`, `topic?`, `request?`, `includeSchemas?`, `limit?`, `offset?` | Integration index by default; topics (event JSON Schemas), requests (input/output schemas and scopes) and connection kinds when narrowed. Results state when they are truncated and page with `offset`. Schemas come from the integration packages' exported Effect Schemas. |
 | `ballast_project_init` | `name`, `dir?`, `artifact?` | Calls the service's `CreateProject`: writes `ballast.ts`, `package.json`, `tsconfig.json` and `AGENTS.md`; with `artifact: true` it copies the Solid artifact template too. Reports the actual file list from `ListProjectFiles`. The service refuses a non-empty folder. Does not start it. |
-| `ballast_check` | `project` | Calls the service's non-applying `CheckProject`. Returns structured diagnostics (`file`, `line`, `column`, code, message), worker and artifact diagnostics, units with project-relative sources, artifact/API/store declarations, artifact build status, changes with artifact-only hot-reload vs worker-restart classification, `requiresConsent`, requirements/scopes, `appliedManifest` and pending consent. |
-| `ballast_apply` | `project` | Requests a reload of a running, already-approved project. Consent, connection bindings and the first Start are user-only; returns `waiting_for_user` with `reason: "connections"` and the unbound slots when requirements are not bound. Never binds, approves or starts. |
-| `ballast_status` | `project?` | Service health and project state: `running`, `waiting_for_user` (with reason), `previous_version_running_latest_failed`, `error`, `stopped`; per-unit status/source; artifacts with build status; artifact/API/store declarations; requirements and missing scopes. |
+| `ballast_check` | `project`, `detail?` | Calls the service's non-applying `CheckProject`. Compact by default: deduplicated worker/artifact diagnostics (`file`, `line`, `column`, code, message, with artifact errors cascading from a worker error marked), `ok`, `requiresConsent`, missing connections/scopes, compact connection requirements, artifact/API/store declarations, artifact build status, and changes with artifact-only hot-reload vs worker-restart classification. `detail: "full"` adds the manifests, unit rows and complete connection inventory. |
+| `ballast_apply` | `project` | Requests a reload of a running, already-approved project. Consent, connection bindings and the first Start are user-only; returns `waiting_for_user` with `reason: "connections"` and the unbound slots when requirements are not bound. Never binds, approves or starts. Success returns only `state`, `message` and a minimal project summary; a failed or waiting outcome also includes the compact check. |
+| `ballast_status` | `project?` | Service health and project state: `state` is the derived vocabulary (`running`, `waiting_for_user` with reason, `previous_version_running_latest_failed`, `error`, `stopped`) and `serviceStatus` is the raw service status. Per-unit status/source; artifacts with build status; artifact/API/store declarations; requirements and missing scopes. |
 | `ballast_logs` | `project`, `unit?`, `since?`, `limit?` | A bounded log snapshot. `unit` accepts `name` or `kind:name`; the RPC receives both `unitKind` and `unitName`. |
 | `ballast_events` | `project`, `subscription?`, `unit?`, `integration?`, `topic?`, `since?`, `limit?` | Durable subscription history (inbound) plus the live event ring (including outbound requests), with truncated payloads and project/unit/integration/topic filters. |
 
-`project` accepts a project id, a display name, or an absolute folder path.
-Results are compact text plus `structuredContent` JSON.
+`project` accepts a project id, a display name (case-insensitive), a folder
+basename such as `chat-scenes`, an absolute project root, or a relative path.
+A reference that matches more than one project fails with the candidates and
+their roots, so the id disambiguates. Results are compact text plus
+`structuredContent` JSON.
 
 ## Adapter
 

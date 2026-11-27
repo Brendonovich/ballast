@@ -18,7 +18,18 @@ import { Cause, Clock, Context, Duration, Effect, Layer, Option, Schema } from "
 import type { SharesApiRpc } from "@ballast/shares-api";
 
 import { CloudConfig, type CloudConfigService } from "./config.ts";
-import { decodeJson, header, html, isJsonRequest, json, redirect, text } from "./http.ts";
+import {
+  bearerToken,
+  clientIp,
+  decodeJson,
+  escapeHtml,
+  header,
+  html,
+  isJsonRequest,
+  json,
+  redirect,
+  text,
+} from "./http.ts";
 import type { HttpRequest, HttpResponse } from "./http.ts";
 import {
   badRequest,
@@ -56,7 +67,14 @@ import {
   verifyHook,
 } from "./hooks.ts";
 import { RelayGateway, type RelayGatewayService } from "./relay/gateway.ts";
+import { SHARE_AUTH_CLIENT_METADATA_PATH, makeShareAuth } from "./shares/auth.ts";
+import {
+  makeOidcIdentityProvider,
+  unconfiguredIdentityProvider,
+  type IdentityProviderService,
+} from "./shares/oidc.ts";
 import { makeShareRoutes } from "./shares/routes.ts";
+import { shareLinkPage } from "./shares/link-page.ts";
 import {
   hashMachineToken,
   randomPairingCode,
@@ -98,37 +116,6 @@ export const PAIRING_RATE_WINDOW_MS = 15 * 60_000;
 export const REFRESH_LOCK_MS = 30_000;
 /** How long a second request waits for another Worker's refresh to finish. */
 export const REFRESH_WAIT_MS = 2_000;
-
-const escapeHtml = (value: string): string =>
-  value.replace(/[&<>"']/g, (character) => {
-    switch (character) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
-
-const bearerToken = (request: HttpRequest): string | undefined => {
-  const value = header(request, "authorization");
-  if (value === undefined) return undefined;
-  const match = /^Bearer\s+(.+)$/i.exec(value);
-  return match?.[1];
-};
-
-const clientIp = (request: HttpRequest): string => {
-  const direct = header(request, "cf-connecting-ip");
-  if (direct !== undefined && direct.length > 0) return direct.trim();
-  const forwarded = header(request, "x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  return first === undefined || first.length === 0 ? "unknown" : first;
-};
 
 const asJson = (value: unknown): Schema.Json => Schema.decodeUnknownSync(Schema.Json)(value);
 
@@ -248,6 +235,19 @@ const errorResponse = (error: HttpError): HttpResponse =>
 const recoverableRevocation = (reason: string): boolean =>
   reason === "notification_failures_exceeded";
 
+const identityProviderFor = (config: CloudConfigService): IdentityProviderService => {
+  const signIn = config.shareSignIn;
+  return signIn.signingKey === undefined
+    ? unconfiguredIdentityProvider(signIn.issuer)
+    : makeOidcIdentityProvider({
+        issuer: signIn.issuer,
+        clientId: signIn.clientId ?? config.publicOrigin + SHARE_AUTH_CLIENT_METADATA_PATH,
+        signingKey: signIn.signingKey,
+        // A local issuer (the account repo's dev server, or a test issuer) may be plain http.
+        insecure: /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(signIn.issuer),
+      });
+};
+
 export interface CloudAppDeps {
   readonly config: CloudConfigService;
   readonly store: CloudStoreService;
@@ -259,6 +259,11 @@ export interface CloudAppDeps {
    * (decision 0013); omitted, the share routes 404.
    */
   readonly shares?: SharesApiRpc;
+  /**
+   * The OpenID Connect issuer people sign in to sharing with (decision
+   * 0014). Defaults to one built from `config.shareSignIn`.
+   */
+  readonly identity?: IdentityProviderService;
 }
 
 export const makeCloudApp = (
@@ -325,7 +330,14 @@ export const makeCloudApp = (
     const shares =
       deps.shares === undefined
         ? undefined
-        : makeShareRoutes({ api: deps.shares, relay, enforceRateLimit });
+        : makeShareRoutes({ api: deps.shares, enforceRateLimit });
+    const shareAuth = makeShareAuth({
+      config,
+      store,
+      vault,
+      provider: deps.identity ?? identityProviderFor(config),
+      enforceRateLimit,
+    });
 
     const needsFreshToken = (account: TwitchAccountRow, force: boolean): boolean =>
       force ||
@@ -1425,6 +1437,10 @@ export const makeCloudApp = (
           return json(200, { ok: true, service: "ballast-cloud" });
         if (request.method === "GET" && path === "/")
           return json(200, { name: "Ballast cloud", version: 1 });
+        if (request.method === "GET") {
+          const linkPage = shareLinkPage(url.origin, path);
+          if (linkPage !== undefined) return linkPage;
+        }
         if (request.method === "GET" && path === "/oauth/twitch/start")
           return yield* handleOAuthStart(url);
         if (request.method === "GET" && path === "/oauth/twitch/callback")
@@ -1440,9 +1456,19 @@ export const makeCloudApp = (
         if (request.method === "POST" && path === "/api/pairing/claim")
           return yield* handlePairingClaim(request);
 
+        // Publishing a share needs a signed-in person; reading one needs only its code (decision 0014).
+        const authRoute = shareAuth.route(request, url);
+        if (authRoute !== undefined) return yield* authRoute;
+        const codeRoute = shares?.publicRoute(request, url);
+        if (codeRoute !== undefined) return yield* codeRoute;
+        if (shares !== undefined && (path === "/api/shares" || path.startsWith("/api/shares/"))) {
+          const principal = yield* shareAuth.authenticate(request);
+          const shareRoute = shares.route(principal, request, url);
+          if (shareRoute !== undefined) return yield* shareRoute;
+          return yield* notFound("Not found");
+        }
+
         const machine = yield* authenticateMachine(request);
-        const shareRoute = shares?.route(machine, request, url);
-        if (shareRoute !== undefined) return yield* shareRoute;
         if (request.method === "GET" && path === "/api/connections")
           return yield* handleListConnections(machine);
         if (request.method === "POST" && path === "/api/hooks/register")

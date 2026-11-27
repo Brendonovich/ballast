@@ -66,3 +66,34 @@ export const decodeJson = <A, I>(
     Effect.mapError((cause) => badRequest("Invalid JSON request body", String(cause))),
   );
 };
+
+export const escapeHtml = (value: string): string =>
+  value.replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+
+export const bearerToken = (request: HttpRequest): string | undefined => {
+  const value = header(request, "authorization");
+  if (value === undefined) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(value);
+  return match?.[1];
+};
+
+export const clientIp = (request: HttpRequest): string => {
+  const direct = header(request, "cf-connecting-ip");
+  if (direct !== undefined && direct.length > 0) return direct.trim();
+  const forwarded = header(request, "x-forwarded-for");
+  const first = forwarded?.split(",")[0]?.trim();
+  return first === undefined || first.length === 0 ? "unknown" : first;
+};

@@ -75,7 +75,7 @@ describe("plan Sceneify scripts", () => {
     Effect.gen(function* () {
       const artifactHost: ArtifactHost = {
         origin: "http://127.0.0.1:47831",
-        readToken: "r1.obs-alert-overlay.test",
+        stableToken: "a1.obs-alert-overlay.test",
       };
       const manifest = yield* plan(alertOverlay, { artifactHost });
 

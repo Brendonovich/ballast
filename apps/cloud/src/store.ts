@@ -133,6 +133,47 @@ export const WebhookHookRow = Schema.Struct({
 });
 export type WebhookHookRow = typeof WebhookHookRow.Type;
 
+/** A person signed in to the share server (decision 0014), keyed by the issuer's subject. */
+export const ShareUserRow = Schema.Struct({
+  id: Schema.String,
+  issuer: Schema.String,
+  subject: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  username: Schema.NullOr(Schema.String),
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+});
+export type ShareUserRow = typeof ShareUserRow.Type;
+
+export const ShareSessionRow = Schema.Struct({
+  id: Schema.String,
+  userId: Schema.String,
+  tokenHash: Schema.String,
+  deviceName: Schema.String,
+  createdAt: Schema.Number,
+  lastUsedAt: Schema.Number,
+});
+export type ShareSessionRow = typeof ShareSessionRow.Type;
+
+export const ShareSignInRow = Schema.Struct({
+  state: Schema.String,
+  /** Sealed JSON; see `shares/auth.ts`. */
+  payload: Schema.String,
+  createdAt: Schema.Number,
+  expiresAt: Schema.Number,
+});
+export type ShareSignInRow = typeof ShareSignInRow.Type;
+
+export const ShareAuthCodeRow = Schema.Struct({
+  codeHash: Schema.String,
+  userId: Schema.String,
+  codeChallenge: Schema.String,
+  redirectUri: Schema.String,
+  createdAt: Schema.Number,
+  expiresAt: Schema.Number,
+});
+export type ShareAuthCodeRow = typeof ShareAuthCodeRow.Type;
+
 /**
  * Durable storage for everything except relay buffers. Relay buffers live in
  * the per-machine Durable Object so hot event traffic never touches D1.
@@ -220,6 +261,23 @@ export interface CloudStoreService {
     tokenHash: string,
   ) => Effect.Effect<Option.Option<MachineRow>>;
   readonly touchMachine: (id: string, now: number) => Effect.Effect<void>;
+
+  // Share-server sign-in (decision 0014)
+  readonly insertShareSignIn: (row: ShareSignInRow) => Effect.Effect<void>;
+  /** Single use: the row is deleted; expired rows are not returned. */
+  readonly takeShareSignIn: (state: string, now: number) => Effect.Effect<Option.Option<ShareSignInRow>>;
+  /** Insert or refresh the display fields; returns the stored row (its id is stable). */
+  readonly upsertShareUser: (row: ShareUserRow) => Effect.Effect<ShareUserRow>;
+  readonly findShareUser: (id: string) => Effect.Effect<Option.Option<ShareUserRow>>;
+  readonly insertShareAuthCode: (row: ShareAuthCodeRow) => Effect.Effect<void>;
+  /** Single use: the row is deleted; expired rows are not returned. */
+  readonly takeShareAuthCode: (codeHash: string, now: number) => Effect.Effect<Option.Option<ShareAuthCodeRow>>;
+  readonly insertShareSession: (row: ShareSessionRow) => Effect.Effect<void>;
+  readonly findShareSessionByTokenHash: (tokenHash: string) => Effect.Effect<Option.Option<ShareSessionRow>>;
+  readonly touchShareSession: (id: string, now: number) => Effect.Effect<void>;
+  readonly deleteShareSession: (id: string) => Effect.Effect<void>;
+  /** Drop expired sign-ins and codes, and sessions unused since `staleBefore`. */
+  readonly pruneShareAuth: (now: number, staleBefore: number) => Effect.Effect<void>;
 
   // Rate limits
   /**

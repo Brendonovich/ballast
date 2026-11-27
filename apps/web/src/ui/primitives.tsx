@@ -310,7 +310,7 @@ export const Dialog = (props: {
   readonly onClose: () => void;
   readonly children: JSX.Element;
   readonly footer?: JSX.Element;
-  readonly width?: "sm" | "md";
+  readonly width?: "sm" | "md" | "lg";
 }): JSX.Element => {
   let panel: HTMLDivElement | undefined;
 
@@ -356,7 +356,7 @@ export const Dialog = (props: {
         tabIndex={-1}
         class={cx(
           "animate-in w-full rounded-lg border border-edge-strong bg-layer shadow-[var(--v2-elevation-overlay)]",
-          props.width === "sm" ? "max-w-sm" : "max-w-md",
+          props.width === "sm" ? "max-w-sm" : props.width === "lg" ? "max-w-xl" : "max-w-md",
         )}
       >
         <header class="flex items-start justify-between gap-4 px-4 pb-3 pt-4">

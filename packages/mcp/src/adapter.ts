@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -9,9 +10,12 @@ import type {
   ListProjectFilesResponse,
   ProjectCheckResult,
   ProjectDetail,
+  ProjectDiagnostic,
+  ProjectIssue,
   ProjectManifest,
   ProjectRequirement,
   ProjectSummary,
+  ProjectUnitChange,
   SourceLocation,
   UnitSummary,
 } from "@ballast/agent-protocol";
@@ -93,6 +97,127 @@ const samePath = (left: string, right: string): boolean => {
 
 const toPosix = (path: string): string => path.split(sep).join("/");
 
+/** Expand a user-supplied path the way a shell or CLI would. */
+const normalizeReferencePath = (reference: string): string => {
+  const trimmed = reference.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
+  return resolve(trimmed);
+};
+
+const pathSegments = (path: string): ReadonlyArray<string> =>
+  toPosix(resolve(path))
+    .split("/")
+    .filter((segment) => segment !== "");
+
+const looksLikePath = (reference: string): boolean =>
+  isAbsolute(reference) ||
+  reference.startsWith(".") ||
+  reference.includes("/") ||
+  reference.includes("\\");
+
+const projectLabel = (project: ProjectSummary): string =>
+  project.id + ' ("' + project.name + '") at ' + project.root;
+
+const ambiguousProject = (
+  reference: string,
+  matches: ReadonlyArray<ProjectSummary>,
+): ProjectMatch => ({
+  error:
+    "Project '" +
+    reference +
+    "' is ambiguous: " +
+    matches.map(projectLabel).join(", ") +
+    ". Use the project id to choose one.",
+});
+
+export type ProjectMatch =
+  | { readonly project: ProjectSummary }
+  | { readonly error: string };
+
+/**
+ * Resolve a project reference. Agents commonly pass either the display name
+ * or the project folder name, so both are supported in addition to the id and
+ * the absolute root. Relative paths are resolved from the MCP working
+ * directory, with a trailing-segment fallback when that directory differs.
+ */
+export const matchProjectReference = (
+  projects: ReadonlyArray<ProjectSummary>,
+  reference: string,
+): ProjectMatch => {
+  const trimmed = reference.trim();
+  if (trimmed === "") {
+    return { error: "A project id, name or path is required." };
+  }
+
+  const byId = projects.find((project) => project.id === trimmed);
+  if (byId !== undefined) return { project: byId };
+
+  const lowered = trimmed.toLowerCase();
+  const byName = projects.filter((project) => project.name.toLowerCase() === lowered);
+  if (byName.length === 1) {
+    const project = byName[0];
+    if (project !== undefined) return { project };
+  }
+  if (byName.length > 1) return ambiguousProject(trimmed, byName);
+
+  let target: string;
+  try {
+    target = normalizeReferencePath(trimmed);
+  } catch {
+    target = trimmed;
+  }
+
+  const byPath = projects.filter((project) => samePath(project.root, target));
+  if (byPath.length === 1) {
+    const project = byPath[0];
+    if (project !== undefined) return { project };
+  }
+  if (byPath.length > 1) return ambiguousProject(trimmed, byPath);
+
+  const pathLike = looksLikePath(trimmed);
+  const referenceSegments = toPosix(trimmed.replace(/\\/g, "/"))
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== "." && segment !== "..");
+  const targetSegments = pathSegments(target);
+  const targetBase = targetSegments[targetSegments.length - 1]?.toLowerCase() ?? "";
+  const byDirectory = projects.filter((project) => {
+    const rootSegments = pathSegments(project.root);
+    if (pathLike) {
+      // An absolute path was already compared exactly above. A relative path
+      // may be written from another checkout (for example
+      // "ballast-projects/chat-scenes"), so match its trailing directories.
+      if (isAbsolute(trimmed)) return false;
+      if (
+        referenceSegments.length === 0 ||
+        referenceSegments.length > rootSegments.length
+      ) {
+        return false;
+      }
+      const offset = rootSegments.length - referenceSegments.length;
+      return referenceSegments.every(
+        (segment, index) =>
+          rootSegments[offset + index]?.toLowerCase() === segment.toLowerCase(),
+      );
+    }
+    return (rootSegments[rootSegments.length - 1] ?? "").toLowerCase() === targetBase;
+  });
+  if (byDirectory.length === 1) {
+    const project = byDirectory[0];
+    if (project !== undefined) return { project };
+  }
+  if (byDirectory.length > 1) return ambiguousProject(trimmed, byDirectory);
+
+  return {
+    error:
+      "No Ballast project matches '" +
+      trimmed +
+      "'. Known projects: " +
+      (projects.length === 0 ? "none" : projects.map(projectLabel).join(", ")) +
+      ". Pass an id, a display name, a folder name or a project root.",
+  };
+};
+
 /**
  * The planner normally emits project-relative sources. A service bug can emit
  * repo/cwd-relative paths such as "../../ballast-projects/chat/src/a.ts";
@@ -161,14 +286,41 @@ const normalizeUnit = (
   return { ...unit, ...(source === undefined ? {} : { source }) };
 };
 
+const issueKey = (issue: ProjectIssue): string =>
+  [
+    issue.id,
+    issue.kind,
+    issue.severity,
+    issue.title,
+    issue.detail ?? "",
+    issue.source?.file ?? "",
+    issue.source?.line ?? "",
+    issue.source?.column ?? "",
+  ].join("\u0000");
+
+/** The service can record the same issue once per failing bundle. */
+export const dedupeIssues = (
+  issues: ReadonlyArray<ProjectIssue>,
+): ReadonlyArray<ProjectIssue> => {
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const key = issueKey(issue);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const normalizeIssues = (
   root: string,
   issues: ProjectDetail["issues"],
 ): ProjectDetail["issues"] =>
-  issues.map((issue) => {
-    const source = normalizeSourceLocation(root, issue.source);
-    return { ...issue, ...(source === undefined ? {} : { source }) };
-  });
+  dedupeIssues(
+    issues.map((issue) => {
+      const source = normalizeSourceLocation(root, issue.source);
+      return { ...issue, ...(source === undefined ? {} : { source }) };
+    }),
+  );
 
 const normalizeDetail = (detail: ProjectDetail): ProjectDetail => {
   const issues = normalizeIssues(detail.summary.root, detail.issues);
@@ -182,57 +334,38 @@ const normalizeDetail = (detail: ProjectDetail): ProjectDetail => {
   };
 };
 
-const normalizeCheck = (check: CheckResult): CheckResult => ({
-  ...check,
-  units: check.units.map((unit) =>
-    normalizeUnit(check.summary.root, unit, check.manifest ?? check.appliedManifest),
-  ),
-  changes: check.changes.map((change) => {
-    const source = normalizeSourceLocation(check.summary.root, change.source);
-    return { ...change, ...(source === undefined ? {} : { source }) };
-  }),
-});
+const normalizeCheck = (check: CheckResult): CheckResult => {
+  const issues = normalizeIssues(check.summary.root, check.summary.issues);
+  return {
+    ...check,
+    summary: { ...check.summary, issues },
+    diagnostics: check.diagnostics.map((diagnostic) => {
+      const source = normalizeSourceLocation(check.summary.root, {
+        file: diagnostic.file,
+        line: diagnostic.line,
+        column: diagnostic.column,
+      });
+      return source === undefined ? diagnostic : { ...diagnostic, file: source.file };
+    }),
+    units: check.units.map((unit) =>
+      normalizeUnit(check.summary.root, unit, check.manifest ?? check.appliedManifest),
+    ),
+    changes: check.changes.map((change) => {
+      const source = normalizeSourceLocation(check.summary.root, change.source);
+      return { ...change, ...(source === undefined ? {} : { source }) };
+    }),
+  };
+};
 
 export const makeProjectAdapter = (gateway: AgentGateway): ProjectAdapter => {
   const resolveProject = (reference: string): Effect.Effect<ProjectSummary, ToolError> =>
     Effect.gen(function* () {
-      const trimmed = reference.trim();
-      if (trimmed === "") {
-        return yield* Effect.fail(toolError("A project id, name or path is required."));
-      }
       const projects = yield* gateway.listProjects();
-      const byId = projects.find((project) => project.id === trimmed);
-      if (byId !== undefined) return byId;
-
-      const lowered = trimmed.toLowerCase();
-      const byName = projects.filter((project) => project.name.toLowerCase() === lowered);
-      const firstByName = byName[0];
-      if (byName.length === 1 && firstByName !== undefined) return firstByName;
-      if (byName.length > 1) {
-        return yield* Effect.fail(
-          toolError(
-            "Project name '" +
-              trimmed +
-              "' is ambiguous: " +
-              byName.map((project) => project.id + " (" + project.root + ")").join(", "),
-          ),
-        );
+      const match = matchProjectReference(projects, reference);
+      if ("error" in match) {
+        return yield* Effect.fail(toolError(match.error));
       }
-
-      const byPath = projects.find((project) => samePath(project.root, trimmed));
-      if (byPath !== undefined) return byPath;
-
-      return yield* Effect.fail(
-        toolError(
-          "No Ballast project matches '" +
-            trimmed +
-            "'. Known projects: " +
-            (projects.length === 0
-              ? "none"
-              : projects.map((project) => project.id + " (" + project.name + ")").join(", ")) +
-            ".",
-        ),
-      );
+      return match.project;
     });
 
   const getProject = (projectId: string): Effect.Effect<ProjectDetail, ToolError> =>
@@ -495,7 +628,7 @@ export const declarationUnits = (
               (api.procedures.length === 1 ? "" : "s") +
               " (" +
               api.procedures
-                .map((procedure) => procedure.name + ":" + procedure.kind)
+                .map((procedure) => procedure.name + (procedure.stream ? ":stream" : ""))
                 .join(", ") +
               ")",
             status,
@@ -545,10 +678,251 @@ const changeSummary = (check: CheckResult, extras: CheckExtras | undefined): str
 const isArtifactDiagnostic = (file: string): boolean =>
   file.startsWith("artifacts/") || file.includes("/artifacts/") || file.endsWith(".tsx");
 
+export type CheckDetail = "compact" | "full";
+
+export interface DiagnosticView extends ProjectDiagnostic {
+  readonly origin: "worker" | "artifact";
+  /**
+   * Set when an artifact diagnostic is best explained by a worker diagnostic
+   * (typically a broken shared `src/api.ts`), rather than a separate failure.
+   */
+  readonly downstreamOf?: {
+    readonly file: string;
+    readonly line: number;
+    readonly column: number;
+    readonly code: string;
+  };
+}
+
+const diagnosticKey = (diagnostic: ProjectDiagnostic): string =>
+  [
+    diagnostic.file,
+    diagnostic.line,
+    diagnostic.column,
+    diagnostic.code,
+    diagnostic.message,
+  ].join("\u0000");
+
+/** Missing exports/modules cascade into every artifact that imports them. */
+const cascadeCodes = new Set(["TS2305", "TS2307", "TS2724"]);
+
+const mentionsFile = (message: string, file: string): boolean => {
+  const normalized = toPosix(file);
+  return (
+    message.includes(normalized) ||
+    message.includes("./" + normalized) ||
+    message.includes(normalized.replace(/^\.\//, ""))
+  );
+};
+
+/**
+ * Deduplicate diagnostics and separate worker errors from artifact build
+ * errors. Artifact errors that name a worker file (or share a missing-export
+ * code) are marked as downstream so the author fixes the worker file first.
+ */
+export const classifyDiagnostics = (
+  diagnostics: ReadonlyArray<ProjectDiagnostic>,
+): ReadonlyArray<DiagnosticView> => {
+  const seen = new Set<string>();
+  const unique: Array<ProjectDiagnostic> = [];
+  for (const diagnostic of diagnostics) {
+    const key = diagnosticKey(diagnostic);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(diagnostic);
+  }
+  const workers = unique.filter((diagnostic) => !isArtifactDiagnostic(diagnostic.file));
+  return unique.map((diagnostic): DiagnosticView => {
+    const origin = isArtifactDiagnostic(diagnostic.file) ? "artifact" : "worker";
+    if (origin === "worker") return { ...diagnostic, origin };
+    const downstream =
+      workers.find((worker) => mentionsFile(diagnostic.message, worker.file)) ??
+      (cascadeCodes.has(diagnostic.code)
+        ? workers.find((worker) => worker.code === diagnostic.code)
+        : undefined);
+    return downstream === undefined
+      ? { ...diagnostic, origin }
+      : {
+          ...diagnostic,
+          origin,
+          downstreamOf: {
+            file: downstream.file,
+            line: downstream.line,
+            column: downstream.column,
+            code: downstream.code,
+          },
+        };
+  });
+};
+
+export interface ProjectSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly root: string;
+  readonly entry?: string | undefined;
+  readonly enabled: boolean;
+  /** Service status when this check ran; it is a snapshot, not a live state. */
+  readonly serviceStatus: ProjectSummary["status"];
+}
+
+export const projectSnapshot = (summary: ProjectSummary): ProjectSnapshot => ({
+  id: summary.id,
+  name: summary.name,
+  root: summary.root,
+  ...(summary.entry === undefined ? {} : { entry: summary.entry }),
+  enabled: summary.enabled,
+  serviceStatus: summary.status,
+});
+
+export interface ReloadChangeView {
+  readonly kind: ProjectUnitChange["kind"];
+  readonly name: string;
+  readonly change: ProjectUnitChange["change"];
+  readonly source?: SourceLocation | undefined;
+}
+
+export interface ReloadView {
+  readonly mode: "none" | "artifact-only" | "worker-restart";
+  readonly artifactOnly: boolean;
+  readonly requiresWorkerRestart: boolean;
+  /** Names and change kinds only; `before`/`after` stay in detail: "full". */
+  readonly changes: ReadonlyArray<ReloadChangeView>;
+}
+
+export const reloadView = (check: CheckResult): ReloadView => {
+  const artifactOnly =
+    check.changes.length > 0 && check.changes.every((change) => change.kind === "artifact");
+  const requiresWorkerRestart = check.changes.some((change) => change.kind !== "artifact");
+  return {
+    mode: artifactOnly ? "artifact-only" : requiresWorkerRestart ? "worker-restart" : "none",
+    artifactOnly,
+    requiresWorkerRestart,
+    changes: check.changes.map((change) => ({
+      kind: change.kind,
+      name: change.name,
+      change: change.change,
+      ...(change.source === undefined ? {} : { source: change.source }),
+    })),
+  };
+};
+
+export const projectSummaryView = (
+  project: ProjectSummary,
+): {
+  readonly id: string;
+  readonly name: string;
+  readonly root: string;
+  readonly entry?: string | undefined;
+  readonly enabled: boolean;
+  readonly status: ProjectSummary["status"];
+  readonly unitCount: number;
+} => ({
+  id: project.id,
+  name: project.name,
+  root: project.root,
+  ...(project.entry === undefined ? {} : { entry: project.entry }),
+  enabled: project.enabled,
+  status: project.status,
+  unitCount: project.unitCount,
+});
+
+const checkDeclarations = (
+  check: CheckResult,
+  extras: CheckExtras | undefined,
+): ReadonlyArray<DeclarationUnitView> => {
+  if (extras !== undefined) return extras.declarations;
+  return declarationUnits(
+    check.manifest ?? check.appliedManifest,
+    [],
+    check.summary.root,
+    check.summary.status === "running",
+  );
+};
+
+/**
+ * Shape the check result for a tool call. Compact is the default: it keeps
+ * only what an edit-check loop needs and leaves manifests, unit rows and the
+ * full connection inventory to detail: "full".
+ */
+export const checkData = (
+  check: CheckResult,
+  extras?: CheckExtras | undefined,
+  detail: CheckDetail = "compact",
+): unknown => {
+  const diagnostics = classifyDiagnostics(check.diagnostics);
+  const snapshot = projectSnapshot(check.summary);
+  const reload = reloadView(check);
+  const requirements = requirementViews(
+    check.requirements,
+    check.availableConnections,
+    check.manifest ?? check.appliedManifest,
+  );
+  const declarations = checkDeclarations(check, extras);
+  const artifacts = extras?.artifacts ?? [];
+  const artifactNote =
+    extras?.artifactNote === undefined ? {} : { artifactNote: extras.artifactNote };
+  if (detail === "full") {
+    return {
+      ...check,
+      summary: { ...check.summary, issues: dedupeIssues(check.summary.issues) },
+      detail,
+      snapshot,
+      diagnostics,
+      requirementDetails: requirements,
+      artifacts,
+      declarations,
+      artifactOnly: reload.artifactOnly,
+      requiresWorkerRestart: reload.requiresWorkerRestart,
+      ...artifactNote,
+    };
+  }
+  return {
+    detail,
+    ok: check.ok,
+    snapshot,
+    diagnostics,
+    requiresConsent: check.requiresConsent,
+    ...(check.pendingConsent === undefined
+      ? {}
+      : {
+          pendingConsent: {
+            id: check.pendingConsent.id,
+            summary: check.pendingConsent.summary,
+            reason: check.pendingConsent.reason,
+          },
+        }),
+    missingConnections: check.missingConnections,
+    missingScopes: [...new Set(check.missingScopes)],
+    requirements,
+    reload,
+    declarations,
+    artifacts,
+    ...artifactNote,
+    ...(check.error === undefined ? {} : { error: check.error }),
+  };
+};
+
+const downstreamText = (diagnostic: DiagnosticView): string =>
+  diagnostic.downstreamOf === undefined
+    ? ""
+    : " [cascades from " +
+      diagnostic.downstreamOf.file +
+      ":" +
+      diagnostic.downstreamOf.line +
+      " " +
+      diagnostic.downstreamOf.code +
+      "]";
+
 export const checkText = (
   check: CheckResult,
   extras?: CheckExtras | undefined,
+  options: {
+    readonly detail?: CheckDetail | undefined;
+    /** ballast_apply already states the next action; skip the check's hint. */
+    readonly next?: boolean | undefined;
+  } = {},
 ): string => {
+  const detail = options.detail ?? "full";
   const lines: Array<string> = [];
   const summary = check.summary;
   const entry = summary.entry ?? "ballast.ts";
@@ -559,7 +933,7 @@ export const checkText = (
       summary.name +
       ") · entry " +
       entry +
-      " · status " +
+      " · service status at check: " +
       summary.status +
       (summary.enabled ? " · enabled" : " · disabled"),
   );
@@ -582,12 +956,13 @@ export const checkText = (
     const artifactError = /artifact/i.test(check.error);
     lines.push((artifactError ? "[artifact] " : "") + "error: " + check.error);
   }
-  if (check.diagnostics.length > 0) {
+  const diagnostics = classifyDiagnostics(check.diagnostics);
+  if (diagnostics.length > 0) {
     lines.push("diagnostics:");
-    for (const diagnostic of check.diagnostics.slice(0, 20)) {
+    for (const diagnostic of diagnostics.slice(0, 20)) {
       lines.push(
         "  " +
-          (isArtifactDiagnostic(diagnostic.file) ? "[artifact] " : "") +
+          (diagnostic.origin === "artifact" ? "[artifact] " : "") +
           diagnostic.file +
           ":" +
           diagnostic.line +
@@ -596,11 +971,13 @@ export const checkText = (
           " " +
           diagnostic.code +
           " " +
-          diagnostic.message,
+          diagnostic.message +
+          downstreamText(diagnostic),
       );
     }
+    if (diagnostics.length > 20) lines.push("  … " + (diagnostics.length - 20) + " more");
   }
-  if (check.units.length > 0) {
+  if (detail === "full" && check.units.length > 0) {
     lines.push("units:");
     for (const unit of check.units.slice(0, 40)) {
       lines.push(
@@ -641,8 +1018,10 @@ export const checkText = (
     }
   }
   if (extras !== undefined) {
+    const seenArtifacts = new Set<string>();
     for (const artifact of extras.artifacts) {
-      if (artifact.status !== "error") continue;
+      if (artifact.status !== "error" || seenArtifacts.has(artifact.name)) continue;
+      seenArtifacts.add(artifact.name);
       lines.push(
         "artifact build failed: " +
           artifact.name +
@@ -700,6 +1079,7 @@ export const checkText = (
   if (extraScopes.length > 0) {
     lines.push("missing scopes: " + extraScopes.join(", "));
   }
+  if (options.next === false) return lines.join("\n");
   if (!check.ok) {
     lines.push("next: fix the diagnostics, then run ballast_check again.");
   } else if (check.requiresConsent || check.missingConnections.length > 0 || check.missingScopes.length > 0) {
@@ -820,10 +1200,12 @@ export const applyProject = (
         project: restarted.success.summary,
       };
     }
+    // Drop the pre-reload check snapshot: its service status is stale now
+    // that the restart succeeded. Callers read state/project for the reload
+    // outcome and can run ballast_status for a fresh snapshot.
     return {
       state: "running" as const,
       message: "Reloaded and running the latest bundle.",
-      check,
       project: restarted.success.summary,
     };
   });

@@ -5,20 +5,20 @@ resources:
 
 | Resource | What it is |
 | --- | --- |
-| `SharesDatabase` | D1 database: shares, share codes, current deploys, subscriptions (`migrations/`) |
+| `SharesDatabase` | D1 database: shares, share codes, current deploys (`migrations/`) |
 | `ShareRepoNamespace` | Cloudflare Artifacts namespace `ballast-shares-<stage>`, one git repo per share |
 | `SharesApi` | Worker exposing the operations below over a service binding (`/health` only over HTTP) |
 
 The shares API has no credentials of its own. The Ballast cloud (`apps/cloud`) is the front door:
-it authenticates machines, authorizes each call, rate-limits and pushes `share_update` over its
-relay, and calls this Worker with `Cloudflare.Workers.bindWorker(SharesApi)`. Owner and
-subscriber ids are the cloud's user and machine ids, stored as opaque strings.
+it signs people in (Sign in with Anomaly, decision 0014), authorizes each call and rate-limits,
+and calls this Worker with `Cloudflare.Workers.bindWorker(SharesApi)`. Owner ids are the cloud's
+share-user ids, stored as opaque strings. Subscribers are anonymous (a share code is their read
+capability), so subscriptions are not stored.
 
 `SharesApiRpc` (`src/api.ts`): `createShare`, `getShare`,
 `findShareByCode`, `deployToken` (short-lived git write token + remote),
 `recordDeploy` (checks the commit exists, builds on the current deploy and carries a valid
-`ballast.share.json`; compare-and-set; returns the machines to notify), `subscribe`,
-`unsubscribe`, `isSubscribed`, `listSubscriptions`, `setInstalledSha`, and `diff` (manifest
+`ballast.share.json`; compare-and-set), and `diff` (manifest
 diff between two commit SHAs; changed files re-hashed against the manifest and returned base64).
 Failures are `SharesApiError` with the HTTP status and error tag to answer with.
 

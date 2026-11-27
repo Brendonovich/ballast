@@ -10,6 +10,8 @@ import type {
   TwitchAccountRow,
 } from "../../src/store.ts";
 import type { RelayGatewayService } from "../../src/relay/gateway.ts";
+import type { IdentityProviderService } from "../../src/shares/oidc.ts";
+import type { SharesApiRpc } from "@ballast/shares-api";
 import { makeFakeTwitch, type FakeTwitch, type FakeTwitchOptions } from "./fake-twitch.ts";
 import { makeMemoryStore } from "./memory-store.ts";
 
@@ -74,6 +76,8 @@ export interface TestApp {
 
 export const makeTestApp = async (options: {
   readonly relay?: RelayGatewayService;
+  readonly identity?: IdentityProviderService;
+  readonly shares?: SharesApiRpc;
   readonly twitch?: FakeTwitchOptions;
   readonly publicOrigin?: string;
 } = {}): Promise<TestApp> => {
@@ -112,6 +116,8 @@ export const makeTestApp = async (options: {
       vault,
       twitch: twitch.service,
       relay: relayGateway,
+      ...(options.identity === undefined ? {} : { identity: options.identity }),
+      ...(options.shares === undefined ? {} : { shares: options.shares }),
     }),
   );
 

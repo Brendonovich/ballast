@@ -612,7 +612,6 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
               ...(manifest.api.source === undefined ? {} : { source: manifest.api.source }),
               procedures: manifest.api.procedures.map((procedure) => ({
                 name: procedure.name,
-                kind: procedure.kind,
                 stream: procedure.stream,
                 ...(procedure.payloadSchema === undefined
                   ? {}

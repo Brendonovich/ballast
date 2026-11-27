@@ -68,7 +68,7 @@ const creates = (mock: ReturnType<typeof MockOBSSocket.make>) =>
   mock.calls.filter((call) => call.requestType.startsWith("Create")).length;
 
 const overlayUrl =
-  "http://127.0.0.1:47831/a/r1.demo.mac123/alerts/index.html?background=transparent";
+  "http://127.0.0.1:47831/a/a1.demo.mac123/alerts/index.html?background=transparent";
 
 const overlay = {
   name: "alerts",

@@ -9,7 +9,7 @@ import * as Ballast from "../src/index.ts";
 
 const DashboardApi = RpcGroup.make(
   Rpc.make("Get", { success: Schema.Number }),
-  Ballast.Api.action(Rpc.make("Increment", { success: Schema.Number })),
+  Rpc.make("Increment", { success: Schema.Number }),
   Rpc.make("Ticks", { stream: true, success: Schema.Number }),
 );
 
@@ -24,7 +24,7 @@ const script = Effect.gen(function* () {
 });
 
 describe("artifact worker contract", () => {
-  it.effect("serves a query, an action, a stream and stores in-process", () =>
+  it.effect("serves calls, a stream and stores in-process", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const runtime = yield* Ballast.evaluateScript(script, "runtime").pipe(
@@ -127,18 +127,18 @@ const planArtifact = (
   );
 
 describe("artifact handle URL", () => {
-  it.effect("is the stable transparent read URL when an artifact host is set", () =>
+  it.effect("is the stable transparent URL when an artifact host is set", () =>
     Effect.gen(function* () {
       const ref = yield* Ref.make(Ballast.emptyManifest("demo"));
       const host: Ballast.ArtifactHost = {
         origin: "http://127.0.0.1:47831",
-        readToken: "r1.demo.test",
+        stableToken: "a1.demo.test",
       };
 
       const handle = yield* withArtifactHost(host, planArtifact(ref, "overlay"));
 
       expect(handle.url).toBe(
-        "http://127.0.0.1:47831/a/r1.demo.test/overlay/index.html?background=transparent",
+        "http://127.0.0.1:47831/a/a1.demo.test/overlay/index.html?background=transparent",
       );
       expect(handle.transparent).toBe(true);
       expect((yield* Ref.get(ref)).unresolved).toEqual([]);

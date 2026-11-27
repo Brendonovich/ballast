@@ -18,6 +18,7 @@ import {
   cx,
 } from "../ui/primitives.tsx";
 import { toast } from "../ui/toast.tsx";
+import { SharingSection } from "./settings/SharingSection.tsx";
 import { setThemeSetting, themeSetting } from "../ui/theme.ts";
 import type { ThemeSetting } from "../ui/theme.ts";
 
@@ -224,6 +225,8 @@ export const SettingsScreen = (): JSX.Element => {
           </p>
         </Show>
       </Section>
+
+      <SharingSection />
 
       <Section title="Cloud" description="One pairing per machine; every project shares it.">
         <div class="border-t border-edge">

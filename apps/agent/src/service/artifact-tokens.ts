@@ -10,16 +10,14 @@ import * as Hex from "effect/encoding/Hex";
 import {
   agentError,
   type AgentError,
-  type ArtifactScope,
-  type ArtifactUrlConfirmation,
   type ArtifactUrlSummary,
   type CreateArtifactUrlResult,
 } from "@ballast/agent-protocol";
 import {
-  artifactReadToken,
+  artifactStableToken,
   ensureArtifactSecret,
-  parseArtifactReadToken,
-  verifyArtifactReadToken,
+  parseArtifactStableToken,
+  verifyArtifactStableToken,
 } from "../artifact-url.ts";
 import { readJson, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
@@ -39,7 +37,6 @@ const embedTtlMs = (): number => {
 interface StoredArtifactUrl {
   readonly id: string;
   readonly artifact: string;
-  readonly scope: ArtifactScope;
   readonly transparent: boolean;
   readonly createdAt: number;
   readonly lastUsedAt?: number;
@@ -60,28 +57,21 @@ interface StoredFile {
 
 export interface ArtifactGrant {
   readonly projectId: string;
-  /** Bound for view/action tokens; a stable read token addresses any artifact. */
+  /** Bound for view tokens; the stable project token addresses any artifact. */
   readonly artifact?: string;
-  readonly scopes: ReadonlyArray<ArtifactScope>;
   readonly transparent: boolean;
   readonly tokenHash: string;
   readonly urlId?: string;
   readonly expiresAt?: number;
-  /** True for the per-project stable read capability. */
-  readonly readCapability?: boolean;
 }
 
 export interface CreateArtifactUrlInput {
   readonly project: ProjectRecord;
   readonly artifact: string;
-  readonly artifactTitle?: string;
-  readonly procedures: ReadonlyArray<string>;
-  readonly scope: ArtifactScope;
   readonly transparent: boolean;
   readonly previewUrl: (record: {
     readonly id: string;
     readonly artifact: string;
-    readonly scope: ArtifactScope;
     readonly transparent: boolean;
   }) => string;
   readonly copyUrl: (token: string, artifact: string, transparent: boolean) => string;
@@ -91,7 +81,6 @@ export interface ArtifactTokenService {
   readonly mintEmbed: (
     project: ProjectRecord,
     artifact: string,
-    scope: ArtifactScope,
   ) => Effect.Effect<{ readonly token: string; readonly expiresAt: number }, AgentError>;
   /** Extend an existing embed token. Undefined when unknown or already expired. */
   readonly renewEmbed: (
@@ -108,26 +97,13 @@ export interface ArtifactTokenService {
     previewUrl: (record: {
       readonly id: string;
       readonly artifact: string;
-      readonly scope: ArtifactScope;
       readonly transparent: boolean;
     }) => string,
     copyUrl: (token: string, artifact: string, transparent: boolean) => string,
   ) => Effect.Effect<ReadonlyArray<ArtifactUrlSummary>, AgentError>;
   readonly revokeUrl: (id: string) => Effect.Effect<void, AgentError>;
-  readonly listConfirmations: (projectId?: string) => Effect.Effect<
-    ReadonlyArray<ArtifactUrlConfirmation>
-  >;
-  readonly approveConfirmation: (
-    id: string,
-    input: Omit<CreateArtifactUrlInput, "scope" | "procedures" | "artifactTitle">,
-  ) => Effect.Effect<
-    { readonly url: ArtifactUrlSummary; readonly copyUrl: string },
-    AgentError
-  >;
-  readonly getConfirmation: (id: string) => Effect.Effect<ArtifactUrlConfirmation | undefined>;
-  readonly rejectConfirmation: (id: string) => Effect.Effect<void, AgentError>;
-  /** The stable per-project read capability derived from project state. */
-  readonly readToken: (project: ProjectRecord) => Effect.Effect<string, AgentError>;
+  /** The stable per-project token derived from project state. */
+  readonly stableToken: (project: ProjectRecord) => Effect.Effect<string, AgentError>;
   readonly resolve: (token: string) => Effect.Effect<ArtifactGrant | undefined>;
   readonly revocations: PubSub.PubSub<string>;
   /** Emitted after a successful renewal so open gateway sockets reschedule. */
@@ -158,7 +134,7 @@ const fingerprint = (hash: string): string => hash.slice(0, 8);
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null;
 
-const readUrls = (
+const storedUrls = (
   project: ProjectRecord,
 ): Effect.Effect<ReadonlyArray<StoredArtifactUrl>, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
@@ -172,7 +148,6 @@ const readUrls = (
       if (!isRecord(entry)) continue;
       const id = entry["id"];
       const artifact = entry["artifact"];
-      const scope = entry["scope"];
       const transparent = entry["transparent"];
       const createdAt = entry["createdAt"];
       const tokenHash = entry["tokenHash"];
@@ -180,7 +155,6 @@ const readUrls = (
       if (
         typeof id !== "string" ||
         typeof artifact !== "string" ||
-        (scope !== "read" && scope !== "action") ||
         typeof transparent !== "boolean" ||
         typeof createdAt !== "number" ||
         typeof tokenHash !== "string" ||
@@ -194,7 +168,6 @@ const readUrls = (
       urls.push({
         id,
         artifact,
-        scope,
         transparent,
         createdAt,
         tokenHash,
@@ -230,7 +203,6 @@ const summaryOf = (
   id: record.id,
   projectId: project.id,
   artifact: record.artifact,
-  scope: record.scope,
   transparent: record.transparent,
   createdAt: record.createdAt,
   urlPreview: preview(record),
@@ -264,17 +236,13 @@ export const ArtifactTokensLive = Layer.effect(
           readonly artifact: string;
           readonly expiresAt: number;
           readonly transparent: boolean;
-          readonly scope: ArtifactScope;
         }
       >
-    >(new Map());
-    const confirmations = yield* Ref.make<
-      ReadonlyMap<string, ArtifactUrlConfirmation & { readonly previewArtifact: string }>
     >(new Map());
     const lastUsed = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
     const nextSeq = yield* Ref.make(1);
 
-    const mintEmbed: ArtifactTokenService["mintEmbed"] = (project, artifact, scope) =>
+    const mintEmbed: ArtifactTokenService["mintEmbed"] = (project, artifact) =>
       provide(Effect.gen(function* () {
         const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
         const token = Hex.encode(bytes);
@@ -292,7 +260,6 @@ export const ArtifactTokensLive = Layer.effect(
             artifact,
             expiresAt,
             transparent: false,
-            scope,
           });
           return next;
         });
@@ -329,28 +296,6 @@ export const ArtifactTokensLive = Layer.effect(
 
     const createUrl: ArtifactTokenService["createUrl"] = (input) =>
       provide(Effect.gen(function* () {
-        if (input.scope === "action") {
-          const id = "artifact_confirm_" + String(yield* Ref.modify(nextSeq, (value) => [value, value + 1]));
-          const confirmation: ArtifactUrlConfirmation = {
-            id,
-            projectId: input.project.id,
-            projectName: input.project.name,
-            artifact: input.artifact,
-            ...(input.artifactTitle === undefined ? {} : { artifactTitle: input.artifactTitle }),
-            scope: "action",
-            transparent: input.transparent,
-            createdAt: Date.now(),
-            summary:
-              "Allows this URL to call action procedures: " +
-              (input.procedures.length === 0 ? "(none declared)" : input.procedures.join(", ")),
-            procedures: [...input.procedures],
-          };
-          yield* Ref.update(confirmations, (current) =>
-            new Map(current).set(id, { ...confirmation, previewArtifact: input.artifact }),
-          );
-          return { _tag: "confirmation-required", confirmation };
-        }
-
         const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
         const token = Hex.encode(bytes);
         const hash = yield* hashToken(token);
@@ -358,17 +303,15 @@ export const ArtifactTokensLive = Layer.effect(
         const record: StoredArtifactUrl = {
           id,
           artifact: input.artifact,
-          scope: "read",
           transparent: input.transparent,
           createdAt: Date.now(),
           tokenHash: hash,
           tokenFingerprint: fingerprint(hash),
           token,
         };
-        const existing = yield* readUrls(input.project);
+        const existing = yield* storedUrls(input.project);
         yield* writeUrls(input.project, [...existing, record]);
         return {
-          _tag: "created",
           url: summaryOf(
             input.project,
             record,
@@ -376,7 +319,6 @@ export const ArtifactTokensLive = Layer.effect(
               input.previewUrl({
                 id,
                 artifact: input.artifact,
-                scope: "read",
                 transparent: input.transparent,
               }),
             input.copyUrl,
@@ -394,7 +336,7 @@ export const ArtifactTokensLive = Layer.effect(
         const result: Array<ArtifactUrlSummary> = [];
         const used = yield* Ref.get(lastUsed);
         for (const project of chosen) {
-          const urls = yield* readUrls(project);
+          const urls = yield* storedUrls(project);
           for (const record of urls) {
             if (filter.artifact !== undefined && record.artifact !== filter.artifact) continue;
             const last = used.get(record.id) ?? record.lastUsedAt;
@@ -406,7 +348,6 @@ export const ArtifactTokensLive = Layer.effect(
                   previewUrl({
                     id: entry.id,
                     artifact: entry.artifact,
-                    scope: entry.scope,
                     transparent: entry.transparent,
                   }),
                 copyUrl,
@@ -421,7 +362,7 @@ export const ArtifactTokensLive = Layer.effect(
       provide(Effect.gen(function* () {
         const all = yield* projects.projects;
         for (const project of all) {
-          const urls = yield* readUrls(project);
+          const urls = yield* storedUrls(project);
           const record = urls.find((candidate) => candidate.id === id);
           if (record === undefined) continue;
           const revoked: StoredArtifactUrl = { ...record, revokedAt: Date.now() };
@@ -435,81 +376,7 @@ export const ArtifactTokensLive = Layer.effect(
         return yield* Effect.fail(agentError("not-found", "No artifact URL " + id));
       }));
 
-    const listConfirmations: ArtifactTokenService["listConfirmations"] = (projectId) =>
-      Effect.map(Ref.get(confirmations), (current) =>
-        [...current.values()]
-          .filter((value) => projectId === undefined || value.projectId === projectId)
-          .map(({ previewArtifact: _preview, ...value }) => value),
-      );
-
-    const approveConfirmation: ArtifactTokenService["approveConfirmation"] = (id, input) =>
-      provide(Effect.gen(function* () {
-        const current = yield* Ref.get(confirmations);
-        const confirmation = current.get(id);
-        if (confirmation === undefined) {
-          return yield* Effect.fail(agentError("not-found", "No artifact confirmation " + id));
-        }
-        yield* Ref.update(confirmations, (all) => {
-          const next = new Map(all);
-          next.delete(id);
-          return next;
-        });
-        const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
-        const token = Hex.encode(bytes);
-        const hash = yield* hashToken(token);
-        const urlId =
-          "artifact_url_" + String(yield* Ref.modify(nextSeq, (value) => [value, value + 1]));
-        const record: StoredArtifactUrl = {
-          id: urlId,
-          artifact: confirmation.artifact,
-          scope: "action",
-          transparent: confirmation.transparent,
-          createdAt: Date.now(),
-          tokenHash: hash,
-          tokenFingerprint: fingerprint(hash),
-          token,
-        };
-        const existing = yield* readUrls(input.project);
-        yield* writeUrls(input.project, [...existing, record]);
-        return {
-          url: summaryOf(
-            input.project,
-            record,
-            (entry) =>
-              input.previewUrl({
-                id: entry.id,
-                artifact: entry.artifact,
-                scope: "action",
-                transparent: entry.transparent,
-              }),
-            input.copyUrl,
-          ),
-          copyUrl: input.copyUrl(token, confirmation.artifact, confirmation.transparent),
-        };
-      }));
-
-    const getConfirmation: ArtifactTokenService["getConfirmation"] = (id) =>
-      Effect.map(Ref.get(confirmations), (current) => {
-        const value = current.get(id);
-        if (value === undefined) return undefined;
-        const { previewArtifact: _preview, ...confirmation } = value;
-        return confirmation;
-      });
-
-    const rejectConfirmation: ArtifactTokenService["rejectConfirmation"] = (id) =>
-      Effect.gen(function* () {
-        const current = yield* Ref.get(confirmations);
-        if (!current.has(id)) {
-          return yield* Effect.fail(agentError("not-found", "No artifact confirmation " + id));
-        }
-        yield* Ref.update(confirmations, (all) => {
-          const next = new Map(all);
-          next.delete(id);
-          return next;
-        });
-      });
-
-    const readToken: ArtifactTokenService["readToken"] = (project) =>
+    const stableToken: ArtifactTokenService["stableToken"] = (project) =>
       provide(
         Effect.gen(function* () {
           const secret = yield* Effect.tryPromise({
@@ -521,7 +388,7 @@ export const ArtifactTokensLive = Layer.effect(
                   (cause instanceof Error ? cause.message : String(cause)),
               ),
           });
-          return artifactReadToken(secret, project.id);
+          return artifactStableToken(secret, project.id);
         }),
       );
 
@@ -542,7 +409,6 @@ export const ArtifactTokensLive = Layer.effect(
           return {
             projectId: local.projectId,
             artifact: local.artifact,
-            scopes: local.scope === "action" ? ["read", "action"] : ["read"],
             transparent: local.transparent,
             tokenHash: hash,
             expiresAt: local.expiresAt,
@@ -550,7 +416,7 @@ export const ArtifactTokensLive = Layer.effect(
         }
         const all = yield* projects.projects;
         for (const project of all) {
-          const urls = yield* readUrls(project);
+          const urls = yield* storedUrls(project);
           const record = urls.find((candidate) => candidate.tokenHash === hash);
           if (record === undefined) continue;
           if (record.revokedAt !== undefined) return undefined;
@@ -558,16 +424,15 @@ export const ArtifactTokensLive = Layer.effect(
           return {
             projectId: project.id,
             artifact: record.artifact,
-            scopes: record.scope === "action" ? ["read", "action"] : ["read"],
             transparent: record.transparent,
             tokenHash: hash,
             urlId: record.id,
           };
         }
-        // Stable read tokens are self-describing and need no stored record:
-        // verify the HMAC against the project's secret. They only ever grant
-        // read scope for one project.
-        const parsed = parseArtifactReadToken(token);
+        // Stable tokens are self-describing and need no stored record: verify
+        // the HMAC against the project's secret. They address any artifact in
+        // that project.
+        const parsed = parseArtifactStableToken(token);
         if (parsed !== undefined) {
           const project = all.find((candidate) => candidate.id === parsed.projectId);
           if (project === undefined) return undefined;
@@ -575,15 +440,13 @@ export const ArtifactTokensLive = Layer.effect(
             try: () => ensureArtifactSecret(project.root),
             catch: () => undefined,
           }).pipe(Effect.catch(() => Effect.succeed(undefined)));
-          if (secret === undefined || !verifyArtifactReadToken(token, secret)) {
+          if (secret === undefined || !verifyArtifactStableToken(token, secret)) {
             return undefined;
           }
           return {
             projectId: project.id,
-            scopes: ["read"],
             transparent: false,
             tokenHash: hash,
-            readCapability: true,
           };
         }
         return undefined;
@@ -595,11 +458,7 @@ export const ArtifactTokensLive = Layer.effect(
       createUrl,
       listUrls,
       revokeUrl,
-      listConfirmations,
-      getConfirmation,
-      approveConfirmation,
-      rejectConfirmation,
-      readToken,
+      stableToken,
       resolve,
       revocations,
       renewals,

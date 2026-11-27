@@ -226,7 +226,6 @@ describe("diff", () => {
         procedures: [
           {
             name: "Snapshot",
-            kind: "query",
             stream: false,
             payloadSchema: {},
             successSchema: {},

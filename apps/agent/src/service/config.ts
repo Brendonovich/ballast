@@ -44,6 +44,8 @@ export interface ServeOptions {
   readonly webDir: string | undefined;
   readonly logDir: string | undefined;
   readonly cloudUrl: string | undefined;
+  /** Built-in default share server (decision 0014); falls back to the cloud URL. */
+  readonly shareServer: string | undefined;
 }
 
 export class ServeConfigError extends Data.TaggedError("ServeConfigError")<{
@@ -166,6 +168,7 @@ export const parseServeOptions = (
       "BALLAST_WEB_DIR",
       "BALLAST_LOG_DIR",
       "BALLAST_CLOUD_URL",
+      "BALLAST_SHARE_SERVER",
       "BALLAST_SERVICE_PORT",
       "XDG_STATE_HOME",
       "XDG_DATA_HOME",
@@ -183,6 +186,7 @@ export const parseServeOptions = (
     let webDir: string | undefined;
     let logDir = env["BALLAST_LOG_DIR"];
     let cloudUrl = env["BALLAST_CLOUD_URL"];
+    let shareServer = env["BALLAST_SHARE_SERVER"];
 
     for (let index = 0; index < args.length; index++) {
       const arg = args[index];
@@ -242,6 +246,14 @@ export const parseServeOptions = (
         logDir = path.resolve(arg.slice("--log-dir=".length));
         continue;
       }
+      if (arg === "--share-server") {
+        shareServer = value("--share-server");
+        continue;
+      }
+      if (arg !== undefined && arg.startsWith("--share-server=")) {
+        shareServer = arg.slice("--share-server=".length);
+        continue;
+      }
       if (arg === "--cloud") {
         cloudUrl = value("--cloud");
         continue;
@@ -267,6 +279,7 @@ export const parseServeOptions = (
       webDir: yield* resolveWebDir(webDir, env, cwd),
       logDir: logDir === undefined || logDir === "" ? undefined : path.resolve(logDir),
       cloudUrl: cloudUrl === undefined || cloudUrl === "" ? undefined : cloudUrl,
+      shareServer: shareServer === undefined || shareServer === "" ? undefined : shareServer,
     };
   }).pipe(
     Effect.catchCause((cause) => {

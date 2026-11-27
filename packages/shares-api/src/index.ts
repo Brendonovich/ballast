@@ -7,7 +7,7 @@ export {
   makeSharesApi,
   normalizeShareCode,
 } from "./api.ts";
-export type { DeployToken, MachineSubscription, RecordedDeploy, SharesApiRpc } from "./api.ts";
+export type { DeployToken, RecordedDeploy, SharesApiRpc } from "./api.ts";
 export {
   ShareRepoError,
   ShareRepos,
@@ -17,4 +17,4 @@ export {
 } from "./repos.ts";
 export type { ShareCommit, ShareReposService } from "./repos.ts";
 export { ShareStore, makeD1ShareStore } from "./store.ts";
-export type { ShareSubscriptionRow, ShareRow, ShareStoreService } from "./store.ts";
+export type { ShareRow, ShareStoreService } from "./store.ts";

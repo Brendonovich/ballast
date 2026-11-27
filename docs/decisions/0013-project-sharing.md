@@ -2,6 +2,11 @@
 
 *Status: accepted and implemented (2026-11-27) · effect `4.0.6` · alchemy `2.0.0-beta.84`*
 
+> **Amended by 0014:** sharing authenticates people with Sign in with Anomaly
+> instead of paired machines, projects record their share server, and the
+> `share_update` relay push is replaced by polling. Machine/relay details below
+> are historical.
+
 ## Context
 
 PLAN.md lists "publish/pull distribution" as a later phase. Users want to share a

@@ -315,9 +315,9 @@ describe("artifact check output", () => {
       api: {
         source: { file: "ballast.ts", line: 12, column: 10 },
         procedures: [
-          { name: "Snapshot", kind: "query" as const, stream: false },
-          { name: "Reset", kind: "action" as const, stream: false },
-          { name: "Chat", kind: "stream" as const, stream: true },
+          { name: "Snapshot", stream: false },
+          { name: "Reset", stream: false },
+          { name: "Chat", stream: true },
         ],
       },
       stores: [
@@ -706,6 +706,9 @@ describe("guide", () => {
     expect(GUIDE).toContain("satisfies Ballast.Project");
     expect(GUIDE).toContain("Params are live");
     expect(GUIDE).toContain("Ballast.Runtime");
+    expect(GUIDE).toContain("@ballast/artifact/protocol");
+    expect(GUIDE).toContain("wrapping `Rpc.make`");
+    expect(GUIDE).toContain("plain `Rpc.make`");
     expect(GUIDE).not.toContain("Timer.unit");
     expect(GUIDE).not.toContain("being removed");
   });

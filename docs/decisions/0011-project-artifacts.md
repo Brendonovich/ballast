@@ -4,6 +4,20 @@
 (2026-11-24); service gateway, tokens and persistence remain with the service
 agent · effect `4.0.6`*
 
+> **Amendment (2026-11-27): artifacts are private.**
+> Artifacts are served only to the project owner, so the read/action capability
+> split was removed:
+>
+> - Procedures have no `query`/`action` annotation or manifest `kind`; only
+>   `stream` remains. The gateway forwards every procedure in the project API.
+> - Tokens have no scopes. The stable project token, view tokens and persistent
+>   OBS URLs all grant the same project API access.
+> - There is no action URL confirmation, scope selector or read-only badge.
+> - `SetParam` and `CancelTimer` remain part of the metadata API with the same
+>   validation.
+>
+> Read/action scopes and query/action kinds described below are historical.
+
 ## Context
 
 Decision 0008 made the project the unit of work: one `ballast.ts` bundle, one
@@ -161,14 +175,13 @@ that does not gets the same generated dual config the planner already writes.
 - the artifact host serves immutable hashed assets, so an OBS Browser Source can
   reload without a stale module graph.
 
-## 2. Project API: actions, queries and streams
+## 2. Project API: procedures and streams
 
 ### Recommendation: Option A — one Effect `RpcGroup` in a shared module
 
 ```ts
 // src/api.ts — imported by ballast.ts and the artifact
 import { Rpc, RpcGroup, Schema } from "effect";
-import { action } from "@ballast/artifact/protocol";
 
 export const DashboardApi = RpcGroup.make(
   Rpc.make("Snapshot", {
@@ -177,10 +190,10 @@ export const DashboardApi = RpcGroup.make(
       startedAt: Schema.Number,
     }),
   }),
-  action(Rpc.make("Increment", {
+  Rpc.make("Increment", {
     payload: { by: Schema.Number },
     success: Schema.Number,
-  })),
+  }),
   Rpc.make("Events", {
     stream: true,
     success: Schema.Struct({
@@ -433,7 +446,7 @@ renewed; when an embed token expires the gateway closes its sockets with
 `1008` and rejects new HTTP/WebSocket requests, so pages must renew before
 `expiresAt`.
 
-### Stable read URLs (2026-11-27)
+### Stable URLs (2026-11-27)
 
 OBS needs a URL that is copyable now and still valid after a service restart,
 and a script must be able to name it during init (sceneify sources are declared
@@ -442,15 +455,15 @@ there). Three changes make that true:
 - **Fixed origin.** `BALLAST_ARTIFACT_PORT` defaults to `47831` instead of an
   ephemeral port; the gateway binds `127.0.0.1` only. Copied URLs therefore
   survive restarts. `0` remains a test-only ephemeral mode.
-- **Derived read capability.** The read URL is
-  `http://127.0.0.1:47831/a/r1.<projectId>.<hmac>/<artifact>/index.html`, where
-  `hmac = HMAC-SHA256(secret, "ballast-artifact-read-v1:<projectId>")` and the
+- **Derived capability.** The stable URL is
+  `http://127.0.0.1:47831/a/a1.<projectId>.<hmac>/<artifact>/index.html`, where
+  `hmac = HMAC-SHA256(secret, "ballast-artifact-v1:<projectId>")` and the
   secret is 32 random bytes in `<project>/.ballast/artifact-secret` (0600).
-  The token is scoped to one project's artifacts and only grants `read`; it is
-  verified by recomputing the HMAC, so no token record is needed. Deleting or
-  rotating the secret invalidates the project's read URLs.
+  The token addresses any artifact in one project; it is verified by
+  recomputing the HMAC, so no token record is needed. Deleting or rotating the
+  secret invalidates the project's stable URLs.
 - **Init reference.** The planner and runtime bundles fold
-  `globalThis.__BALLAST_ARTIFACT_HOST__ = { origin, readToken }` in as a
+  `globalThis.__BALLAST_ARTIFACT_HOST__ = { origin, stableToken }` in as a
   constant (only when the origin is stable). `Ballast.Artifact(name, options)`
   returns `{ name, title?, url, transparent }` with `url: string`, built from
   that constant with no I/O, so init can pass it straight to another
@@ -458,12 +471,12 @@ there). Three changes make that true:
   Without a gateway, `ballast plan` returns a clearly marked placeholder and
   records an `unresolved` entry the first time `url` is read, while
   standalone `ballast run` throws `ArtifactUrlUnavailableError`.
-- **Action URLs are still explicit.** They keep their random, stored,
-  revocable token and require confirmation. Persistent URL records now store
-  their plaintext token in `artifact-tokens.json` (0600) as well as the hash, so
-  the app can copy them again after a restart; the hash remains the audit
-  fingerprint and the revocation key.
-- **UI:** `ArtifactSummary.readUrl` carries the stable read URL, and
+- **Persistent URLs.** Additional URLs keep their random, stored, revocable
+  token. Persistent URL records store their plaintext token in
+  `artifact-tokens.json` (0600) as well as the hash, so the app can copy them
+  again after a restart; the hash remains the audit fingerprint and the
+  revocation key.
+- **UI:** `ArtifactSummary.stableUrl` carries the stable URL, and
   `ArtifactUrlSummary.url` carries a persistent URL's full value when the
   service has it. "Artifact URLs…" shows/copies the stable URL (transparency is
   a `?background=transparent` page query) and adds copy actions to existing
@@ -482,7 +495,7 @@ artifact page / asset
 
 artifact WebSocket /rpc?token=...        (project API)
 artifact WebSocket /metadata?token=...  (built-in metadata API)
-  -> artifact gateway validates token + project + scopes
+  -> artifact gateway validates token + project
 
   metadata procedure?
     -> service metadata API (project state, params, logs, timers)
@@ -499,7 +512,7 @@ artifact WebSocket /metadata?token=...  (built-in metadata API)
   manifest's API fingerprint before dispatch;
 - request/stream errors are opaque tagged errors plus a log entry; no worker
   stack traces or connection secrets are returned;
-- action-scoped procedures require the action token; read-only tokens receive
+- every token may call every project API procedure; there is no write scope
   `Forbidden` without invoking the worker;
 - the artifact cannot call `AgentRpcs`, `RuntimeRpcs` (host RPC), connection
   configuration, bindings, files, or the cloud.

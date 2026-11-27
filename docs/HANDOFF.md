@@ -65,13 +65,15 @@ still open, and what to build next.
 - **Artifact URLs outside the app.** Artifacts are served by a dedicated
   `127.0.0.1` gateway (default port 47831, `BALLAST_ARTIFACT_PORT`) with a
   strict CSP, so Chrome or an OBS Browser Source can load them with no Electron
-  preload or bridge. Each project has a stable read capability derived from
-  `.ballast/artifact-secret`; `Ballast.Artifact(...)` returns a handle whose
-  `url` is a plan/runtime bundle constant, usable in init. Action URLs remain
-  random, persisted (0600, so they can be copied again) and confirmation-gated.
-  The "Artifact URLs…" dialog copies the stable read URL and every persistent
-  URL; the external-browser flow was exercised with Playwright against the
-  real service (`apps/agent/test/artifacts-gateway.test.ts` covers restarts).
+  preload or bridge. Artifacts are private to the project, so every artifact
+  URL has full access to the project API. Each project has a stable token
+  derived from `.ballast/artifact-secret`; `Ballast.Artifact(...)` returns a
+  handle whose `url` is a plan/runtime bundle constant, usable in init.
+  Persistent URLs remain random and stored (0600, so they can be copied
+  again). The "Artifact URLs…" dialog copies the stable URL and every
+  persistent URL; the external-browser flow was exercised with Playwright
+  against the real service (`apps/agent/test/artifacts-gateway.test.ts` covers
+  restarts).
 - **Live params and runtime types.** A param change is pushed to the running
   worker's `Settings` Ref; the next read in a handler or `Ballast.run` loop sees
   it without a restart or generation change. `Ballast.Runtime` makes param,
@@ -81,6 +83,12 @@ still open, and what to build next.
 - **Cloud.** Cloudflare Worker/Alchemy app for OAuth, Twitch EventSub and webhook ingress, machine
   pairing/relay, and a per-machine RPC link. It typechecks and has protocol/unit tests; a deployed
   end-to-end run is still a next task.
+- **Share sign-in (0014).** Publishing uses Sign in with Anomaly, not cloud pairing;
+  subscribing needs only the share link (`{server}/s/{code}`), no sign-in.
+  `ballast shares login` (or Settings → Sharing) signs this machine in to a share server
+  (the cloud by default, `BALLAST_SHARE_SERVER`/`--share-server` or `ballast shares default`
+  for another); projects remember their server. Register the cloud with
+  `apps/cloud/scripts/anomaly-client.mjs` and set `ANOMALY_CLIENT_ID`/`ANOMALY_CLIENT_KEY`.
 - **Project sharing (0013).** An author runs `ballast projects share <id>` (or the
   Share action / MCP `ballast_share`) to push the project to a Cloudflare Artifacts repo
   through the cloud and get an unlisted share code; `deploy` pushes new versions with
@@ -95,6 +103,24 @@ still open, and what to build next.
   against local `alchemy dev` (cloud + shares API Workers) + wrangler's Artifacts simulator with
   two services paired as different users; not yet against deployed Artifacts.
   **Subscribed code runs unsandboxed.**
+- **Onboarding.** First run (no projects, not skipped; stored in `localStorage`) opens
+  `#/welcome`, also reachable from Projects → Get started. *Build a project* creates one and
+  connects coding agents; *Use a shared project* takes a share link (`{server}/s/{code}`, parsed
+  by `parseShareInput`, with the share-server sign-in prompt) or a bare code, or opens a local
+  folder. `GetProjectAgentSetup` / `WriteProjectAgentConfigs` (also `ballast projects agents`
+  and the project menu's "Configure coding agent…") merge a `ballast` server into
+  `opencode.json`, `.mcp.json` (Claude Code) and `.codex/config.toml`. Configs start
+  `<dataDir>/bin/ballast-mcp`, a launcher the service rewrites on every start with its runtime,
+  entry and state/data dirs, so they survive updates and non-default installs; shares leave these
+  configs out. The cloud serves a small `/s/{code}` page for share links. Exercised against a real
+  service (UI flow, files, MCP `tools/list` + `ballast_status` through the launcher, and
+  `opencode mcp list` showing `ballast` connected once the folder is a git repository; outside
+  one, OpenCode 2.2.5's `mcp list` showed no servers at all, global ones included).
+  `BALLAST_TEST_ONBOARDING=1` boots any entry point as a fresh install: the desktop app, CLI and
+  `ballast serve` point state/data/projects/logs (and the Electron profile) at a new temp root
+  shared through `BALLAST_TEST_ONBOARDING_ROOT`, with an ephemeral artifact port; the creator
+  removes it on exit (the desktop app stops its temporary service first). In the web dev server
+  the mock starts empty and a previous Skip is forgotten on load.
 - **Verification.** `pnpm typecheck` and `pnpm test` pass across the workspace. Project-bundle
   planning is also exercised from the built `apps/agent/dist-service` against a temporary project
   outside the repo. The desktop E2E
@@ -115,6 +141,7 @@ still open, and what to build next.
 | 0006 | Durable timers as declared, schema-typed events persisted per project; no resumable `sleep` | Core, planner and service integration implemented and tested; recurring/cron remains future work |
 | 0007 | Effect workflows with a durable engine | Deferred: service integration was canceled for the decision 0008 project-model redesign; the `packages/workflow` prototype stays with its own workstream |
 | 0008 | Project = one bundle with an explicit `ballast.ts` entry and named declarations | W4 service runtime and the protocol half of W5 implemented; UI half remains |
+| 0014 | Share servers + Sign in with Anomaly for publishers (subscribers use share links only): the share server is the OIDC client (PAR, private_key_jwt, DPoP), loopback handoff to the agent, per-project servers, polling instead of relay push | Implemented; verified locally against a strict test issuer; not yet against account.anoma.ly (needs client registration) |
 | 0013 | Project sharing: one-way shares (share/deploy/subscribe/update) over Cloudflare Artifacts, manifest diffs, staged atomic apply; shares API in `packages/shares-api` behind the cloud | Implemented; verified locally with the wrangler Artifacts simulator bridge; deployed Artifacts untested |
 
 ## 3. Packages and apps

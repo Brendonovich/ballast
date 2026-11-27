@@ -2,18 +2,20 @@ import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 
 import { useAgent } from "../state/context.tsx";
+import { useShareSignIn } from "../screens/settings/SharingSection.tsx";
 import { statusTone } from "../lib/project-health.ts";
-import { ChevronDownIcon, PlusIcon, ProjectsIcon, UploadIcon } from "../ui/icons.tsx";
+import { ChevronDownIcon, CodeIcon, PlusIcon, ProjectsIcon, UploadIcon } from "../ui/icons.tsx";
 import { Spinner, StatusDot, cx } from "../ui/primitives.tsx";
 
 /**
  * The project window's top-left control: the current project and a menu to
- * share or deploy it, see all projects or create one.
+ * share or deploy it, configure a coding agent, see all projects or create one.
  */
 export const ProjectSwitcher = (props: {
   readonly projectId: string;
   readonly onAllProjects: () => void;
   readonly onNewProject: () => void;
+  readonly onConnectAgent: () => void;
 }): JSX.Element => {
   const store = useAgent();
   const [open, setOpen] = createSignal(false);
@@ -29,6 +31,10 @@ export const ProjectSwitcher = (props: {
     return project !== undefined && project.share?._tag !== "subscribed";
   };
   const sharing = (): boolean => store.isPending(`project:${props.projectId}:share`);
+  const signIn = useShareSignIn();
+  // Shared projects deploy to their own server; a new share goes to the default.
+  const shareServer = (): string | undefined => current()?.share?.server;
+  const signedIn = (): boolean => store.signedInToShareServer(shareServer());
 
   onMount(() => {
     const onPointer = (event: PointerEvent): void => {
@@ -87,19 +93,35 @@ export const ProjectSwitcher = (props: {
               type="button"
               data-testid="share-project"
               title={
-                current()?.share === undefined
-                  ? "Share through your Ballast cloud and get a share code"
-                  : "Deploy the current files to subscribers"
+                !signedIn()
+                  ? "Sign in with Anomaly to share projects"
+                  : current()?.share === undefined
+                    ? "Share through your share server and get a share code"
+                    : "Deploy the current files to subscribers"
               }
               disabled={sharing()}
               class={itemClass}
               onClick={() => {
                 setOpen(false);
-                void store.shareProject(props.projectId);
+                if (!signedIn()) void signIn(shareServer());
+                else void store.shareProject(props.projectId);
               }}
             >
               <UploadIcon size={13} class="text-faint" />
-              {current()?.share === undefined ? "Share" : "Deploy"}
+              {!signedIn() ? "Sign in to share" : current()?.share === undefined ? "Share" : "Deploy"}
+            </button>
+            <button
+              type="button"
+              data-testid="connect-agent"
+              title="Write MCP configs so a coding agent can build this project"
+              class={itemClass}
+              onClick={() => {
+                setOpen(false);
+                props.onConnectAgent();
+              }}
+            >
+              <CodeIcon size={13} class="text-faint" />
+              Configure coding agent…
             </button>
             <div class="-mx-1 my-1 border-t border-edge" />
           </Show>

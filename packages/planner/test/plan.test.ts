@@ -83,14 +83,14 @@ describe("plan", () => {
       ]);
 
       const withHost = yield* plan(artifactUrl, {
-        artifactHost: { origin: "http://127.0.0.1:47831", readToken: "r1.overlay.test" },
+        artifactHost: { origin: "http://127.0.0.1:47831", stableToken: "a1.overlay.test" },
       });
       expect(withHost.params).toEqual([
         {
           key: "overlayUrl",
           type: "string",
           default:
-            "http://127.0.0.1:47831/a/r1.overlay.test/overlay/index.html?background=transparent",
+            "http://127.0.0.1:47831/a/a1.overlay.test/overlay/index.html?background=transparent",
         },
       ]);
       expect(withHost.unresolved).toEqual([]);
@@ -410,9 +410,9 @@ describe("plan", () => {
       expect(project.manifest.stores[0]?.source?.file).toBe("ballast.ts");
       expect(
         project.manifest.api?.procedures.map(
-          (procedure) => procedure.name + ":" + procedure.kind,
+          (procedure) => procedure.name + (procedure.stream ? ":stream" : ""),
         ),
-      ).toEqual(["Chat:stream", "ResetCounters:action", "Snapshot:query"]);
+      ).toEqual(["Chat:stream", "ResetCounters", "Snapshot"]);
       expect(
         project.manifest.stores.map((store) => store.name + ":" + store.kind),
       ).toEqual(["messages:counter", "sceneSwitches:counter"]);

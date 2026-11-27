@@ -3,6 +3,12 @@ import { Rpc, RpcGroup } from "effect/rpc";
 import type { RpcClient } from "effect/rpc";
 
 import {
+  OpenProjectRequest,
+  ProjectAgentSetup,
+  ProjectOpeners,
+  WriteProjectAgentConfigsRequest,
+} from "./agents.ts";
+import {
   CloudPairingSession,
   CloudStatus,
   ListCloudAccountsResponse,
@@ -11,6 +17,9 @@ import {
   ApplyProjectUpdateResult,
   DeployProjectResult,
   ShareProjectRequest,
+  ShareServerRequest,
+  ShareServersStatus,
+  ShareSignIn,
   SubscribeProjectRequest,
 } from "./shares.ts";
 import {
@@ -26,19 +35,14 @@ import {
   UpdateConnectionRequest,
 } from "./connections.ts";
 import {
-  ApproveArtifactUrlRequest,
-  ApproveArtifactUrlResponse,
   ArtifactView,
   CreateArtifactUrlRequest,
   CreateArtifactUrlResult,
   GetArtifactViewRequest,
-  ListArtifactUrlConfirmationsRequest,
-  ListArtifactUrlConfirmationsResponse,
   ListArtifactUrlsRequest,
   ListArtifactUrlsResponse,
   ListArtifactsRequest,
   ListArtifactsResponse,
-  RejectArtifactUrlRequest,
   RenewArtifactViewRequest,
   RenewArtifactViewResponse,
   RevokeArtifactUrlRequest,
@@ -164,6 +168,34 @@ export const CreateProject = Rpc.make("CreateProject", {
   error: AgentError,
 });
 
+/** Which coding agents in the project folder are set up to start the Ballast MCP server. */
+export const GetProjectAgentSetup = Rpc.make("GetProjectAgentSetup", {
+  payload: ProjectIdRequest,
+  success: ProjectAgentSetup,
+  error: AgentError,
+});
+
+/** Write the `ballast` MCP server into agents' project-local configs. */
+export const WriteProjectAgentConfigs = Rpc.make("WriteProjectAgentConfigs", {
+  payload: WriteProjectAgentConfigsRequest,
+  success: ProjectAgentSetup,
+  error: AgentError,
+});
+
+/** Installed apps the project folder can be opened in, and the configured agents. */
+export const ListProjectOpeners = Rpc.make("ListProjectOpeners", {
+  payload: ProjectIdRequest,
+  success: ProjectOpeners,
+  error: AgentError,
+});
+
+/** Open the project folder in an app, optionally starting an agent's CLI in a terminal. */
+export const OpenProject = Rpc.make("OpenProject", {
+  payload: OpenProjectRequest,
+  success: Schema.Void,
+  error: AgentError,
+});
+
 /** Typecheck + bundle + plan + diff, without applying or starting. */
 export const CheckProject = Rpc.make("CheckProject", {
   payload: ProjectIdRequest,
@@ -269,6 +301,36 @@ export const ShareProject = Rpc.make("ShareProject", {
 export const DeployProject = Rpc.make("DeployProject", {
   payload: ShareProjectRequest,
   success: DeployProjectResult,
+  error: AgentError,
+});
+
+/** Share servers, the default one and who is signed in to each (decision 0014). */
+export const GetShareServers = Rpc.make("GetShareServers", {
+  success: ShareServersStatus,
+  error: AgentError,
+});
+
+/**
+ * Start signing in to a share server in the browser. The service receives
+ * the result on its loopback callback and publishes `share-servers-changed`.
+ */
+export const BeginShareSignIn = Rpc.make("BeginShareSignIn", {
+  payload: ShareServerRequest,
+  success: ShareSignIn,
+  error: AgentError,
+});
+
+/** Forget this machine's session with a share server (revoked on the server when reachable). */
+export const SignOutShareServer = Rpc.make("SignOutShareServer", {
+  payload: Schema.Struct({ server: Schema.String }),
+  success: ShareServersStatus,
+  error: AgentError,
+});
+
+/** Set the server new shares and subscriptions use; omitted, the built-in default applies again. */
+export const SetDefaultShareServer = Rpc.make("SetDefaultShareServer", {
+  payload: ShareServerRequest,
+  success: ShareServersStatus,
   error: AgentError,
 });
 
@@ -422,7 +484,7 @@ export const ListArtifacts = Rpc.make("ListArtifacts", {
   error: AgentError,
 });
 
-/** Mint a short-lived action-capable token for the app's own artifact iframe. */
+/** Mint a short-lived token for the app's own artifact iframe. */
 export const GetArtifactView = Rpc.make("GetArtifactView", {
   payload: GetArtifactViewRequest,
   success: ArtifactView,
@@ -436,7 +498,7 @@ export const RenewArtifactView = Rpc.make("RenewArtifactView", {
   error: AgentError,
 });
 
-/** Create a persistent OBS URL; action scope returns a confirmation request. */
+/** Create a persistent OBS URL. */
 export const CreateArtifactUrl = Rpc.make("CreateArtifactUrl", {
   payload: CreateArtifactUrlRequest,
   success: CreateArtifactUrlResult,
@@ -451,27 +513,6 @@ export const ListArtifactUrls = Rpc.make("ListArtifactUrls", {
 
 export const RevokeArtifactUrl = Rpc.make("RevokeArtifactUrl", {
   payload: RevokeArtifactUrlRequest,
-  success: Schema.Void,
-  error: AgentError,
-});
-
-export const ListArtifactUrlConfirmations = Rpc.make(
-  "ListArtifactUrlConfirmations",
-  {
-    payload: ListArtifactUrlConfirmationsRequest,
-    success: ListArtifactUrlConfirmationsResponse,
-    error: AgentError,
-  },
-);
-
-export const ApproveArtifactUrl = Rpc.make("ApproveArtifactUrl", {
-  payload: ApproveArtifactUrlRequest,
-  success: ApproveArtifactUrlResponse,
-  error: AgentError,
-});
-
-export const RejectArtifactUrl = Rpc.make("RejectArtifactUrl", {
-  payload: RejectArtifactUrlRequest,
   success: Schema.Void,
   error: AgentError,
 });
@@ -525,6 +566,10 @@ export const AgentRpcs = RpcGroup.make(
   AddProject,
   RemoveProject,
   CreateProject,
+  GetProjectAgentSetup,
+  WriteProjectAgentConfigs,
+  ListProjectOpeners,
+  OpenProject,
   CheckProject,
   PlanProject,
   StartProject,
@@ -541,6 +586,10 @@ export const AgentRpcs = RpcGroup.make(
   RejectProjectConsent,
   ShareProject,
   DeployProject,
+  GetShareServers,
+  BeginShareSignIn,
+  SignOutShareServer,
+  SetDefaultShareServer,
   SubscribeProject,
   UnsubscribeProject,
   ApplyProjectUpdate,
@@ -567,9 +616,6 @@ export const AgentRpcs = RpcGroup.make(
   CreateArtifactUrl,
   ListArtifactUrls,
   RevokeArtifactUrl,
-  ListArtifactUrlConfirmations,
-  ApproveArtifactUrl,
-  RejectArtifactUrl,
   StreamLogs,
   StreamEvents,
   QueryEventHistory,
