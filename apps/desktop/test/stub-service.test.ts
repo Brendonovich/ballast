@@ -124,7 +124,9 @@ describe("stub service (serve contract used by the launcher)", () => {
     await expect(stat(path.join(stub.stateDir, "service.json"))).rejects.toThrow();
   });
 
-  it("requires the bearer token for control endpoints and exits 0 on SIGTERM", async () => {
+  // Windows has no SIGTERM: Node kills the process outright (exit code null). The shell stops the
+  // service over RPC there; SIGTERM is only the POSIX fallback.
+  it.skipIf(process.platform === "win32")("requires the bearer token for control endpoints and exits 0 on SIGTERM", async () => {
     const stub = await startStub();
     const unauthorized = await fetch(stub.url + "/shutdown", { method: "POST" });
     expect(unauthorized.status).toBe(401);
