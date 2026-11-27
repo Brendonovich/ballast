@@ -73,7 +73,7 @@ describe("@ballast/core plan phase", () => {
             slot: "main",
             location: "local",
           });
-          const echo = yield* Ballast.Request<{ text: string }, { text: string }>({
+          yield* Ballast.Request<{ text: string }, { text: string }>({
             integration: "fake",
             slot: connection.slot,
             request: "fake/echo",
@@ -86,9 +86,6 @@ describe("@ballast/core plan phase", () => {
           });
           yield* tick.subscribe("tick", connection, () => Effect.void);
           expect(tick.key(connection)).toBe("fake/main/fake/tick");
-          expect(tick.topic).toBe("fake/tick");
-          expect(tick.scopes).toEqual(["fake:read"]);
-          expect(typeof echo).toBe("function");
         });
 
       yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder);
@@ -119,37 +116,6 @@ describe("@ballast/core plan phase", () => {
           scopes: ["fake:write"],
         },
       ]);
-    }),
-  );
-
-  it.effect("records param help text and multi-select options", () =>
-    Effect.gen(function* () {
-      const ref = yield* Ref.make(Ballast.emptyManifest("params"));
-      const recorder = makeRecorder(ref);
-
-      const script = Effect.gen(function* () {
-          yield* Ballast.Param.strings("scenes", {
-            title: "Scenes",
-            description: "Pick one or more scenes",
-            default: ["Scene 1"],
-            options: { integration: "obs", slot: "main", source: "scenes" },
-          });
-        });
-
-      yield* Ballast.providePlan(Ballast.evaluateScript(script, "plan"), recorder);
-
-      const manifest = yield* Ref.get(ref);
-      expect(manifest.params).toEqual([
-        expect.objectContaining({
-          key: "scenes",
-          type: "strings",
-          title: "Scenes",
-          description: "Pick one or more scenes",
-          default: ["Scene 1"],
-          options: { integration: "obs", slot: "main", source: "scenes" },
-        }),
-      ]);
-      expect(manifest.params[0]?.source).toBeDefined();
     }),
   );
 

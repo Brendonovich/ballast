@@ -53,14 +53,9 @@ const writeSample = async (root: string, files: Readonly<Record<string, string>>
 };
 
 describe("guide code samples", () => {
-  it("contains complete ballast.ts and artifact samples", () => {
-    const all = samples();
-    expect(all.length).toBeGreaterThanOrEqual(3);
-    expect(all.some((sample) => sample.name === "artifact")).toBe(true);
-  });
-
   it("typechecks, plans and builds every complete sample", async () => {
     const all = samples();
+    expect(all.some((sample) => sample.name === "artifact")).toBe(true);
     for (const [index, sample] of all.entries()) {
       const root = await mkdtemp(join(tmpdir(), "ballast-guide-" + index + "-"));
       roots.push(root);

@@ -1,4 +1,4 @@
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as Layer from "effect/Layer";
 import { layer as clientLayer } from "./client.ts";
 import { layer as nodeListenerLayer } from "./node.ts";
@@ -26,6 +26,6 @@ export { layer as nodeListenerLayer } from "./node.ts";
 
 /** Both drivers wired to Node's ws implementation. */
 export const layerNode = Layer.mergeAll(
-  clientLayer.pipe(Layer.provide(NodeSocket.layerWebSocketConstructorWS)),
+  clientLayer.pipe(Layer.provide(NodeWS.layerWebSocketConstructor)),
   serverLayer.pipe(Layer.provide(nodeListenerLayer)),
 );

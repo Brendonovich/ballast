@@ -1,5 +1,6 @@
 import type {
   ApplyProjectUpdateResult,
+  CheckProjectUpdateResult,
   DeployProjectResult,
   ShareServersStatus,
   ShareSignIn,
@@ -144,7 +145,11 @@ export interface AgentStore {
   readonly stopProject: (projectId: string) => Promise<ProjectDetail | undefined>;
   readonly restartProject: (projectId: string) => Promise<ProjectDetail | undefined>;
   /** Share (first time) or deploy the project's files to subscribers. */
-  readonly shareProject: (projectId: string) => Promise<DeployProjectResult | undefined>;
+  /** Shares the project, or deploys it once shared; `message` is shown to subscribers. */
+  readonly shareProject: (
+    projectId: string,
+    message?: string,
+  ) => Promise<DeployProjectResult | undefined>;
   /** `input` is a share link (`{server}/s/{code}`) or a bare share code. */
   readonly subscribeProject: (
     input: string,
@@ -161,6 +166,7 @@ export interface AgentStore {
     projectId: string,
     agents: ReadonlyArray<CodingAgent>,
   ) => Promise<ProjectAgentSetup | undefined>;
+  readonly checkProjectUpdate: (projectId: string) => Promise<CheckProjectUpdateResult | undefined>;
   readonly applyProjectUpdate: (projectId: string) => Promise<ApplyProjectUpdateResult | undefined>;
   readonly setProjectParam: (
     projectId: string,
@@ -997,10 +1003,13 @@ export const createAgentStore = (
       runtime.client.RestartProject({ projectId }),
     );
 
-  const shareProject = async (projectId: string): Promise<DeployProjectResult | undefined> => {
+  const shareProject = async (
+    projectId: string,
+    message?: string,
+  ): Promise<DeployProjectResult | undefined> => {
     const outcome = await execute(
       `project:${projectId}:share`,
-      runtime.client.ShareProject({ projectId }),
+      runtime.client.ShareProject({ projectId, ...(message === undefined ? {} : { message }) }),
     );
     return outcome.ok ? outcome.value : undefined;
   };
@@ -1069,6 +1078,16 @@ export const createAgentStore = (
     if (!outcome.ok) return undefined;
     bumpFileRevision(projectId);
     return outcome.value;
+  };
+
+  const checkProjectUpdate = async (
+    projectId: string,
+  ): Promise<CheckProjectUpdateResult | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:check-update`,
+      runtime.client.CheckProjectUpdate({ projectId }),
+    );
+    return outcome.ok ? outcome.value : undefined;
   };
 
   const applyProjectUpdate = async (
@@ -1424,6 +1443,7 @@ export const createAgentStore = (
     listProjectOpeners,
     openProject,
     writeProjectAgentConfigs,
+    checkProjectUpdate,
     applyProjectUpdate,
     setProjectParam,
     approveProjectConsent,

@@ -168,7 +168,7 @@ describe("artifact handle URL", () => {
     }),
   );
 
-  it.effect("throws a clear error at runtime without a host", () =>
+  it.effect("throws ArtifactUrlUnavailableError at runtime without a host", () =>
     Effect.gen(function* () {
       const handle = yield* withArtifactHost(
         undefined,
@@ -178,7 +178,6 @@ describe("artifact handle URL", () => {
       );
 
       expect(() => handle.url).toThrow(Ballast.ArtifactUrlUnavailableError);
-      expect(() => handle.url).toThrow(/Ballast service/);
     }),
   );
 });

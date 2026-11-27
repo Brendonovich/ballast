@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { Socket } from "effect/socket";
 import type { ParamOptionSource } from "@ballast/core";
 import {
@@ -122,7 +122,7 @@ const withDriver = <A, E>(
   }).pipe(
     Effect.provide(VTubeStudioDriver.layer(options)),
     Effect.provide(Socket.layerWebSocketConstructorGlobal),
-    Effect.provide(NodeServices.layer),
+    Effect.provide([NodeServices.layer, NodeCrypto.layer]),
   );
 
 const apiState: MockVtsReply = {
@@ -634,7 +634,7 @@ describe("VTube Studio driver", () => {
       }
     }).pipe(
       Effect.provide(Socket.layerWebSocketConstructorGlobal),
-      Effect.provide(NodeServices.layer),
+      Effect.provide([NodeServices.layer, NodeCrypto.layer]),
     ),
   );
 });

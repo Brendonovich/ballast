@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -154,16 +154,16 @@ export const makeTimerManager = (
 ): Effect.Effect<
   TimerManager,
   never,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path | Scope
 > =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const platform = yield* Effect.context<
-      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+      SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
     >();
     const provide = <A, E>(
-      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const stores = yield* Ref.make<ReadonlyMap<string, ReadonlyMap<string, ScheduledTimer>>>(
       new Map(),

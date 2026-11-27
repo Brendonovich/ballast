@@ -37,7 +37,7 @@ export default Alchemy.Stack(
     // local; deploys keep the account's default store.
     state: isDev
       ? remoteDev
-        ? Cloudflare.state({ name: "ballast" })
+        ? Cloudflare.state({ workerName: "alchemy-state-store-ballast" })
         : Alchemy.localState()
       : Cloudflare.state(),
   },

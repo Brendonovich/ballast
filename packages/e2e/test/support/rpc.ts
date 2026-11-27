@@ -3,7 +3,7 @@ import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { Socket } from "effect/socket";
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import { AgentRpcs } from "@ballast/agent-protocol";
 import type { AgentClient } from "@ballast/agent-protocol";
 import type { ServiceRegistration } from "./process.ts";
@@ -20,7 +20,7 @@ export const withAgentClient = <A>(
         const socket = Socket.layerWebSocket(
           registration.url.replace(/\/$/, "") + "/rpc",
           { headers: { authorization: "Bearer " + registration.token } },
-        ).pipe(Layer.provide(NodeSocket.layerWebSocketConstructorWS));
+        ).pipe(Layer.provide(NodeWS.layerWebSocketConstructor));
         const protocol = RpcClient.layerProtocolSocket().pipe(
           Layer.provide(socket),
           Layer.provide(RpcSerialization.layerJson),

@@ -11,7 +11,7 @@ import * as Socket from "effect/socket/Socket";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/http";
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import type { WebhookStaticResponse, WebhookVerification } from "../types.ts";
 import { HttpDriverError } from "./errors.ts";
 
@@ -339,5 +339,5 @@ export const layer = (
 export const layerNode = (options: WebhookRelayOptions) =>
   layer(options).pipe(
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+    Layer.provide(NodeWS.layerWebSocketConstructor),
   );

@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -273,7 +273,7 @@ interface RunTimerHandlers {
 const startWorker = (
   platform: Context.Context<
     | ChildProcessSpawner
-    | Crypto.Crypto
+    | SecureRandom.SecureRandom
     | FileSystem.FileSystem
     | Path.Path
     | Scope.Scope
@@ -350,7 +350,7 @@ export const runScript = (options: RunOptions) =>
       const path = yield* Path.Path;
       const platform = yield* Effect.context<
         | ChildProcessSpawner
-        | Crypto.Crypto
+        | SecureRandom.SecureRandom
         | FileSystem.FileSystem
         | Path.Path
         | Scope.Scope
@@ -362,7 +362,7 @@ export const runScript = (options: RunOptions) =>
           A,
           E,
           | ChildProcessSpawner
-          | Crypto.Crypto
+          | SecureRandom.SecureRandom
           | FileSystem.FileSystem
           | Path.Path
           | Scope.Scope

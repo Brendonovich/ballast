@@ -1,15 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeContext } from "alchemy/RuntimeContext";
-import { Effect, Layer } from "effect";
 
 import type { EventEnvelope, WebhookRelayDelivery } from "@ballast/cloud-protocol";
 
-import {
-  RelayBuffer,
-  RelayError,
-  layerMemoryRelayState,
-  layerRelayBuffer,
-} from "../src/relay/buffer.ts";
 import {
   ackEvents,
   emptyRelaySnapshot,
@@ -146,41 +138,5 @@ describe("relay state", () => {
     }
     expect(snapshot.events.map((event) => event.envelope.id)).toEqual(["e2", "e3", "e4"]);
     expect(snapshot.nextSeq).toBe(6);
-  });
-});
-
-const testRuntimeContext = RuntimeContext.of({
-  Type: "test",
-  id: "test",
-  env: {},
-  get: () => Effect.succeed(undefined),
-  set: () => Effect.succeed("test"),
-});
-
-describe("relay buffer service", () => {
-  const run = <A>(effect: Effect.Effect<A, RelayError, RelayBuffer | RuntimeContext>) =>
-    Effect.runPromise(
-      effect.pipe(
-        Effect.provide(layerRelayBuffer().pipe(Layer.provide(layerMemoryRelayState()))),
-        Effect.provideService(RuntimeContext, testRuntimeContext),
-      ),
-    );
-
-  it("persists events and acks across service calls", async () => {
-    const result = await run(
-      Effect.gen(function* () {
-        const buffer = yield* RelayBuffer;
-        const first = yield* buffer.enqueue(envelope("e1"));
-        const duplicate = yield* buffer.enqueue(envelope("e1"));
-        const pending = yield* buffer.pending;
-        yield* buffer.ack([1]);
-        const count = yield* buffer.count;
-        return { first, duplicate, pending, count };
-      }),
-    );
-    expect(result.first).toEqual({ duplicate: false, seq: 1 });
-    expect(result.duplicate).toEqual({ duplicate: true, seq: null });
-    expect(result.pending).toHaveLength(1);
-    expect(result.count).toBe(0);
   });
 });

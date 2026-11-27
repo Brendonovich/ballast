@@ -1,5 +1,5 @@
 import * as Config from "effect/Config";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -38,7 +38,7 @@ export interface VTubeStudioTokenStore {
   ) => Effect.Effect<
     void,
     VTubeStudioStorageError,
-    Crypto.Crypto | FileSystem.FileSystem | Path.Path
+    SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
   >;
   readonly remove: (
     slot: string,
@@ -152,7 +152,7 @@ export const fileTokenStore = (dataDir?: string): VTubeStudioTokenStore => {
     write: (token) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const crypto = yield* Crypto.Crypto;
+        const crypto = yield* SecureRandom.SecureRandom;
         const paths = yield* Path.Path;
         const path = yield* pathFor(token.slot);
         const temporary = path + "." + Hex.encode(yield* crypto.randomBytes(4).pipe(Effect.orDie)) + ".tmp";

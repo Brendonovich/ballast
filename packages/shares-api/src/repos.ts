@@ -60,10 +60,10 @@ const repoError = (cause: unknown): ShareRepoError => {
 };
 
 /**
- * Production: the Worker's Artifacts namespace binding. The pinned Alchemy
- * (beta.84) wraps create/get/createToken; reads (`info`, `readCommit`,
- * `readFile`) go through the runtime repo stub (`repo.raw`) directly. The
- * Effect-wrapped read methods arrived in beta.85, which needs effect 4.1.
+ * Production: the Worker's Artifacts namespace binding. create/get/createToken
+ * use Alchemy's Effect wrappers; reads (`info`, `readCommit`, `readFile`) go
+ * through the runtime repo stub (`repo.raw`), written before Alchemy (beta.85+)
+ * wrapped those too.
  */
 export const makeArtifactsShareRepos = (
   client: Cloudflare.Artifacts.ReadWriteNamespaceClient,
@@ -96,7 +96,7 @@ export const makeArtifactsShareRepos = (
       Effect.gen(function* () {
         const target = yield* handle(repo);
         const info = yield* promise(() => target.raw.info());
-        const token = yield* run(target.createToken("write", ttlSeconds));
+        const token = yield* run(provideRuntime(target.createToken("write", ttlSeconds)));
         return {
           remote: info.remote,
           token: tokenSecret(token.plaintext),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { createHmac } from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -20,7 +20,7 @@ import type {
   WebhookRelayDelivery,
 } from "../src/driver/index.ts";
 
-const platformLayer = NodeServices.layer;
+const platformLayer = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
 const startRuntime = (definitions: ReadonlyArray<WebhookDefinition>) =>
   Effect.gen(function* () {
     const driver = yield* WebhookDriver;

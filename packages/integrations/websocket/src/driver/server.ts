@@ -1,5 +1,5 @@
 import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -152,13 +152,13 @@ const validateConfig = (config: WebSocketServerConfig): WebSocketDriverError | u
 export const layer: Layer.Layer<
   WebSocketServerDriver,
   never,
-  Crypto.Crypto | WebSocketListener
+  SecureRandom.SecureRandom | WebSocketListener
 > =
   Layer.effect(
     WebSocketServerDriver,
     Effect.gen(function* () {
       const listener = yield* WebSocketListener;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* SecureRandom.SecureRandom;
 
       return WebSocketServerDriver.of({
         listen: (config) =>
@@ -196,7 +196,7 @@ export const layer: Layer.Layer<
 
             const handleClient = (client: WebSocketListenerClient): Effect.Effect<void> =>
               Effect.gen(function* () {
-                const clientId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+                const clientId = yield* crypto.uuidV4().pipe(Effect.orDie);
                 let registered = false;
 
                 const exit = yield* Effect.exit(

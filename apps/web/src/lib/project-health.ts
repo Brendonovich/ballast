@@ -18,6 +18,12 @@ const words: Record<ProjectStatus, string> = {
 /** One word per status, the same everywhere a project's status is shown. */
 export const statusWord = (status: ProjectStatus): string => words[status];
 
+/** The status word, except a blocked project says what is blocking it: its issue count. */
+export const statusLabel = (project: Pick<ProjectSummary, "status" | "issues">): string =>
+  project.status === "needs-user" && project.issues.length > 0
+    ? issueSummary(project.issues)
+    : statusWord(project.status);
+
 /**
  * The dot next to a project. Failed is red, and a live project with any
  * problem is amber instead of green: the issues list says what is wrong.

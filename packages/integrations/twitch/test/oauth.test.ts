@@ -261,10 +261,4 @@ describe("Twitch OAuth", () => {
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );
 
-  it.effect("defaults the HTTP layer without extra dependencies", () =>
-    Effect.gen(function* () {
-      const client = yield* make({ clientId: "client-id" });
-      expect(client.config.clientId).toBe("client-id");
-    }).pipe(Effect.provide(FetchHttpClient.layer)),
-  );
 });

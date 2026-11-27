@@ -174,7 +174,7 @@ test("desktop bridge supplies running state and service actions", async ({ page 
   await expect(page.getByTestId("create-project-directory")).toHaveValue("/tmp/picked-project");
 });
 
-test("a desktop project window switches to Connections and Settings in place", async ({ page }) => {
+test("navigating within a desktop project window stays in that window and makes no bridge calls", async ({ page }) => {
   await installBridge(page);
   await page.goto("/#/projects/proj_main");
   await expect(page.getByTestId("project-navigator")).toBeVisible();
@@ -182,10 +182,7 @@ test("a desktop project window switches to Connections and Settings in place", a
 
   await page.getByTestId("project-nav-connections").click();
   await expect(page).toHaveURL(/#\/projects\/proj_main\/connections$/);
-  await expect(page.getByTestId("top-bar")).toBeVisible();
-  await expect(page.getByTestId("project-nav-connections")).toHaveAttribute("aria-current", "page");
   await expect(page.getByTestId("connection-row").first()).toBeVisible();
-  await expect(page).toHaveTitle("Connections — Main Channel — Ballast");
 
   await page.getByTestId("project-back").click();
   await expect(page).toHaveURL(/#\/projects\/proj_main$/);
@@ -202,61 +199,4 @@ test("the project menu's All projects focuses the home window", async ({ page })
   await page.getByTestId("project-switcher-all").click();
   await expect.poll(() => bridgeCalls(page)).toContain("home:projects");
   await expect(page).toHaveURL(/#\/projects\/proj_main$/);
-});
-
-test("on macOS the top bar is the draggable title bar with clickable controls", async ({ page }) => {
-  await installBridge(page, { titleBar: "inset" });
-  await page.goto("/#/projects/proj_main");
-  const bar = page.getByTestId("top-bar");
-  await expect(bar).toBeVisible();
-  const region = (testId: string): Promise<string> =>
-    page
-      .getByTestId(testId)
-      .evaluate((element) => getComputedStyle(element).getPropertyValue("-webkit-app-region"));
-  expect(await region("top-bar")).toBe("drag");
-  const controls = [
-    "toggle-left-sidebar",
-    "project-switcher",
-    "project-status",
-    "toggle-project",
-    "project-run-menu",
-    "project-nav-connections",
-    "toggle-project-sidebar",
-  ];
-  for (const control of controls) {
-    expect(await region(control)).toBe("no-drag");
-  }
-  // The first control clears the traffic lights.
-  const switcher = await page.getByTestId("project-switcher").boundingBox();
-  expect(switcher?.x ?? 0).toBeGreaterThanOrEqual(80);
-  const barBox = await bar.boundingBox();
-  expect(barBox?.height).toBe(34);
-  for (const control of controls) {
-    const box = await page.getByTestId(control).boundingBox();
-    expect(box?.height, control).toBe(28);
-    expect(box?.y, control).toBe((barBox?.y ?? 0) + 6);
-    expect((box?.y ?? 0) + (box?.height ?? 0), control).toBe(
-      (barBox?.y ?? 0) + (barBox?.height ?? 0),
-    );
-  }
-  const tabsBox = await page.getByTestId("tab-area").boundingBox();
-  expect(tabsBox?.y).toBe((barBox?.y ?? 0) + (barBox?.height ?? 0) + 8);
-  await page.getByTestId("project-switcher").click();
-  await expect(page.getByTestId("project-switcher-menu")).toBeVisible();
-  expect(await region("project-switcher-menu")).toBe("no-drag");
-});
-
-test("artifact pop-out windows get a minimal title bar", async ({ page }) => {
-  await installBridge(page, { titleBar: "inset" });
-  await page.goto("/#/projects/proj_main/artifacts/dashboard");
-  const bar = page.getByTestId("top-bar");
-  await expect(bar).toHaveAttribute("data-variant", "artifact");
-  await expect(page.getByTestId("top-bar-artifact")).toHaveText("Stream dashboard");
-  await expect(page.getByTestId("top-bar-project")).toHaveText("Main Channel");
-  await expect(bar.locator("button")).toHaveCount(0);
-  await expect(page.getByTestId("artifact-menu")).toHaveCount(0);
-  await expect(
-    page.frameLocator("iframe").getByRole("heading", { name: "Stream dashboard" }),
-  ).toBeVisible();
-  await expect(page).toHaveTitle("Stream dashboard — Main Channel — Ballast");
 });

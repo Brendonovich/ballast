@@ -7,14 +7,14 @@ import {
   issueMessage,
   issueSummary,
   sortIssues,
-  statusWord,
+  statusLabel,
 } from "../lib/project-health.ts";
 import { AlertIcon, CheckIcon, ErrorIcon } from "../ui/icons.tsx";
 import { cx } from "../ui/primitives.tsx";
 
 /**
- * The top bar's status word, or just the issue count while running (nothing
- * when running cleanly). It opens an overlay listing the project's issues,
+ * The top bar's status word, or just the issue count while running or blocked
+ * on the user (nothing when running cleanly). It opens an overlay listing the project's issues,
  * one line each; nothing in the page moves when it opens.
  */
 export const ProjectStatusButton = (props: {
@@ -46,7 +46,7 @@ export const ProjectStatusButton = (props: {
 
   const issues = () => sortIssues(props.project.issues);
   const label = (): string | undefined => {
-    if (props.project.status !== "running") return statusWord(props.project.status);
+    if (props.project.status !== "running") return statusLabel(props.project);
     return props.project.issues.length > 0 ? issueSummary(props.project.issues) : undefined;
   };
 

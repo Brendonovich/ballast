@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -156,7 +156,7 @@ export const parseServeOptions = (
 ): Effect.Effect<
   ServeOptions,
   ServeConfigError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -318,9 +318,9 @@ export const serviceJsonPath = (path: Path.Path, stateDir: string): string =>
 export const serviceLockPath = (path: Path.Path, stateDir: string): string =>
   path.join(stateDir, "service.lock");
 
-export const makeServiceToken = (): Effect.Effect<string, never, Crypto.Crypto> =>
+export const makeServiceToken = (): Effect.Effect<string, never, SecureRandom.SecureRandom> =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const bytes = yield* crypto.randomBytes(32).pipe(Effect.orDie);
     return Base64Url.encode(bytes);
   });
@@ -358,7 +358,7 @@ export const writeServiceRegistration = (
 ): Effect.Effect<
   void,
   never,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -493,17 +493,23 @@ const constantTimeEqual = (left: string, right: string): boolean => {
 
 export const tokenEquals = constantTimeEqual;
 
+const loopbackHosts = ["127.0.0.1", "localhost", "[::1]"];
+
+/**
+ * In dev the UI is served by a Vite server on whatever loopback port was free,
+ * so any loopback port is accepted.
+ */
+const loopbackAnyPort = (host: string): boolean => {
+  const separator = host.lastIndexOf(":");
+  if (separator === -1) return false;
+  const port = host.slice(separator + 1);
+  return loopbackHosts.includes(host.slice(0, separator)) && /^\d{1,5}$/.test(port);
+};
+
 export const hostAllowed = (host: string | undefined, port: number, dev: boolean): boolean => {
   if (host === undefined || host === "") return false;
-  const allowed = [
-    `127.0.0.1:${port}`,
-    `localhost:${port}`,
-    `[::1]:${port}`,
-  ];
-  if (dev) {
-    allowed.push("localhost:5173", "127.0.0.1:5173");
-  }
-  return allowed.includes(host);
+  if (dev && loopbackAnyPort(host)) return true;
+  return loopbackHosts.map((name) => `${name}:${port}`).includes(host);
 };
 
 export const originAllowed = (
@@ -512,15 +518,10 @@ export const originAllowed = (
   dev: boolean,
 ): boolean => {
   if (origin === undefined || origin === "") return true;
-  const allowed = [
-    `http://127.0.0.1:${port}`,
-    `http://localhost:${port}`,
-    `http://[::1]:${port}`,
-  ];
-  if (dev) {
-    allowed.push("http://localhost:5173", "http://127.0.0.1:5173");
-  }
-  return allowed.includes(origin);
+  if (!origin.startsWith("http://")) return false;
+  const host = origin.slice("http://".length);
+  if (dev && loopbackAnyPort(host)) return true;
+  return loopbackHosts.map((name) => `${name}:${port}`).includes(host);
 };
 
 export const resolveServiceVersion = (): Effect.Effect<

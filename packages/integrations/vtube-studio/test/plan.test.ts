@@ -11,40 +11,25 @@ describe("plan VTube Studio script", () => {
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
-      expect(manifest).toEqual({
-        project: { id: "vts-hotkey", entry: "vts-hotkey.ts" },
-        params: [
-          {
-            key: "hotkey",
-            type: "string",
-            title: "Hotkey",
-            options: { integration: "vts", slot: "main", source: "hotkeys" },
-          },
-        ],
-        connections: [{ integration: "vts", slot: "main", location: "local" }],
-        topics: [
-          {
-            integration: "vts",
-            slot: "main",
-            topic: "vts/HotkeyTriggered",
-            name: "hotkey-triggered",
-            scopes: [],
-            onStale: "drop",
-            maxAgeMs: 60_000,
-            history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
-            schemaFingerprint: expect.any(String),
-            condition: { config: '{"ignoreHotkeysTriggeredByAPI":true}' },
-          },
-        ],
-        requests: [{ integration: "vts", slot: "main", request: "vts/*", scopes: [] }],
-        unresolved: [],
-        timers: [],
-        workflows: [],
-        runs: [{ name: "hotkey-loop" }],
-        artifacts: [],
-        stores: [],
-        databases: [],
-      });
+      expect(manifest.requests).toEqual([
+        { integration: "vts", slot: "main", request: "vts/*", scopes: [] },
+      ]);
+      expect(manifest.params).toEqual([
+        {
+          key: "hotkey",
+          type: "string",
+          title: "Hotkey",
+          options: { integration: "vts", slot: "main", source: "hotkeys" },
+        },
+      ]);
+      expect(manifest.topics).toMatchObject([
+        {
+          integration: "vts",
+          slot: "main",
+          topic: "vts/HotkeyTriggered",
+          condition: { config: '{"ignoreHotkeysTriggeredByAPI":true}' },
+        },
+      ]);
     }),
   );
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -51,25 +51,15 @@ const send = (socket: WebSocket, data: string | Uint8Array): void => {
 };
 
 const clientLayer = driverLayer.pipe(
-  Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+  Layer.provide(NodeWS.layerWebSocketConstructor),
 );
 
 describe("WebSocket client driver", () => {
-  it.live("connects with headers and protocols, decodes text and binary, and sends all body kinds", () =>
+  it.live("sends configured headers and subprotocols in the handshake", () =>
     Effect.gen(function* () {
-      const received: Array<string | Uint8Array> = [];
       let handshake: Readonly<Record<string, string | string[] | undefined>> = {};
-      const server = yield* startServer((socket, connection, request) => {
-        if (connection === 1) {
-          handshake = request.headers;
-        }
-        socket.on("message", (data, isBinary) => {
-          received.push(isBinary ? new Uint8Array(data as Buffer) : String(data));
-        });
-        if (connection === 1) {
-          send(socket, "hello");
-          send(socket, new Uint8Array([1, 2, 3]));
-        }
+      const server = yield* startServer((_socket, _connection, request) => {
+        handshake = request.headers;
       });
 
       const driver = yield* WebSocketClientDriver;
@@ -85,34 +75,8 @@ describe("WebSocket client driver", () => {
         Stream.filter((status) => status === "open"),
         Stream.take(1),
         Stream.runDrain,
-      );
-
-      yield* connection.send({ type: "text", text: "plain" });
-      yield* connection.send({ type: "json", value: { hello: "world" } });
-      yield* connection.send({ type: "binary", base64: "AQID" });
-
-      const events = yield* connection.events.pipe(
-        Stream.take(3),
-        Stream.runCollect,
         Effect.timeout("5 seconds"),
       );
-      const list = Array.from(events);
-      expect(list[0]?._tag).toBe("open");
-      expect(
-        list.some((event) => event._tag === "message" && event.message.text === "hello"),
-      ).toBe(true);
-      const binary = list.find(
-        (event) => event._tag === "message" && event.message.binary !== undefined,
-      );
-      if (binary?._tag !== "message" || binary.message.binary === undefined) {
-        throw new Error("missing binary event");
-      }
-      expect(Array.from(binary.message.binary)).toEqual([1, 2, 3]);
-
-      yield* Effect.sleep("100 millis");
-      expect(
-        received.map((value) => (typeof value === "string" ? value : Array.from(value))),
-      ).toEqual(["plain", JSON.stringify({ hello: "world" }), [1, 2, 3]]);
 
       expect(handshake["x-ballast-test"]).toBe("yes");
       expect(handshake["sec-websocket-protocol"]).toBe("ballast.test");

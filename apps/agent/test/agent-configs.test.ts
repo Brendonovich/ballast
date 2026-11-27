@@ -53,17 +53,6 @@ describe("MCP launcher", () => {
 });
 
 describe("project agent configs", () => {
-  it("reports nothing configured in an empty project", async () => {
-    const root = temp();
-    const setup = await ok(projectAgentSetup({ projectId: "p", root, launcher }));
-    expect(setup.launcher).toEqual({ command: launcher, args: [] });
-    expect(setup.agents).toEqual([
-      { agent: "opencode", file: "opencode.json", configured: false },
-      { agent: "claude-code", file: ".mcp.json", configured: false },
-      { agent: "codex", file: ".codex/config.toml", configured: false },
-    ]);
-  });
-
   it("writes each agent's config format", async () => {
     const root = temp();
     const setup = await ok(

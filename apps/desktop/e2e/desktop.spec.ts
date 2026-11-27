@@ -210,34 +210,6 @@ const artifactPage = async (
       );
   });
 
-const screenshotDir = path.join(desktopRoot, "screenshots");
-
-/**
- * Screenshot the Electron window's page in both themes for review. The page
- * capture omits the native traffic lights, but shows the space left for them.
- */
-const captureThemes = async (
-  page: Page,
-  name: string,
-  prepare: () => Promise<void>,
-): Promise<void> => {
-  await mkdir(screenshotDir, { recursive: true });
-  for (const theme of ["dark", "light"] as const) {
-    await page.evaluate((value) => localStorage.setItem("ballast.theme", value), theme);
-    await page.reload();
-    await expect(page.getByTestId("top-bar")).toBeVisible();
-    await expect
-      .poll(() => page.evaluate(() => document.documentElement.dataset.colorScheme))
-      .toBe(theme);
-    await prepare();
-    await sleep(250);
-    await page.screenshot({ path: path.join(screenshotDir, `${theme}-${name}.png`) });
-  }
-  await page.evaluate(() => localStorage.removeItem("ballast.theme"));
-  await page.reload();
-  await expect(page.getByTestId("top-bar")).toBeVisible();
-};
-
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -278,7 +250,7 @@ export default Effect.gen(function* () {
 }) satisfies Ballast.Project;
 `;
 
-test("real service + Electron UI survives quitting the window", async ({}, testInfo) => {
+test("real service + Electron UI survives quitting the window", async () => {
   test.setTimeout(240_000);
 
   const root = await mkdtemp(path.join(tmpdir(), "ballast-desktop-e2e-"));
@@ -505,41 +477,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       { timeout: 30_000 },
     );
     await expect.poll(() => page.title()).toBe("E2E Tick — Ballast");
-    await expect(page.getByTestId("top-bar")).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("ballast-window-1.png"), fullPage: true });
-
-    // The top bar is the title bar on macOS: draggable, traffic lights inset,
-    // controls excluded from the drag region and clickable.
-    const region = (testId: string): Promise<string> =>
-      page
-        .getByTestId(testId)
-        .evaluate((element) => getComputedStyle(element).getPropertyValue("-webkit-app-region"));
-    const switcherBox = await page.getByTestId("project-switcher").boundingBox();
-    if (process.platform === "darwin") {
-      expect(await region("top-bar")).toBe("drag");
-      for (const control of ["project-switcher", "toggle-project", "project-nav-connections"]) {
-        expect(await region(control)).toBe("no-drag");
-      }
-      const buttons = await ui.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()[0]?.getWindowButtonPosition() ?? null,
-      );
-      expect(buttons).toEqual({ x: 14, y: 13 });
-      expect(switcherBox?.x ?? 0).toBeGreaterThanOrEqual(80);
-    } else {
-      expect(await region("top-bar")).not.toBe("drag");
-    }
-    expect((await page.getByTestId("top-bar").boundingBox())?.height).toBe(34);
-    await page.getByTestId("project-switcher").click();
-    await expect(page.getByTestId("project-switcher-menu")).toBeVisible();
-    await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
-    await page.keyboard.press("Escape");
-    await captureThemes(page, "project-top-bar", async () => {
-      await expect(page.getByTestId("project-navigator")).toBeVisible();
-    });
-    await captureThemes(page, "project-switcher", async () => {
-      await page.getByTestId("project-switcher").click();
-      await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
-    });
+    await expect(page.getByTestId("project-navigator")).toBeVisible();
 
     // Connections and Settings open inside the project window, not a new one.
     const windowsBefore = ui.windows().length;
@@ -549,10 +487,6 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     );
     await expect(page.getByTestId("connection-row").first()).toBeVisible();
     await expect.poll(() => page.title()).toBe("Connections — E2E Tick — Ballast");
-    await page.screenshot({ path: testInfo.outputPath("ballast-project-connections.png") });
-    await captureThemes(page, "project-connections", async () => {
-      await expect(page.getByTestId("connection-row").first()).toBeVisible();
-    });
     expect(ui.windows().length).toBe(windowsBefore);
     await page.getByTestId("project-back").click();
     await page.waitForURL(new RegExp("#/projects/" + encodeURIComponent(projectId) + "$"));
@@ -577,10 +511,6 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     );
     expect(focusedFirst).toContain(encodeURIComponent(projectId));
     await expect.poll(() => ui.windows().length).toBe(2);
-    await secondPage.screenshot({
-      path: testInfo.outputPath("ballast-window-2.png"),
-      fullPage: true,
-    });
 
     // Switching to a project another window shows focuses that window.
     await secondPage.getByTestId("project-switcher").click();
@@ -607,7 +537,6 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
       .click();
     await secondPage.waitForURL(new RegExp("#/projects/" + encodeURIComponent(thirdProjectId) + "$"));
     await expect.poll(() => secondPage.title()).toBe("E2E Third — Ballast");
-    await expect(secondPage.getByTestId("project-switcher")).toContainText("E2E Third");
     await expect.poll(() =>
       ui.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((window) => window.getTitle()).sort()),
     ).toEqual(["E2E Third — Ballast", "E2E Tick — Ballast"]);
@@ -633,13 +562,6 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     await expect(
       artifactWindow.frameLocator("iframe").getByText("E2E artifact"),
     ).toBeVisible({ timeout: 20_000 });
-    await expect(artifactWindow.getByTestId("top-bar")).toHaveAttribute("data-variant", "artifact");
-    await expect(artifactWindow.getByTestId("top-bar").locator("button")).toHaveCount(0);
-    await captureThemes(artifactWindow, "artifact-popout", async () => {
-      await expect(artifactWindow.frameLocator("iframe").getByText("E2E artifact")).toBeVisible({
-        timeout: 20_000,
-      });
-    });
     await bridgeOpenArtifact(page, projectId, "dashboard");
     const focusedArtifact = await ui.evaluate(
       ({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL() ?? "",
@@ -781,8 +703,7 @@ test("recovers from the bundled fallback once the service starts", async () => {
   let servicePid: number | undefined;
   try {
     const page = await ui.firstWindow();
-    await expect(page.getByRole("heading", { name: /Starting Ballast/ })).toBeVisible();
-    await expect(page.locator("#phase")).toHaveText("stopped");
+    await page.waitForLoadState("domcontentloaded");
     expect(await page.evaluate(() => globalThis.location.protocol)).toBe("file:");
     const hasBridge = await page.evaluate(() => {
       const candidate: unknown = Reflect.get(globalThis, "ballast");

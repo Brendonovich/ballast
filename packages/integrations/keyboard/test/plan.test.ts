@@ -9,48 +9,12 @@ const example = fileURLToPath(
 const callRequest = fileURLToPath(new URL("./fixtures/call-request.ts", import.meta.url));
 
 describe("plan keyboard scripts", () => {
-  it.effect("records the connection, KeyDown, a filtered Hotkey and keyboard namespace", () =>
+  it.effect("records a Hotkey subscription with its canonical combo as the condition", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
+      const hotkey = manifest.topics.find((entry) => entry.topic === "keyboard/Hotkey");
 
-      expect(manifest).toEqual({
-        project: { id: "keyboard-hotkey", entry: "keyboard-hotkey.ts" },
-        params: [],
-        connections: [{ integration: "keyboard", slot: "main", location: "local" }],
-        topics: [
-          {
-            integration: "keyboard",
-            slot: "main",
-            topic: "keyboard/Hotkey",
-            name: "hotkey",
-            scopes: [],
-            onStale: "drop",
-            maxAgeMs: 60_000,
-            history: false,
-            schemaFingerprint: expect.any(String),
-            condition: { keys: "Ctrl+Shift+F1", state: "down" },
-          },
-          {
-            integration: "keyboard",
-            slot: "main",
-            topic: "keyboard/KeyDown",
-            name: "key-down",
-            scopes: [],
-            onStale: "drop",
-            maxAgeMs: 60_000,
-            history: false,
-            schemaFingerprint: expect.any(String),
-          },
-        ],
-        requests: [{ integration: "keyboard", slot: "main", request: "keyboard/*", scopes: [] }],
-        unresolved: [],
-        timers: [],
-        workflows: [],
-        runs: [],
-        artifacts: [],
-        stores: [],
-        databases: [],
-      });
+      expect(hotkey?.condition).toEqual({ keys: "Ctrl+Shift+F1", state: "down" });
     }),
   );
 

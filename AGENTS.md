@@ -18,6 +18,22 @@ Ballast is a pnpm monorepo: a desktop agent that runs Effect scripts against str
 - Do not use `Effect.sleep` for work that must survive a restart; declare a `Ballast.Timer` and put the continuation in its handler (decision 0006).
 - Backwards compatibility is not required yet. Prefer clean designs over compatibility layers.
 
+## Testing
+
+Only two kinds of tests are allowed:
+
+- **Unit tests that enforce a specific invariant.** Each test pins down one precise, named behavior or contract (for example: a parser rejects a malformed frame, a diff reports a removed timer, a signature check fails on a tampered body). The test name should state the invariant.
+- **End-to-end tests** that exercise a full flow across real processes or boundaries (agent + cloud, CLI + runtime, MCP client + server, or a Playwright run through a complete user journey).
+
+Do not write, and remove when you find them:
+
+- Tests of UI presentation: layout, element ordering or adjacency, CSS/classes, label or copy text, formatting helpers that exist only for display, snapshot/render tests of components.
+- Playwright tests that check small UI details instead of a large, complete user flow.
+- Smoke tests ("it runs", "it renders", "returns something"), tests that restate the implementation, tests of mocks or test helpers, and tests that duplicate coverage elsewhere.
+- Broad "kitchen sink" tests that assert many loosely related things without a clear invariant.
+
+If a behavior is only worth checking by eye in the UI, verify it manually instead of adding a test.
+
 ## Verification
 
 | Situation | Command |

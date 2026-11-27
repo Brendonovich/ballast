@@ -12,7 +12,7 @@
 import type { ParamOptionSource, TopicCondition } from "@ballast/core";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -172,7 +172,7 @@ export class VTubeStudioDriver extends Context.Service<
   ): Layer.Layer<
     VTubeStudioDriver,
     VTubeStudioConfigError,
-    Crypto.Crypto | FileSystem.FileSystem | Path.Path | Socket.WebSocketConstructor
+    SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path | Socket.WebSocketConstructor
   > => layer(options);
 }
 
@@ -390,14 +390,14 @@ export const layer = (
 ): Layer.Layer<
   VTubeStudioDriver,
   VTubeStudioConfigError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Socket.WebSocketConstructor
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path | Socket.WebSocketConstructor
 > =>
   Layer.effect(
     VTubeStudioDriver,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* SecureRandom.SecureRandom;
       const config = yield* Effect.try({
         try: () => normalizeConfig(options),
         catch: (cause) =>
@@ -424,7 +424,7 @@ export const layer = (
           ),
         write: (token) =>
           config.tokenStore.write(token).pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(SecureRandom.SecureRandom, crypto),
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
           ),

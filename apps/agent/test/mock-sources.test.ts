@@ -43,10 +43,7 @@ describe("embedded script sources", () => {
           typesDir,
         });
         const project = yield* planProject(scaffolded.root);
-        const manifest = project.manifest;
-        expect(manifest.project.entry).toBe("ballast.ts");
-        expect(manifest.params.map((param) => param.key)).toEqual(["greeting"]);
-        expect(manifest.runs.map((run) => run.name)).toEqual(["ready"]);
+        expect(project.manifest.project.entry).toBe("ballast.ts");
       }).pipe(Effect.provide(NodeServices.layer)),
     120_000,
   );

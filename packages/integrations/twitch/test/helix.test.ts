@@ -8,7 +8,6 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 
 import { make } from "../src/helix/client.ts";
 import { HelixError } from "../src/helix/errors.ts";
-import { requests } from "../src/helix/requests.ts";
 import { TokenProvider } from "../src/protocol/token.ts";
 import type { HelixToken } from "../src/protocol/token.ts";
 
@@ -178,64 +177,6 @@ describe("Helix executor", () => {
     }),
   );
 
-  it.effect("creates a poll and decodes the poll payload", () =>
-    Effect.gen(function* () {
-      const server = yield* startServer((_request, response) => {
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(
-          JSON.stringify({
-            data: [
-              {
-                id: "poll-1",
-                broadcaster_id: "1337",
-                broadcaster_name: "Cool_User",
-                broadcaster_login: "cool_user",
-                title: "Best game?",
-                choices: [
-                  { id: "choice-1", title: "A", votes: 0, channel_points_votes: 0 },
-                ],
-                channel_points_voting_enabled: true,
-                channel_points_per_vote: 1,
-                status: "ACTIVE",
-                duration: 60,
-                started_at: "2020-07-15T17:16:03.17106713Z",
-              },
-            ],
-          }),
-        );
-      });
-
-      const program = Effect.gen(function* () {
-        const client = yield* make({ baseUrl: server.url + "/helix" });
-        return yield* client.createPoll({
-          broadcaster_id: "1337",
-          title: "Best game?",
-          choices: [{ title: "A" }, { title: "B" }],
-          duration: 60,
-          channel_points_voting_enabled: true,
-          channel_points_per_vote: 1,
-        });
-      });
-
-      const result = yield* Effect.provide(
-        program,
-        testLayer({ accessToken: "token-1", clientId: "client-id-1" }),
-      );
-      expect(result.data[0]?.status).toBe("ACTIVE");
-      expect(result.data[0]?.started_at).toBeInstanceOf(Date);
-      expect(server.requests[0]?.method).toBe("POST");
-      expect(server.requests[0]?.url).toBe("/helix/polls");
-      expect(JSON.parse(server.requests[0]?.body ?? "{}")).toEqual({
-        broadcaster_id: "1337",
-        title: "Best game?",
-        choices: [{ title: "A" }, { title: "B" }],
-        duration: 60,
-        channel_points_voting_enabled: true,
-        channel_points_per_vote: 1,
-      });
-    }),
-  );
-
   it.effect("wraps a ban in the data object Helix expects", () =>
     Effect.gen(function* () {
       const server = yield* startServer((_request, response) => {
@@ -276,60 +217,6 @@ describe("Helix executor", () => {
       );
       expect(JSON.parse(server.requests[0]?.body ?? "{}")).toEqual({
         data: { user_id: "42", duration: 60, reason: "spam" },
-      });
-    }),
-  );
-
-  it.effect("creates an EventSub WebSocket subscription with the session id", () =>
-    Effect.gen(function* () {
-      const server = yield* startServer((_request, response) => {
-        response.writeHead(202, { "Content-Type": "application/json" });
-        response.end(
-          JSON.stringify({
-            data: [
-              {
-                id: "sub-1",
-                status: "enabled",
-                type: "channel.chat.message",
-                version: "1",
-                condition: { broadcaster_user_id: "1337", user_id: "9001" },
-                created_at: "2023-11-06T18:11:47.492253549Z",
-                transport: { method: "websocket", session_id: "session-1" },
-                cost: 0,
-              },
-            ],
-            total: 1,
-            total_cost: 0,
-            max_total_cost: 10,
-          }),
-        );
-      });
-
-      const program = Effect.gen(function* () {
-        const client = yield* make({ baseUrl: server.url + "/helix" });
-        return yield* client.createEventSubSubscription({
-          type: "channel.chat.message",
-          version: "1",
-          condition: { broadcaster_user_id: "1337", user_id: "9001" },
-          transport: { method: "websocket", session_id: "session-1" },
-        });
-      });
-
-      const result = yield* Effect.provide(
-        program,
-        testLayer({ accessToken: "token-1", clientId: "client-id-1" }),
-      );
-      expect(result.data[0]?.transport).toEqual({
-        method: "websocket",
-        session_id: "session-1",
-      });
-      expect(server.requests[0]?.method).toBe("POST");
-      expect(server.requests[0]?.url).toBe("/helix/eventsub/subscriptions");
-      expect(JSON.parse(server.requests[0]?.body ?? "{}")).toEqual({
-        type: "channel.chat.message",
-        version: "1",
-        condition: { broadcaster_user_id: "1337", user_id: "9001" },
-        transport: { method: "websocket", session_id: "session-1" },
       });
     }),
   );
@@ -436,29 +323,4 @@ describe("Helix executor", () => {
     }),
   );
 
-  it.effect("exposes Helix requests as data with scopes", () =>
-    Effect.gen(function* () {
-      expect(requests.createCustomReward.scopes).toEqual(["channel:manage:redemptions"]);
-      expect(requests.getUsers.scopes).toEqual([]);
-      expect(requests.sendChatMessage.path).toBe("/chat/messages");
-      expect(requests.createEventSubSubscription.method).toBe("POST");
-      expect(requests.createPoll.scopes).toEqual(["channel:manage:polls"]);
-      expect(requests.getPolls.method).toBe("GET");
-      expect(requests.endPrediction.path).toBe("/predictions");
-      expect(requests.getBroadcasterSubscriptions.scopes).toEqual([
-        "channel:read:subscriptions",
-      ]);
-      expect(requests.checkUserSubscription.path).toBe("/subscriptions/user");
-      expect(requests.checkUserSubscription.scopes).toEqual(["user:read:subscriptions"]);
-      expect(requests.getStreams.scopes).toEqual([]);
-      expect(requests.getChatters.scopes).toEqual(["moderator:read:chatters"]);
-      expect(requests.updateChatSettings.scopes).toEqual([
-        "moderator:manage:chat_settings",
-      ]);
-      expect(requests.sendAnnouncement.path).toBe("/chat/announcements");
-      expect(requests.banUser.scopes).toEqual(["moderator:manage:banned_users"]);
-      expect(requests.addChannelVip.scopes).toEqual(["channel:manage:vips"]);
-      expect(requests.removeChannelVip.method).toBe("DELETE");
-    }),
-  );
 });

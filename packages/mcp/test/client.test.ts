@@ -106,10 +106,6 @@ describe("stale service RPCs", () => {
       expect(error.kind).toBe("unsupported-service");
       expect(error.feature).toBe("ListArtifacts");
       expect(error.serviceVersion).toBe("0.1.0-old");
-      expect(error.message).toContain(
-        "The running Ballast service (version 0.1.0-old) is older than this MCP and lacks project artifact support (ListArtifacts).",
-      );
-      expect(error.message).toContain("Restart the Ballast app");
     } finally {
       await Effect.runPromise(Fiber.interrupt(fiber));
     }

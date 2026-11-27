@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // Starts Vite for UI HMR, builds the service/shell once, and starts Electron.
 // Pass --background to start in the tray, or BALLAST_VITE_DEV=0 to use the built UI.
+// Vite takes the first free port from 5173 (or BALLAST_VITE_PORT), so several
+// dev instances can run side by side.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDesktop } from "./build.mjs";
@@ -46,7 +49,23 @@ loadDevEnv(path.join(root, ".env"));
 const autoVite =
   process.env.BALLAST_UI_URL === undefined && process.env.BALLAST_VITE_DEV !== "0";
 const devUi = autoVite || process.env.BALLAST_UI_URL !== undefined;
-if (autoVite) process.env.BALLAST_UI_URL = "http://127.0.0.1:5173";
+const portFree = (port) =>
+  new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+  });
+
+const findVitePort = async () => {
+  const start = Number(process.env.BALLAST_VITE_PORT ?? 5173);
+  for (let port = start; port < start + 100; port++) {
+    if (await portFree(port)) return port;
+  }
+  throw new Error(`No free Vite port in ${start}-${start + 99}`);
+};
+
+const vitePort = autoVite ? await findVitePort() : undefined;
+if (autoVite) process.env.BALLAST_UI_URL = `http://127.0.0.1:${vitePort}`;
 
 await buildAgentService({ web: !devUi });
 await buildDesktop({ minify: false });
@@ -86,10 +105,10 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 if (autoVite) {
   // Spawn Vite itself, not pnpm: killing a pnpm wrapper leaves the actual
-  // server behind holding port 5173 after Electron quits.
+  // server behind holding its port after Electron quits.
   vite = spawn(
     process.execPath,
-    [viteBin, "--host", "127.0.0.1", "--port", "5173", "--strictPort"],
+    [viteBin, "--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"],
     { cwd: webRoot, stdio: "inherit", env: process.env },
   );
   vite.on("exit", (code) => {

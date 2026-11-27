@@ -11,8 +11,8 @@ import {
   issueSummary,
   projectAction,
   sortIssues,
+  statusLabel,
   statusTone,
-  statusWord,
 } from "../lib/project-health.ts";
 import { requestProjectIntent } from "../lib/project-intent.ts";
 import {
@@ -186,7 +186,7 @@ export const ProjectsScreen = (): JSX.Element => {
                 <span class="hidden text-[11px] text-faint sm:block">
                   {plural(project.unitCount, "unit")}
                 </span>
-                <Show when={project.issues.length > 0}>
+                <Show when={project.issues.length > 0 && project.status !== "needs-user"}>
                   <span
                     data-testid="project-issue-count"
                     title={issuesTooltip(project)}
@@ -201,7 +201,7 @@ export const ProjectsScreen = (): JSX.Element => {
                   </span>
                 </Show>
                 <Status tone={statusTone(project)}>
-                  <span data-testid="project-status-word">{statusWord(project.status)}</span>
+                  <span data-testid="project-status-word">{statusLabel(project)}</span>
                 </Status>
                 <Button
                   size="small"

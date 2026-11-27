@@ -1,5 +1,5 @@
 import * as Config from "effect/Config";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -154,7 +154,7 @@ export const writeStoredTwitchAccount = (
 ): Effect.Effect<
   void,
   unknown,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -181,7 +181,7 @@ export const writeCloudPairing = (
 ): Effect.Effect<
   void,
   unknown,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
     const path = yield* Path.Path;

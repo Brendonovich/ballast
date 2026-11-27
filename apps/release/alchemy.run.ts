@@ -21,7 +21,7 @@ export default Alchemy.Stack(
     // contract than the one installed here (as apps/cloud's remote dev does).
     state: ["1", "true"].includes(process.env.ALCHEMY_DEV ?? "")
       ? Alchemy.localState()
-      : Cloudflare.state({ name: "ballast-release" }),
+      : Cloudflare.state({ workerName: "alchemy-state-store-ballast-release" }),
   },
   Effect.gen(function* () {
     const stage = yield* Alchemy.Stage;

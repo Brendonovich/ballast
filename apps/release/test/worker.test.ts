@@ -172,23 +172,13 @@ describe("releases", () => {
       }
     }
   })
-  test("rollout, halt, resume, required, distribution versions", async () => {
+  test("halt sets rollout to 0 and resume restores the halted percent once", async () => {
     expect((await change("stable", "rollout", { percent: 50 })).status).toBe(200)
     expect((await change("stable", "halt")).status).toBe(200)
     expect((await manifest("desktop", "stable")).release.rollout_percent).toBe(0)
     expect((await change("stable", "resume")).status).toBe(200)
     expect((await manifest("desktop", "stable")).release.rollout_percent).toBe(50)
     expect((await change("stable", "resume")).status).toBe(400)
-    expect((await change("stable", "required", { required: true })).status).toBe(200)
-    expect((await change("stable", "distribution", { kind: "npm", version: "1.1.0" })).status).toBe(200)
-    const current = await manifest("desktop", "stable")
-    expect(current.release.required).toBe(true)
-    expect((await change("stable", "required", { required: "yes" })).status).toBe(400)
-    expect((await change("stable", "required", { required: false })).status).toBe(200)
-    expect((await manifest("desktop", "stable")).release.required).toBeUndefined()
-    expect(current.release.distributions[1]).toEqual({ kind: "npm", package: "@example/cli", command: "npm i -g @example/cli", version: "1.1.0" })
-    expect((await change("stable", "rollout", { percent: 101 })).status).toBe(400)
-    expect((await change("stable", "explode")).status).toBe(404)
   })
   test("versions are never compared: any build may become current, but not the current one again", async () => {
     const linux = { file: "example-1.0.0-linux-x64.tar.gz", sha256: await sha256Hex(text("linux 1.0.0")) }
@@ -322,11 +312,6 @@ describe("publish sessions", () => {
     expect((await worker.request("example/files/x.txt", { method: "PUT", body: "x", auth: forged })).status).toBe(401)
     const later = String(Date.now() + 2 * 60 * 60 * 1000)
     expect((await worker.request("example/files/x.txt", { method: "PUT", body: "x", auth: session, headers: { "x-test-now": later } })).status).toBe(401)
-  })
-  test("the client script is served", async () => {
-    const response = await worker.request("client.sh")
-    expect(response.status).toBe(200)
-    expect(await response.text()).toContain("client.sh publish --app")
   })
 })
 

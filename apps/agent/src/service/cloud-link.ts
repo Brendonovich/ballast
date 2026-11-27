@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -68,7 +68,7 @@ export const CloudLinkLive = (options: {
       const events = yield* EventRouter;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* SecureRandom.SecureRandom;
       const loadPairing = (dataDir: string) =>
         readCloudPairing(dataDir).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
@@ -76,7 +76,7 @@ export const CloudLinkLive = (options: {
         );
       const savePairing = (value: CloudPairing, dataDir: string) =>
         writeCloudPairing(value, dataDir).pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(SecureRandom.SecureRandom, crypto),
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
         );

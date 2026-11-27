@@ -1,6 +1,5 @@
 import {
   Cause,
-  Crypto,
   Deferred,
   Effect,
   Exit,
@@ -10,6 +9,7 @@ import {
   Schema,
   Stream,
 } from "effect";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import type { Scope } from "effect/Scope";
 import { Socket } from "effect/socket";
 import {
@@ -76,7 +76,7 @@ const backoffMs = (attempt: number): number =>
  */
 export const startObsDriver = (
   options: ObsDriverOptions,
-): Effect.Effect<ObsDriver, never, Crypto.Crypto | Scope> =>
+): Effect.Effect<ObsDriver, never, SecureRandom.SecureRandom | Scope> =>
   Effect.gen(function* () {
     const current = yield* Ref.make<
       import("./obs-protocol.ts").ObsSocketClient | undefined

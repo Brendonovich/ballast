@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { devWindowUrl, planRescope, titleBarOptions } from "../src/main/window-scope.ts";
+import { devWindowUrl, planRescope } from "../src/main/window-scope.ts";
 
 const windows = [
   { id: 1, kind: "project" as const, projectId: "a" },
@@ -43,16 +43,5 @@ describe("dev window URL", () => {
     expect(target.searchParams.get("service")).toBe("http://127.0.0.1:51234");
     expect(target.searchParams.get("token")).toBe("token&secret");
     expect(target.hash).toBe("#/projects/project%20one");
-  });
-});
-
-describe("title bar", () => {
-  it("insets the traffic lights into the web bar on macOS only", () => {
-    expect(titleBarOptions("darwin")).toEqual({
-      titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 14, y: 13 },
-    });
-    expect(titleBarOptions("win32")).toEqual({});
-    expect(titleBarOptions("linux")).toEqual({});
   });
 });

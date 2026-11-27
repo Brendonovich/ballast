@@ -41,7 +41,7 @@ const historyQueryInInit = Effect.gen(function* () {
 const historyProject: Ballast.Project = Effect.asVoid(historyQueryInInit);
 
 describe("artifact type surface", () => {
-  it("accepts Runtime-backed API handlers", () => {
+  it("API handlers may require Runtime while Project rejects Runtime-only reads", () => {
     expect(handlers.Ping).toBeTypeOf("function");
     expect(project).toBeDefined();
     expect(historyProject).toBeDefined();

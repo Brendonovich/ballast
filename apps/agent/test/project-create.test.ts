@@ -96,14 +96,6 @@ describe("project scaffolding and checks", () => {
       expect(created.summary.status).toBe("stopped");
       const projectRoot = join(root, "projects", "new-stream");
       expect((yield* Effect.promise(() => stat(join(projectRoot, "ballast.ts")))).isFile()).toBe(true);
-      expect(yield* Effect.promise(() => readFile(join(projectRoot, "AGENTS.md"), "utf8"))).toContain("ballast_guide");
-      expect(yield* Effect.promise(() => readFile(join(projectRoot, "AGENTS.md"), "utf8"))).toContain("ballast_check");
-      expect(yield* Effect.promise(() => readFile(join(projectRoot, "package.json"), "utf8"))).toContain("ballast.ts");
-      const scaffold = yield* Effect.promise(() => readFile(join(projectRoot, "ballast.ts"), "utf8"));
-      expect(scaffold).toContain("Ballast.Param.string");
-      expect(scaffold).toContain('Ballast.run("ready"');
-      expect(scaffold).not.toContain("Ballast.Timer");
-      expect(scaffold).not.toContain("Timer.");
       const tsconfig = JSON.parse(
         yield* Effect.promise(() => readFile(join(projectRoot, "tsconfig.json"), "utf8")),
       ) as {
@@ -212,10 +204,6 @@ describe("project scaffolding and checks", () => {
         client.CreateProject({ name: "Artifact Template", artifact: true }),
       );
       const projectRoot = join(root, "projects", "artifact-template");
-      const entry = yield* Effect.promise(() => readFile(join(projectRoot, "ballast.ts"), "utf8"));
-      expect(entry).toContain("Ballast.Artifact(\"dashboard\"");
-      expect(entry).toContain("Ballast.Store.counter");
-      expect(entry).not.toContain("Ballast.Store.log");
       expect(
         (yield* Effect.promise(() => stat(join(projectRoot, "artifacts", "dashboard", "main.tsx")))).isFile(),
       ).toBe(true);

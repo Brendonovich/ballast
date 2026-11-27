@@ -166,10 +166,10 @@ Subscribe dialog tells users to subscribe only to people they trust.
   reported; untouched edited files and extra local files stay.
 - Multi-file atomicity relies on the paused sync plus the rollback journal; a
   crash in the middle of the swap can leave backups under `.ballast/share-*`.
-- Pinned Alchemy `beta.84`: the Effect-wrapped repo read methods arrived in
-  `beta.85`, which requires effect `^4.1`. The adapter calls the runtime
-  repo stub (`repo.raw.readFile/readCommit/info`) directly instead. Bump
-  together with effect.
+- Written against Alchemy `beta.84`, before the Effect-wrapped repo read methods
+  (`beta.85`, effect `^4.1`). Now on beta.87 + effect 4.1.7, the adapter still calls the runtime
+  repo stub (`repo.raw.readFile/readCommit/info`) directly; switching to the
+  wrapped readers is optional cleanup.
 - Production Artifacts and isomorphic-git's push/fetch were exercised against
   wrangler's local simulator only; the deployed service is untested.
 - Out of scope: two-way sync, version history UI, rollback, teams, deleting a

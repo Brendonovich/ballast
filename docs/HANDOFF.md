@@ -293,7 +293,7 @@ existing `dist-service`.
 - **Project sharing** is verified only against wrangler's local Artifacts simulator
   (`packages/shares-api/scripts/shares-dev`, `BALLAST_SHARES=<bridge url>`). Deploy
   the cloud (it now also deploys the `SharesApi` Worker and its D1) and check the
-  service binding, the Artifacts binding (`repo.raw` reads on Alchemy beta.84), token auth and
+  service binding, the Artifacts binding (`repo.raw` reads), token auth and
   isomorphic-git push/fetch against real Artifacts. Subscribed code runs without a sandbox;
   there is no share delete, history UI or rollback yet.
 

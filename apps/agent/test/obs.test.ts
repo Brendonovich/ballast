@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { NodeCrypto } from "@effect/platform-node";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -18,7 +18,7 @@ const withServer = <A, E>(
   options: { readonly password?: string },
   use: (
     server: Awaited<ReturnType<typeof startMockObsServer>>,
-  ) => Effect.Effect<A, E, Crypto.Crypto | Scope.Scope>,
+  ) => Effect.Effect<A, E, SecureRandom.SecureRandom | Scope.Scope>,
 ): Effect.Effect<A, E | Error> =>
   Effect.scoped(
     Effect.gen(function* () {

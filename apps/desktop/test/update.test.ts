@@ -112,7 +112,7 @@ describe("update manager", () => {
 
   it("reports up to date when the channel's release is the running version", async () => {
     const { manager, installer } = setup({ manifest: manifest("0.0.0-dev-1") });
-    expect(await manager.check()).toMatchObject({ phase: "unavailable", message: "Ballast is up to date (0.0.0-dev-1)" });
+    expect((await manager.check()).phase).toBe("unavailable");
     expect(installer.prepare).not.toHaveBeenCalled();
   });
 

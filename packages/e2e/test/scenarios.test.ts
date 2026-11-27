@@ -590,10 +590,4 @@ describe("real cloud + real desktop service", () => {
     },
     120_000,
   );
-
-  it("Twitch local-app mode against the Twitch CLI is skipped", (ctx) => {
-    ctx.skip(
-      "twitch CLI 1.1.7 mock-api serves generated data for its own twitch api commands, not a drop-in Helix/OAuth base URL: /helix/users and /oauth2/token both return 404. The agent's existing mock EventSub WebSocket still covers the WebSocket path.",
-    );
-  });
 });

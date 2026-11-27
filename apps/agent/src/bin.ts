@@ -94,7 +94,7 @@ const usage = `Usage:
   ballast projects agents <id> [opencode|claude-code|codex...]
   ballast projects share <id> [--message <text>] [--server <url>]|deploy <id> [--message <text>]
   ballast projects subscribe <share-link|share-code> [--server <url>] [--dir <dir>] [--name <name>]
-      |update <id>|unsubscribe <id>
+      |check-update <id>|update <id>|unsubscribe <id>
   ballast shares status|login [--server <url>] [--no-open]|logout [--server <url>]
       |default [<url>]
   ballast connections list|get <id>|configure <id> key=value...
@@ -855,6 +855,18 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
         `subscribed as ${detail.summary.id} at ${detail.summary.root} (read-only; stopped until you start it)`,
       );
       yield* printJson(detail);
+      return;
+    }
+    if (sub === "check-update") {
+      const id = positional(rest, [])[0];
+      if (id === undefined) throw new Error("projects check-update requires an id");
+      const result = yield* service((client) => client.CheckProjectUpdate({ projectId: id }));
+      console.log(
+        result.available === undefined
+          ? `up to date at ${result.installedSha.slice(0, 12)}`
+          : `update available: ${result.installedSha.slice(0, 12)} -> ${result.available.sha.slice(0, 12)}${result.available.message === null ? "" : " — " + result.available.message}`,
+      );
+      yield* printJson(result);
       return;
     }
     if (sub === "update") {

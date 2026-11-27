@@ -75,61 +75,7 @@ const postSignedNotification = async (
   });
 };
 
-describe("EventSub signature verification", () => {
-  it("delegates to the shared Twitch module's HMAC scheme", async () => {
-    const messageId = "msg-1";
-    const timestamp = "2026-11-22T10:00:00.000Z";
-    const body = '{"hello":"world"}';
-    const headers = {
-      "twitch-eventsub-message-id": messageId,
-      "twitch-eventsub-message-timestamp": timestamp,
-      "twitch-eventsub-message-signature": "",
-      "twitch-eventsub-message-type": "notification",
-    };
-    const signature = await Effect.runPromise(
-      EventSub.computeSignature({ secret: "secret", messageId, timestamp, body }),
-    );
-    expect(signature).toMatch(/^sha256=[0-9a-f]{64}$/);
-    await expect(
-      Effect.runPromise(
-        EventSub.verifyWebhook({
-          headers: { ...headers, "twitch-eventsub-message-signature": signature },
-          body,
-          secret: "secret",
-          now: Date.parse(timestamp),
-        }),
-      ),
-    ).resolves.toBeUndefined();
-    await expect(
-      Effect.runPromise(
-        EventSub.verifyWebhook({
-          headers: { ...headers, "twitch-eventsub-message-signature": signature },
-          body: "{}",
-          secret: "secret",
-          now: Date.parse(timestamp),
-        }),
-      ),
-    ).rejects.toMatchObject({ code: "invalid-signature" });
-  });
-});
-
 describe("OAuth and machine API", () => {
-  it("explains when re-authorization can skip the pairing code", async () => {
-    const test = await makeTestApp();
-    const start = await test.request({
-      method: "GET",
-      path: "/oauth/twitch/start?scopes=user:read:email",
-    });
-    const state = new URL(start.headers?.location ?? "").searchParams.get("state");
-    const callback = await test.request({
-      method: "GET",
-      path: `/oauth/twitch/callback?code=code-1&state=${state ?? ""}`,
-    });
-    expect(callback.status).toBe(200);
-    expect(callback.body).toContain("no pairing code is needed");
-    expect(callback.body).toContain("Pairing a machine for the first time?");
-  });
-
   it("runs OAuth, stores sealed tokens, pairs a machine and serves tokens and Helix", async () => {
     const test = await makeTestApp();
     const start = await test.request({

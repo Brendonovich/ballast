@@ -10,8 +10,9 @@
  * This script uses Effect platform services for filesystem, path and crypto
  * access; it has no Node-specific imports and runs on the Node platform layer.
  */
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Crypto, Data, Effect, FileSystem, Path, Schema } from "effect";
+import { NodeRuntime, NodeCrypto, NodeServices } from "@effect/platform-node";
+import { Data, Effect, FileSystem, Path, Schema } from "effect";
+import * as Digest from "effect/crypto/Digest";
 import * as Console from "effect/Console";
 
 const ProtocolFieldSchema = Schema.Struct({
@@ -487,11 +488,11 @@ const generate = (protocol: Protocol, sourceHash: string): Effect.Effect<string,
 const program: Effect.Effect<
   void,
   GenerateError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  Digest.Digest | FileSystem.FileSystem | Path.Path
 > = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
 
   const here = yield* path.fromFileUrl(new URL(import.meta.url)).pipe(
     Effect.mapError(
@@ -524,13 +525,7 @@ const program: Effect.Effect<
     ),
   );
 
-  const sourceHash = yield* crypto.digest("SHA-256", new TextEncoder().encode(source)).pipe(
-    Effect.mapError(
-      (error) =>
-        new GenerateError({
-          message: "Could not hash " + input + ": " + error.message,
-        }),
-    ),
+  const sourceHash = yield* digest.digest(Digest.sha256, new TextEncoder().encode(source)).pipe(
     Effect.map((bytes) =>
       Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
     ),
@@ -571,6 +566,7 @@ const program: Effect.Effect<
 
 const main: Effect.Effect<void, GenerateError> = program.pipe(
   Effect.provide(NodeServices.layer),
+  Effect.provide(NodeCrypto.layer),
 );
 
 NodeRuntime.runMain(main);

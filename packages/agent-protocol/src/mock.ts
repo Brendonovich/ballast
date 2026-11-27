@@ -1780,6 +1780,30 @@ const handlers = Effect.gen(function* () {
         };
       }),
 
+    CheckProjectUpdate: ({ projectId }: { readonly projectId: string }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const project = yield* requireProject(state, projectId);
+        const share = project.share;
+        if (share?._tag !== "subscribed")
+          return yield* fail(agentError("invalid", "The project is not a subscription"));
+        // A fresh mock subscription (installed at the zero sha) finds one
+        // newer deploy; once it is applied, the copy is up to date.
+        if (share.available !== undefined || share.installedSha !== "0".repeat(40))
+          return {
+            projectId,
+            installedSha: share.installedSha,
+            ...(share.available === undefined ? {} : { available: share.available }),
+          };
+        const available = { sha: "1".repeat(40), message: "Mock deploy", deployedAt: Date.now() };
+        const next: ProjectSummary = { ...project, share: { ...share, available } };
+        const projects = new Map(state.projects);
+        projects.set(projectId, next);
+        yield* Ref.set(store.state, { ...state, projects });
+        yield* publish(store, [{ _tag: "project", project: next }]);
+        return { projectId, installedSha: share.installedSha, available };
+      }),
+
     ApplyProjectUpdate: ({ projectId }: { readonly projectId: string }) =>
       Effect.gen(function* () {
         const state = yield* Ref.get(store.state);

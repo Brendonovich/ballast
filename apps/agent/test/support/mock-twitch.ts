@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import * as Effect from "effect/Effect";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
@@ -428,6 +428,6 @@ export const seedMockTwitchAccount = async (input: {
         login: input.server.login,
       },
       input.dataDir,
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide([NodeServices.layer, NodeCrypto.layer])),
   );
 };

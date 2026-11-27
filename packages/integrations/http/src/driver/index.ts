@@ -1,4 +1,4 @@
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as Layer from "effect/Layer";
 import { FetchHttpClient } from "effect/http";
 import { layer as relayLayer } from "./relay.ts";
@@ -38,5 +38,5 @@ export const webhookLayer = webhookDriverLayer;
 export const relayLayerNode = (options: WebhookRelayOptions) =>
   relayLayer(options).pipe(
     Layer.provide(fetchLayer),
-    Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+    Layer.provide(NodeWS.layerWebSocketConstructor),
   );

@@ -42,7 +42,7 @@ export const topicConnectionTypes = Effect.gen(function* () {
 });
 
 describe("topic subscription types", () => {
-  it("keeps integration-scoped connections", () => {
+  it("rejects a topic subscription on another integration's connection (checked by typecheck)", () => {
     expect(typeof topicConnectionTypes).toBe("object");
   });
 });

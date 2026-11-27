@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -19,7 +19,7 @@ import {
   parseArtifactStableToken,
   verifyArtifactStableToken,
 } from "../artifact-url.ts";
-import { readJson, writeJsonAtomic } from "./fs.ts";
+import { readJson, sha256, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 
@@ -120,14 +120,8 @@ export class ArtifactTokens extends Context.Service<ArtifactTokens, ArtifactToke
 const tokensPath = (path: Path.Path, project: ProjectRecord): string =>
   path.join(project.root, ".ballast", TOKENS_FILE);
 
-const hashToken = (token: string): Effect.Effect<string, never, Crypto.Crypto> =>
-  Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
-    const digest = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(token))
-      .pipe(Effect.orDie);
-    return Hex.encode(digest);
-  });
+const hashToken = (token: string): Effect.Effect<string> =>
+  Effect.map(sha256(new TextEncoder().encode(token)), Hex.encode);
 
 const fingerprint = (hash: string): string => hash.slice(0, 8);
 
@@ -183,7 +177,7 @@ const storedUrls = (
 const writeUrls = (
   project: ProjectRecord,
   urls: ReadonlyArray<StoredArtifactUrl>,
-): Effect.Effect<void, AgentError, Crypto.Crypto | FileSystem.FileSystem | Path.Path> =>
+): Effect.Effect<void, AgentError, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const file: StoredFile = { version: 1, urls };
@@ -218,10 +212,10 @@ export const ArtifactTokensLive = Layer.effect(
   ArtifactTokens,
   Effect.gen(function* () {
     const projects = yield* ProjectManager;
-    const crypto = yield* Crypto.Crypto;
-    const platform = yield* Effect.context<Crypto.Crypto | FileSystem.FileSystem | Path.Path>();
+    const crypto = yield* SecureRandom.SecureRandom;
+    const platform = yield* Effect.context<SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>();
     const provide = <A, E>(
-      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const revocations = yield* PubSub.unbounded<string>();
     const renewals = yield* PubSub.unbounded<{

@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stdio from "effect/Stdio";
@@ -14,7 +14,7 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import { FetchHttpClient } from "effect/http";
@@ -86,7 +86,7 @@ import { subscriptionKey } from "../twitch/transport.ts";
 import type { TwitchIdentity, TwitchSubscriptionSpec, TwitchTransport } from "../twitch/transport.ts";
 import { CloudLink } from "./cloud-link.ts";
 import { WebhookRelayAgentLive } from "./http-relay.ts";
-import { ensureDir, readJson, writeJsonAtomic } from "./fs.ts";
+import { ensureDir, readJson, sha256, writeJsonAtomic } from "./fs.ts";
 import { Logs } from "./telemetry.ts";
 import { EventRouter } from "./telemetry.ts";
 
@@ -411,11 +411,11 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       const cloud = yield* CloudLink;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* SecureRandom.SecureRandom;
       const context = yield* Effect.context<never>();
       const platform = yield* Effect.context<
         | ChildProcessSpawner
-        | Crypto.Crypto
+        | SecureRandom.SecureRandom
         | FileSystem.FileSystem
         | Path.Path
         | Stdio.Stdio
@@ -424,7 +424,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
         effect: Effect.Effect<
           A,
           E,
-          ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Stdio.Stdio
+          ChildProcessSpawner | SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path | Stdio.Stdio
         >,
       ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
       const parentScope = yield* Effect.scope;
@@ -1420,12 +1420,8 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
       };
 
       const stableHookId = (slot: string): Effect.Effect<string> =>
-        crypto.digest(
-          "SHA-256",
-          new TextEncoder().encode("ballast-http-webhook:" + slot),
-        ).pipe(
+        sha256(new TextEncoder().encode("ballast-http-webhook:" + slot)).pipe(
           Effect.map((digest) => Base64Url.encode(digest).slice(0, 32)),
-          Effect.orDie,
         );
 
       const startVts = (
@@ -1457,10 +1453,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               : { pluginIcon: record.values["pluginIcon"] }),
             publish: publishFor(record),
           }).pipe(
-            Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+            Layer.provide(NodeWS.layerWebSocketConstructor),
             Layer.provide(Layer.succeed(FileSystem.FileSystem, fs)),
             Layer.provide(Layer.succeed(Path.Path, path)),
-            Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
+            Layer.provide(Layer.succeed(SecureRandom.SecureRandom, crypto)),
           );
           const built = yield* Layer.buildWithScope(layer, scope).pipe(
             Effect.mapError((error) => agentError("invalid", error.message)),

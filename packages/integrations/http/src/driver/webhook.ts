@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -258,7 +258,7 @@ const groupLocal = (
 const localApp = (
   routes: ReadonlyMap<string, WebhookDefinition>,
   queue: Queue.Queue<WebhookDelivery>,
-  crypto: Crypto.Crypto,
+  crypto: SecureRandom.SecureRandom["Service"],
 ): Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   never,
@@ -290,7 +290,7 @@ const localApp = (
 
     yield* Queue.offer(queue, {
       hook: definition.slot,
-      id: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+      id: yield* crypto.uuidV4().pipe(Effect.orDie),
       source: "local",
       method: request.method,
       path: url.pathname,
@@ -320,7 +320,7 @@ const cloudRegistration = (definition: WebhookDefinition) => {
 };
 
 /** Standalone webhook driver: local HTTP listeners plus cloud relay deliveries. */
-export const layer: Layer.Layer<WebhookDriver, never, Crypto.Crypto> = Layer.effect(
+export const layer: Layer.Layer<WebhookDriver, never, SecureRandom.SecureRandom> = Layer.effect(
   WebhookDriver,
   Effect.gen(function* () {
     // Capture the relay in the driver layer. `start` runs in the caller's
@@ -329,7 +329,7 @@ export const layer: Layer.Layer<WebhookDriver, never, Crypto.Crypto> = Layer.eff
     // lookup as a fallback preserves standalone tests/embedders that provide
     // the relay next to the start call.
     const layerRelay = yield* Effect.serviceOption(WebhookRelay);
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     return WebhookDriver.of({
       start: (definitions) =>
         Effect.gen(function* () {

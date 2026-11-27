@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -57,10 +57,10 @@ export const ProjectStoresLive = Layer.effect(
     const path = yield* Path.Path;
     const semaphore = yield* Semaphore.make(1);
     const platform = yield* Effect.context<
-      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+      SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
     >();
     const provide = <A, E>(
-      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
 
     return ProjectStores.of({

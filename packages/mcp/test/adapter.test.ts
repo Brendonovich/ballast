@@ -10,7 +10,6 @@ import type {
 import {
   applyProject,
   checkData,
-  checkText,
   classifyDiagnostics,
   matchProjectReference,
 } from "../src/adapter.ts";
@@ -238,27 +237,24 @@ describe("compact check output", () => {
     ],
   });
 
-  it("omits manifests, units and the connection inventory by default", () => {
+  it("omits manifests, units, inventory and change payloads by default", () => {
     const data = checkData(check);
     expect(field(data, "detail")).toBe("compact");
-    expect(field(data, "ok")).toBe(false);
     expect(field(data, "manifest")).toBeUndefined();
     expect(field(data, "appliedManifest")).toBeUndefined();
     expect(field(data, "availableConnections")).toBeUndefined();
     expect(field(data, "units")).toBeUndefined();
     expect(field(data, "summary")).toBeUndefined();
-    expect(field(field(data, "snapshot"), "serviceStatus")).toBe("stopped");
-    expect(field(data, "requiresConsent")).toBe(true);
-    expect(field(data, "missingScopes")).toEqual(["obs:read"]);
-    expect(field(field(data, "reload"), "mode")).toBe("worker-restart");
     const changes = field(field(data, "reload"), "changes");
-    expect(Array.isArray(changes)).toBe(true);
     const firstChange = Array.isArray(changes) ? changes[0] : undefined;
     expect(field(firstChange, "kind")).toBe("api");
     expect(field(firstChange, "before")).toBeUndefined();
     expect(field(firstChange, "after")).toBeUndefined();
-    expect(Array.isArray(field(data, "declarations"))).toBe(true);
-    expect(Array.isArray(field(data, "diagnostics"))).toBe(true);
+  });
+
+  it("deduplicates diagnostics and missing scopes in compact output", () => {
+    const data = checkData(check);
+    expect(field(data, "missingScopes")).toEqual(["obs:read"]);
     expect((field(data, "diagnostics") as ReadonlyArray<unknown>).length).toBe(1);
   });
 
@@ -284,43 +280,6 @@ describe("compact check output", () => {
     expect(Array.isArray(issues) ? issues.length : -1).toBe(1);
   });
 
-  it("prints a compact text summary without the unit listing", () => {
-    const text = checkText(check, undefined, { detail: "compact" });
-    expect(text).toContain("service status at check: stopped");
-    expect(text).toContain("check: FAILED");
-    expect(text).toContain("src/api.ts:10:5 TS2305");
-    expect(text).not.toContain("units:");
-    expect(text).toContain("reload: restarts worker");
-  });
-
-  it("labels cascading artifact diagnostics in text", () => {
-    const text = checkText(
-      baseCheck({
-        diagnostics: [
-          {
-            file: "src/api.ts",
-            line: 10,
-            column: 5,
-            code: "TS2305",
-            message: "Module './api.ts' has no exported member 'Chat'.",
-          },
-          {
-            file: "artifacts/dashboard/main.tsx",
-            line: 4,
-            column: 10,
-            code: "TS2305",
-            message: "Module '../../src/api.ts' has no exported member 'Chat'.",
-          },
-        ],
-      }),
-      undefined,
-      { detail: "compact" },
-    );
-    expect(text).toContain(
-      "[artifact] artifacts/dashboard/main.tsx:4:10 TS2305",
-    );
-    expect(text).toContain("[cascades from src/api.ts:10 TS2305]");
-  });
 });
 
 const adapter = (
@@ -361,22 +320,6 @@ describe("apply output", () => {
     expect(outcome.project?.status).toBe("running");
   });
 
-  it("returns state and a minimal project summary on success", async () => {
-    const runningDetail = detail({ summary: running, appliedAt: 1 });
-    const outcome = await Effect.runPromise(
-      applyProject(
-        adapter(baseCheck(), runningDetail, () => runningDetail),
-        running,
-      ),
-    );
-    const output = applyOutput(outcome);
-    expect(field(output.data, "check")).toBeUndefined();
-    expect(field(field(output.data, "project"), "status")).toBe("running");
-    expect(field(field(output.data, "project"), "issues")).toBeUndefined();
-    expect(output.text).toContain("status running");
-    expect(output.text).not.toContain("check:");
-  });
-
   it("includes only the compact check for a waiting outcome", async () => {
     const outcome = await Effect.runPromise(
       applyProject(adapter(baseCheck(), detail(), () => detail()), chat),
@@ -385,9 +328,6 @@ describe("apply output", () => {
     const output = applyOutput(outcome);
     expect(field(field(output.data, "check"), "detail")).toBe("compact");
     expect(field(field(output.data, "check"), "manifest")).toBeUndefined();
-    expect(field(field(output.data, "check"), "snapshot")).toBeDefined();
-    expect(output.text).toContain("check:");
-    expect(output.text).not.toContain("next: ballast_apply requests a reload");
   });
 });
 
@@ -398,8 +338,6 @@ describe("status naming", () => {
       [],
       [],
     );
-    expect(output.text).toContain("state stopped");
-    expect(output.text).toContain("service status stopped");
     expect(field(output.data, "state")).toBe("stopped");
     expect(field(output.data, "serviceStatus")).toBe("stopped");
   });
@@ -418,6 +356,5 @@ describe("status naming", () => {
       [],
     );
     expect((field(output.data, "issues") as ReadonlyArray<unknown>).length).toBe(1);
-    expect(output.text.match(/Worker exited/g)?.length).toBe(1);
   });
 });

@@ -44,12 +44,12 @@ redemptions. See `defaultScopes` in `src/config.ts`.
 
 ## Configuration
 
-Copy `.env.example` to `.env` (or `.dev.vars`) and fill in a Twitch app, a 32-byte
+Copy `.env.example` to `.env` and fill in a Twitch app, a 32-byte
 `BALLAST_TOKEN_KEY` (`openssl rand -base64 32`) and a random `BALLAST_TOKEN_PEPPER`.
-Never commit `.env` or `.dev.vars`. `BALLAST_TOKEN_PEPPER` has **no default**: the Worker
+Never commit `.env`. `BALLAST_TOKEN_PEPPER` has **no default**: the Worker
 fails to start without it, so a deployment cannot silently use a public development pepper.
 
-`pnpm dev` loads `.dev.vars` first and then `.env`, so either file works locally.
+Alchemy reads `.env` itself; variables set in the shell take precedence.
 
 ## Commands
 
@@ -74,7 +74,7 @@ D1 and the Relay Durable Object namespace) while still watching files and reappl
 The Worker reads the URL it is served at with `Cloudflare.Worker.URL` (its `workers.dev` URL,
 a custom domain, or the local dev server), so OAuth `redirect_uri`, EventSub callbacks,
 `/hooks/...` and the share sign-in callback all use it; nothing is configured. Secrets still
-come from the gitignored `.dev.vars`/`.env`. The `dev-*` stage guard in `alchemy.run.ts`
+come from the gitignored `.env`. The `dev-*` stage guard in `alchemy.run.ts`
 keeps remote dev away from production.
 
 ## Local development without Cloudflare

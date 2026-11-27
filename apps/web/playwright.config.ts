@@ -1,9 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * The smoke suite runs against the real Vite dev server and the in-browser
- * MockAgentLayer. No agent process is needed; screenshots are written to
- * `screenshots/` for review.
+ * The e2e suite runs against the real Vite dev server and the in-browser
+ * MockAgentLayer (real-service specs use the service started by globalSetup).
  */
 export default defineConfig({
   testDir: "./e2e",

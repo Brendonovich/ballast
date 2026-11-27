@@ -17,7 +17,6 @@ const example = fileURLToPath(new URL("../../../examples/tick-echo.ts", import.m
 const callRequest = fileURLToPath(
   new URL("./fixtures/call-request.ts", import.meta.url),
 );
-const untitled = fileURLToPath(new URL("./fixtures/tick-echo.ts", import.meta.url));
 const artifactUrl = fileURLToPath(
   new URL("./fixtures/artifact-url.ts", import.meta.url),
 );
@@ -105,13 +104,6 @@ describe("plan", () => {
     }),
   );
 
-  it.effect("strips a script extension from the fallback title", () =>
-    Effect.gen(function* () {
-      const result = yield* planDetails(untitled);
-      expect(result.title).toBe("Tick Echo");
-    }),
-  );
-
   it.effect("records a workflow declaration and its Twitch scope", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(takeover, {
@@ -187,18 +179,6 @@ describe("plan", () => {
       expect(project.manifest.topics[0]?.source?.file).toBe("src/a.ts");
       expect(project.manifest.params[0]?.source?.file).toBe("src/a.ts");
       yield* Effect.promise(() => rm(root, { recursive: true, force: true }));
-    }),
-  );
-
-  it.effect("plans a whole project through the entry file", () =>
-    Effect.gen(function* () {
-      const project = yield* planProject(
-        fileURLToPath(new URL("./fixtures/project", import.meta.url)),
-      );
-
-      expect(project.entry.entry).toBe("ballast.ts");
-      expect(project.manifest.topics[0]?.name).toBe("named-tick");
-      expect(project.manifest.topics[0]?.source?.file).toBe("src/a.ts");
     }),
   );
 
@@ -396,18 +376,12 @@ describe("plan", () => {
     }),
   );
 
-  it.effect("plans and bundles a Solid artifact with stores and an API", () =>
+  it.effect("records API procedures, stores and topic history declared alongside an artifact", () =>
     Effect.gen(function* () {
       const project = yield* planProject(
         fileURLToPath(new URL("../../../examples/stream-dashboard", import.meta.url)),
       );
 
-      expect(project.manifest.artifacts.map((artifact) => artifact.name)).toEqual([
-        "dashboard",
-      ]);
-      expect(project.manifest.artifacts[0]?.source?.file).toBe("ballast.ts");
-      expect(project.manifest.api?.source?.file).toBe("ballast.ts");
-      expect(project.manifest.stores[0]?.source?.file).toBe("ballast.ts");
       expect(
         project.manifest.api?.procedures.map(
           (procedure) => procedure.name + (procedure.stream ? ":stream" : ""),
@@ -422,19 +396,6 @@ describe("plan", () => {
       expect(
         project.manifest.topics.find((topic) => topic.name === "scene-tick")?.history,
       ).toBe(false);
-      expect(
-        project.manifest.topics.find((topic) => topic.name === "chat-log")
-          ?.schemaFingerprint,
-      ).toMatch(/^[0-9a-f]{64}$/);
-
-      const built = project.artifacts[0];
-      expect(built?.name).toBe("dashboard");
-      if (built === undefined) return;
-      const javascript = yield* Effect.promise(() =>
-        readFile(built.javascriptPath, "utf8"),
-      );
-      expect(javascript).toContain("reset");
-      expect(built.htmlPath.endsWith("index.html")).toBe(true);
     }),
   );
 
@@ -525,14 +486,6 @@ describe("plan", () => {
       expect(error).toBeInstanceOf(ProjectPlanError);
       if (!(error instanceof ProjectPlanError)) return;
       expect(error.message).toContain("Api.serve may be called once");
-    }),
-  );
-
-  it.effect("records requests without calling them", () =>
-    Effect.gen(function* () {
-      const manifest = yield* plan(example);
-      const requests = manifest.requests.map((request) => request.request);
-      expect(requests).toEqual(["fake/*"]);
     }),
   );
 

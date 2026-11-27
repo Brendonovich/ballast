@@ -140,10 +140,7 @@ export const startCloud = async (options: {
   delete env.CLOUDFLARE_ACCOUNT_ID;
   const child = spawnLogged(
     [
-      "--experimental-transform-types",
       "--no-warnings=ExperimentalWarning",
-      "--env-file-if-exists=.dev.vars",
-      "--env-file-if-exists=.env",
       join(cloudDir, "node_modules/alchemy/bin/alchemy.js"),
       "dev",
       "--stage",

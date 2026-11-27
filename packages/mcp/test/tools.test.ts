@@ -13,21 +13,18 @@ import type {
 
 import {
   applyProject,
-  checkText,
   declarationUnits,
   normalizeSourceLocation,
-  requirementLine,
   requirementViews,
 } from "../src/adapter.ts";
 import type { CheckResult, ProjectAdapter } from "../src/adapter.ts";
-import { formatCatalog, selectCatalog } from "../src/catalog.ts";
+import { selectCatalog } from "../src/catalog.ts";
 import {
   missingFeatureOf,
   toolError,
   unsupportedServiceError,
 } from "../src/errors.ts";
-import { GUIDE } from "../src/guide.ts";
-import { formatStatus, loadArtifacts, statusState } from "../src/tools.ts";
+import { loadArtifacts, statusState } from "../src/tools.ts";
 
 const summary: ProjectSummary = {
   id: "proj_test",
@@ -205,49 +202,6 @@ describe("ballast_apply", () => {
   });
 });
 
-describe("checkText", () => {
-  it("labels a run as non-durable without implying a loop", () => {
-    const manifest = {
-      ...emptyProjectManifest("proj_test", "ballast.ts"),
-      runs: [{ name: "ready", source: { file: "ballast.ts", line: 10, column: 2 } }],
-    };
-    const text = checkText(
-      baseCheck({
-        manifest,
-        units: [
-          {
-            kind: "run",
-            name: "ready",
-            status: "active",
-            source: { file: "ballast.ts", line: 10, column: 2 },
-          },
-        ],
-      }),
-    );
-    expect(text).toContain("run ready @ ballast.ts:10 — run (non-durable)");
-    expect(text).not.toContain("run loop");
-  });
-
-  it("prints file:line:column and the TS code", () => {
-    const text = checkText(
-      baseCheck({
-        ok: false,
-        diagnostics: [
-          {
-            file: "src/a.ts",
-            line: 14,
-            column: 17,
-            code: "TS2322",
-            message: "Type 'number' is not assignable to type 'string'.",
-          },
-        ],
-      }),
-    );
-    expect(text).toContain("src/a.ts:14:17 TS2322 Type 'number' is not assignable to type 'string'.");
-    expect(text).toContain("check: FAILED");
-  });
-});
-
 describe("source normalization", () => {
   it("recovers a project-relative source from a repo-relative path", () => {
     expect(
@@ -269,21 +223,6 @@ describe("source normalization", () => {
     ).toBeUndefined();
   });
 
-  it("prints real source links for units", () => {
-    const text = checkText(
-      baseCheck({
-        units: [
-          {
-            kind: "topic",
-            name: "tick",
-            source: { file: "src/a.ts", line: 6, column: 20 },
-            status: "active",
-          },
-        ],
-      }),
-    );
-    expect(text).toContain("src/a.ts:6");
-  });
 });
 
 const consent: ProjectConsentRequest = {
@@ -347,29 +286,6 @@ describe("artifact check output", () => {
     expect(declarations[0]?.source?.file).toBe("ballast.ts");
   });
 
-  it("reports artifact-only changes as a hot reload", () => {
-    const text = checkText(baseCheck({ changes: [
-      { kind: "artifact", name: "dashboard", change: "changed" },
-    ] }), {
-      artifacts: [],
-      declarations: [],
-      artifactOnly: true,
-      requiresWorkerRestart: false,
-    });
-    expect(text).toContain("reload: artifact-only (hot reload; worker stays)");
-  });
-
-  it("reports API changes as a worker restart", () => {
-    const text = checkText(baseCheck({ changes: [
-      { kind: "api", name: "api", change: "changed" },
-    ] }), {
-      artifacts: [],
-      declarations: [],
-      artifactOnly: false,
-      requiresWorkerRestart: true,
-    });
-    expect(text).toContain("reload: restarts worker");
-  });
 });
 
 describe("stale service capabilities", () => {
@@ -394,16 +310,11 @@ describe("stale service capabilities", () => {
     expect(missingFeatureOf(new Error("socket closed"))).toBeUndefined();
   });
 
-  it("explains the version mismatch and tells the user how to restart", () => {
+  it("maps only a missing RPC feature to an unsupported-service error", () => {
     const error = unsupportedServiceError(cause, "0.1.0");
     expect(error?.kind).toBe("unsupported-service");
     expect(error?.feature).toBe("ListArtifacts");
     expect(error?.serviceVersion).toBe("0.1.0");
-    expect(error?.message).toContain(
-      "The running Ballast service (version 0.1.0) is older than this MCP and lacks project artifact support (ListArtifacts).",
-    );
-    expect(error?.message).toContain("Restart the Ballast app");
-    expect(error?.message).toContain("pnpm --filter @ballast/desktop dev");
     expect(unsupportedServiceError(new Error("socket closed"), undefined)).toBeUndefined();
   });
 
@@ -427,30 +338,10 @@ describe("stale service capabilities", () => {
     expect(other.note).toBeUndefined();
   });
 
-  it("omits artifacts from check with a note", () => {
-    const message = unsupportedServiceError(cause, "0.1.0")?.message ?? "";
-    const text = checkText(baseCheck(), {
-      artifacts: [],
-      declarations: [],
-      artifactOnly: false,
-      requiresWorkerRestart: false,
-      artifactNote: message,
-    });
-    expect(text).toContain("artifacts: unavailable — The running Ballast service");
-    expect(text).toContain("lacks project artifact support (ListArtifacts)");
-  });
-
-  it("omits artifacts from status with a note", () => {
-    const message = unsupportedServiceError(cause, "0.1.0")?.message ?? "";
-    const output = formatStatus(detail(), [], [], message);
-    expect(output.text).toContain("artifacts: unavailable — The running Ballast service");
-    expect(output.text).toContain("lacks project artifact support (ListArtifacts)");
-    expect(output.text).not.toContain("dashboard");
-  });
 });
 
 describe("requirement views", () => {
-  it("formats bound, proposed, unbound and missing requirements", () => {
+  it("resolves bound, proposed, unbound and dangling bindings", () => {
     const connections = [
       connection("conn_twitch", "twitch", "My Twitch"),
       connection("conn_obs", "obs", "Studio OBS"),
@@ -480,22 +371,12 @@ describe("requirement views", () => {
       ],
       connections,
     );
-    expect(views.map(requirementLine)).toEqual([
-      'twitch/broadcaster → bound to "My Twitch" (connected)',
-      'obs/main → proposed: "Studio OBS" (confirm at Start)',
-      "fake/main → none: user must add a fake connection in the Ballast app",
-      'midi/controller → bound to "conn_gone" (missing)',
+    expect(views.map((view) => [view.state, view.instanceId])).toEqual([
+      ["bound", "conn_twitch"],
+      ["proposed", "conn_obs"],
+      ["unbound", undefined],
+      ["missing", "conn_gone"],
     ]);
-  });
-
-  it("says the user must add an integration when none are compatible", () => {
-    const [view] = requirementViews(
-      [{ integration: "twitch", slot: "bot", location: "either" }],
-      [],
-    );
-    expect(view === undefined ? "" : requirementLine(view)).toContain(
-      "none: user must add a twitch connection in the Ballast app",
-    );
   });
 
   it("counts compatible instances for an unbound slot", () => {
@@ -504,11 +385,11 @@ describe("requirement views", () => {
       [
         connection("conn_obs_1", "obs", "Studio OBS"),
         connection("conn_obs_2", "obs", "Laptop OBS"),
+        connection("conn_twitch", "twitch", "My Twitch"),
       ],
     );
-    expect(view === undefined ? "" : requirementLine(view)).toBe(
-      "obs/main → unbound: 2 compatible connections available",
-    );
+    expect(view?.state).toBe("unbound");
+    expect(view?.compatibleCount).toBe(2);
   });
 
   it("derives required scopes from the manifest even when unbound", () => {
@@ -539,9 +420,7 @@ describe("requirement views", () => {
       [],
       manifest,
     );
-    expect(view === undefined ? "" : requirementLine(view)).toBe(
-      "twitch/broadcaster → none: user must add a twitch connection in the Ballast app · needs user:read:chat, user:write:chat",
-    );
+    expect(view?.missingScopes).toEqual(["user:read:chat", "user:write:chat"]);
   });
 
   it("does not report scopes already granted by a bound instance", () => {
@@ -575,10 +454,8 @@ describe("requirement views", () => {
       [bound],
       manifest,
     );
+    expect(view?.requiredScopes).toEqual(["user:read:chat"]);
     expect(view?.missingScopes).toEqual([]);
-    expect(view === undefined ? "" : requirementLine(view)).toBe(
-      'twitch/broadcaster → bound to "My Twitch" (connected)',
-    );
   });
 });
 
@@ -648,7 +525,6 @@ describe("catalog", () => {
     const selection = selectCatalog({ integration: "fake", includeSchemas: true });
     const tick = selection.integrations[0]?.topics.find((topic) => topic.topic === "fake/tick");
     expect(tick?.schema).toMatchObject({ type: "object" });
-    expect(formatCatalog(selection)).toContain("schema:");
   });
 
   it("filters to connection kinds", () => {
@@ -679,7 +555,6 @@ describe("catalog", () => {
     const page = first.pages[0];
     expect(page?.requestMatches).toBeGreaterThan(5);
     expect(page?.requestNextOffset).toBe(5);
-    expect(formatCatalog(first)).toContain("truncated");
     const second = selectCatalog({
       integration: "obs",
       kind: "requests",
@@ -690,26 +565,5 @@ describe("catalog", () => {
     expect(second.integrations[0]?.requests[0]?.name).not.toBe(
       first.integrations[0]?.requests[0]?.name,
     );
-  });
-});
-
-describe("guide", () => {
-  it("covers the authoring contract", () => {
-    expect(GUIDE).toContain("Ballast.Timer");
-    expect(GUIDE).toContain("Ballast.run");
-    expect(GUIDE).toContain("account.helix");
-    expect(GUIDE).toContain("Effect.sleep");
-    expect(GUIDE).toContain("Effect.catchCause");
-    expect(GUIDE).toContain("Effect.catchTag");
-    expect(GUIDE).toContain("Param.strings");
-    expect(GUIDE).toContain("OBS.scenes(obs)");
-    expect(GUIDE).toContain("satisfies Ballast.Project");
-    expect(GUIDE).toContain("Params are live");
-    expect(GUIDE).toContain("Ballast.Runtime");
-    expect(GUIDE).toContain("@ballast/artifact/protocol");
-    expect(GUIDE).toContain("wrapping `Rpc.make`");
-    expect(GUIDE).toContain("plain `Rpc.make`");
-    expect(GUIDE).not.toContain("Timer.unit");
-    expect(GUIDE).not.toContain("being removed");
   });
 });

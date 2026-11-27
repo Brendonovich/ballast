@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -180,10 +180,10 @@ export const EventHistoryLive = Layer.effect(
     const states = yield* Ref.make<ReadonlyMap<string, SubscriptionState>>(new Map());
     const changes = yield* PubSub.unbounded<EventHistoryItem>();
     const platform = yield* Effect.context<
-      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+      SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
     >();
     const provide = <A, E>(
-      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
 
     const stateKey = (projectId: string, name: string): string => projectId + "\u0000" + name;

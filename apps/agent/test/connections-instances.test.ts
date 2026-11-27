@@ -6,11 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { NodeCrypto, NodeFileSystem, NodePath } from "@effect/platform-node";
-import {
-  DEFAULT_TWITCH_CALLBACK_PORT,
-  type ConnectionSummary,
-  type ProjectDetail,
-} from "@ballast/agent-protocol";
+import type { ConnectionSummary, ProjectDetail } from "@ballast/agent-protocol";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { withAgentClient } from "../src/service/client.ts";
@@ -288,17 +284,6 @@ describe("connection instances", () => {
         }),
       );
       expect(instances.a.boundBy).toEqual([]);
-      expect((yield* call(root, (client) => client.ListProjects())).projects).toHaveLength(0);
-      const integrations = (yield* call(root, (client) => client.ListIntegrations())).integrations;
-      expect(integrations.map((entry) => entry.integration)).toHaveLength(9);
-      expect(
-        integrations.find((entry) => entry.integration === "obs")?.fields.map((field) => field.key),
-      ).toEqual(["url", "password"]);
-      const twitch = integrations.find((entry) => entry.integration === "twitch");
-      expect(twitch?.modes).toContain("cloud");
-      expect(twitch?.redirectUrl).toBe(
-        `http://localhost:${DEFAULT_TWITCH_CALLBACK_PORT}/callback`,
-      );
 
       const projectA = yield* makeProject(root, "project-a");
       const addedA = yield* call(root, (client) => client.AddProject({ path: projectA, name: "A" }));

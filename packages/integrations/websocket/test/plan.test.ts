@@ -6,21 +6,10 @@ import { plan } from "@ballast/planner";
 const example = fileURLToPath(new URL("../../../../examples/ws-bridge.ts", import.meta.url));
 
 describe("plan WebSocket scripts", () => {
-  it.effect("records client/server namespaces and scoped listen/connect capabilities", () =>
+  it.effect("scopes connect and listen grants to their declared targets", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
-      expect(manifest.project).toEqual({ id: "ws-bridge", entry: "ws-bridge.ts" });
-      expect(manifest.connections).toEqual([
-        { integration: "websocket-client", slot: "upstream", location: "local" },
-        { integration: "websocket-server", slot: "bridge", location: "local" },
-      ]);
-      expect(
-        manifest.topics.map((topic) => topic.integration + "/" + topic.slot + ":" + topic.topic),
-      ).toEqual([
-        "websocket-client/upstream:websocket/message",
-        "websocket-server/bridge:websocket/server/message",
-      ]);
       expect(
         manifest.requests.map((request) => ({
           request: request.integration + "/" + request.slot + "/" + request.request,

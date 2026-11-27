@@ -13,12 +13,11 @@
   "scripts": {
     "typecheck": "tsgo -b",
     "test": "vitest run",
-    "alchemy": "node --experimental-transform-types --no-warnings=ExperimentalWarning --env-file-if-exists=.dev.vars --env-file-if-exists=.env node_modules/alchemy/bin/alchemy.js",
-    "dev": "BALLAST_CLOUD_REMOTE_DEV=1 pnpm alchemy dev --stage ${BALLAST_CLOUD_STAGE:-dev-$USER}",
-    "dev:local": "pnpm alchemy dev",
+    "dev": "BALLAST_CLOUD_REMOTE_DEV=1 alchemy dev --stage ${BALLAST_CLOUD_STAGE:-dev-$USER}",
+    "dev:local": "alchemy dev",
     "demo": "node scripts/local-demo.mjs",
     "shares:bridge": "pnpm --filter @ballast/shares-api bridge",
-    "deploy": "pnpm alchemy deploy"
+    "deploy": "alchemy deploy"
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "catalog:",

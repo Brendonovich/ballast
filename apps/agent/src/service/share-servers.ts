@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -187,7 +187,7 @@ export const ShareServersLive = (options: {
       const hub = yield* ServiceHub;
       const logs = yield* Logs;
       const path = yield* Path.Path;
-      const platform = yield* Effect.context<FileSystem.FileSystem | Path.Path | Crypto.Crypto>();
+      const platform = yield* Effect.context<FileSystem.FileSystem | Path.Path | SecureRandom.SecureRandom>();
       const file = path.join(options.dataDir, "share-servers.json");
 
       const loaded = yield* readJson(file).pipe(

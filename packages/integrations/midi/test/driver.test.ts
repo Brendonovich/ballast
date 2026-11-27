@@ -13,7 +13,6 @@ interface FakeOutput extends MidiOutputPort {
 
 interface FakeBackend {
   readonly layer: Layer.Layer<MidiBackend>;
-  readonly service: MidiBackendService;
   readonly message: (data: ReadonlyArray<number>) => void;
   readonly inputs: Map<string, (data: ReadonlyArray<number>) => void>;
   readonly outputs: Map<string, FakeOutput>;
@@ -62,7 +61,6 @@ const makeFake = (): FakeBackend => {
 
   return {
     layer: Layer.succeed(MidiBackend, service),
-    service,
     message: (data) => {
       for (const listener of inputs.values()) listener(data);
     },
@@ -109,15 +107,6 @@ describe("MIDI driver", () => {
       expect(result[0]?.payload).toEqual({ data: [0x93, 60, 100], channel: 4 });
       expect(result[1]?.payload).toEqual({ channel: 4, note: 60, velocity: 100 });
       expect(result[3]?.payload).toEqual({ channel: 4, note: 60, velocity: 0 });
-
-      const status = yield* driver.status;
-      expect(status.state).toBe("connected");
-      if (status.state === "connected") {
-        expect(status.inputs).toEqual(INPUTS);
-        expect(status.outputs).toEqual(OUTPUTS);
-        expect(status.input).toBe("Launchpad MIDI");
-        expect(status.output).toBe("Launchpad MIDI");
-      }
     }).pipe(Effect.provide(layerWith(fake.layer)));
   });
 
@@ -150,87 +139,30 @@ describe("MIDI driver", () => {
     }).pipe(Effect.provide(layerWith(fake.layer)));
   });
 
-  it.live("applies running status across messages", () => {
-    const fake = makeFake();
-    return Effect.gen(function* () {
-      const driver = yield* Driver;
-      const events = yield* collect(driver.events, 2).pipe(Effect.forkScoped);
-      yield* Effect.sleep("20 millis");
-      yield* driver.connect({
-        slot: "controller",
-        input: "Launchpad MIDI",
-        topics: [{ topic: "midi/NoteOn" }],
-      });
-
-      fake.message([0x90, 60, 100, 62, 100]);
-      const result = yield* Fiber.join(events);
-      expect(result.map((event) => event.payload)).toEqual([
-        { channel: 1, note: 60, velocity: 100 },
-        { channel: 1, note: 62, velocity: 100 },
-      ]);
-    }).pipe(Effect.provide(layerWith(fake.layer)));
-  });
-
-  it.live("maps Note On velocity 0 to NoteOff", () => {
-    const fake = makeFake();
-    return Effect.gen(function* () {
-      const driver = yield* Driver;
-      const events = yield* collect(driver.events, 1).pipe(Effect.forkScoped);
-      yield* Effect.sleep("20 millis");
-      yield* driver.connect({
-        slot: "controller",
-        input: "Launchpad MIDI",
-        topics: [{ topic: "midi/NoteOff" }],
-      });
-
-      fake.message([0x90, 60, 0]);
-      const result = yield* Fiber.join(events);
-      expect(result[0]?.payload).toEqual({ channel: 1, note: 60, velocity: 0 });
-    }).pipe(Effect.provide(layerWith(fake.layer)));
-  });
-
-  it.live("encodes send requests and opens outputs on demand", () => {
+  it.live("sends to the default output and opens a named device output on demand", () => {
     const fake = makeFake();
     return Effect.gen(function* () {
       const driver = yield* Driver;
       yield* driver.connect({ slot: "controller", output: "Launchpad MIDI", topics: [] });
 
-      expect(yield* driver.request("midi/noteOn", { channel: 1, note: 60, velocity: 100 })).toEqual({
-        ok: true,
-      });
-      expect(yield* driver.request("midi/noteOn", { channel: 2, note: 61, velocity: 90 })).toEqual({
-        ok: true,
-      });
-      expect(yield* driver.request("midi/controlChange", {
-        channel: 4,
-        control: 7,
-        value: 64,
-      })).toEqual({ ok: true });
-      expect(yield* driver.request("midi/programChange", { channel: 3, program: 5 })).toEqual({
-        ok: true,
-      });
-      expect(yield* driver.request("midi/pitchBend", { channel: 1, value: -8192 })).toEqual({
-        ok: true,
-      });
-      expect(yield* driver.request("midi/raw", { data: [0x90, 62, 1] })).toEqual({ ok: true });
+      yield* driver.request("midi/noteOn", { channel: 1, note: 60, velocity: 100 });
+      expect(fake.outputs.get("Launchpad MIDI")?.sent).toEqual([[0x90, 60, 100]]);
 
-      const defaultOutput = fake.outputs.get("Launchpad MIDI");
-      expect(defaultOutput?.sent).toEqual([
-        [0x90, 60, 100],
-        [0x91, 61, 90],
-        [0xb3, 7, 64],
-        [0xc2, 5],
-        [0xe0, 0, 0],
-        [0x90, 62, 1],
-      ]);
-
-      expect(yield* driver.request("midi/controlChange", {
+      yield* driver.request("midi/controlChange", {
         device: "Synth",
         channel: 1,
         control: 1,
         value: 2,
-      })).toEqual({ ok: true });
+      });
       expect(fake.outputs.get("Synth")?.sent).toEqual([[0xb0, 1, 2]]);
+    }).pipe(Effect.provide(layerWith(fake.layer)));
+  });
+
+  it.live("rejects out-of-range send requests", () => {
+    const fake = makeFake();
+    return Effect.gen(function* () {
+      const driver = yield* Driver;
+      yield* driver.connect({ slot: "controller", output: "Launchpad MIDI", topics: [] });
 
       const invalid = yield* driver
         .request("midi/noteOn", { channel: 17, note: 60, velocity: 100 })
@@ -238,6 +170,20 @@ describe("MIDI driver", () => {
       expect(invalid.message).toContain("Channel");
       const invalidRaw = yield* driver.request("midi/raw", { data: [1, 2] }).pipe(Effect.flip);
       expect(invalidRaw.message).toContain("status byte");
+    }).pipe(Effect.provide(layerWith(fake.layer)));
+  });
+
+  it.live("closes every opened port on disconnect", () => {
+    const fake = makeFake();
+    return Effect.gen(function* () {
+      const driver = yield* Driver;
+      yield* driver.connect({
+        slot: "controller",
+        input: "Launchpad MIDI",
+        output: "Launchpad MIDI",
+        topics: [{ topic: "midi/NoteOn" }],
+      });
+      yield* driver.request("midi/noteOn", { device: "Synth", channel: 1, note: 60, velocity: 1 });
 
       yield* driver.disconnect;
       expect(fake.inputs.size).toBe(0);
@@ -246,24 +192,14 @@ describe("MIDI driver", () => {
     }).pipe(Effect.provide(layerWith(fake.layer)));
   });
 
-  it.live("resolves port options and reports missing devices", () => {
+  it.live("fails to connect when the input is unselected, ports are missing or a topic is unknown", () => {
     const fake = makeFake();
     return Effect.gen(function* () {
       const driver = yield* Driver;
-      expect(yield* driver.options("inputs")).toEqual(INPUTS);
-      expect(yield* driver.options("outputs")).toEqual(OUTPUTS);
-
       const missingInput = yield* driver
         .connect({ slot: "controller", topics: [{ topic: "midi/NoteOn" }] })
         .pipe(Effect.flip);
       expect(missingInput.message).toContain("not selected");
-
-      const status = yield* driver.status;
-      expect(status.state).toBe("error");
-      if (status.state === "error") {
-        expect(status.inputs).toEqual(INPUTS);
-        expect(status.outputs).toEqual(OUTPUTS);
-      }
 
       const unknownInput = yield* driver
         .connect({

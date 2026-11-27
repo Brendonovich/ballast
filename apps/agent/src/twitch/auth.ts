@@ -1,5 +1,5 @@
 import * as Config from "effect/Config";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -78,7 +78,7 @@ export type TwitchAuthChallenge =
 
 type AuthPlatformServices =
   | ChildProcessSpawner
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | Path.Path
   | Stdio.Stdio;
@@ -103,7 +103,7 @@ export const startTwitchAuth = (
   AuthPlatformServices | Scope.Scope | HttpClient.HttpClient
 > =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const oauth = yield* Twitch.OAuth.make(oauthConfigOf(options.config));
@@ -150,7 +150,7 @@ export const startTwitchAuth = (
         };
 
         yield* writeStoredTwitchAccount(account, options.dataDir).pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(SecureRandom.SecureRandom, crypto),
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.mapError(
@@ -208,7 +208,7 @@ export const startTwitchAuth = (
       };
     }
 
-    const state = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const state = yield* crypto.uuidV4().pipe(Effect.orDie);
     const port =
       options.callbackPort ??
       options.config.callbackPort ??

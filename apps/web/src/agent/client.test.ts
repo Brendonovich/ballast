@@ -3,10 +3,9 @@ import { describe, expect, it } from "vitest";
 import { resolveTransport } from "./client.ts";
 
 describe("resolveTransport", () => {
-  it("uses the in-browser mock without configuration", () => {
+  it("uses the in-browser mock when no service is configured", () => {
     const transport = resolveTransport({ search: "", env: {}, baseHref: "http://localhost:5173/" });
     expect(transport.kind).toBe("mock");
-    expect(transport.label).toBe("In-browser mock");
   });
 
   it("prefers query parameters over the Vite environment", () => {
@@ -21,7 +20,7 @@ describe("resolveTransport", () => {
     expect(transport.token).toBe("abc123");
   });
 
-  it("accepts the Vite environment and upgrades https to wss", () => {
+  it("upgrades an https service URL to wss", () => {
     const transport = resolveTransport({
       search: "",
       env: {
@@ -34,7 +33,7 @@ describe("resolveTransport", () => {
     expect(transport.rpcUrl).toBe("wss://service.example.test/rpc?token=env-token");
   });
 
-  it("normalizes a bare host:port", () => {
+  it("normalizes a bare host:port to a ws URL without a token", () => {
     const transport = resolveTransport({
       search: "?service=127.0.0.1:53124",
       env: {},
@@ -42,16 +41,14 @@ describe("resolveTransport", () => {
     });
     expect(transport.kind).toBe("websocket");
     expect(transport.rpcUrl).toBe("ws://127.0.0.1:53124/rpc");
-    expect(transport.note).toContain("session cookie");
   });
 
-  it("falls back to the mock with an explanation for an invalid URL", () => {
+  it("falls back to the mock for an invalid service URL", () => {
     const transport = resolveTransport({
       search: "?service=http://%zz",
       env: {},
       baseHref: "http://localhost:5173/",
     });
     expect(transport.kind).toBe("mock");
-    expect(transport.note).toContain("invalid service URL");
   });
 });

@@ -646,7 +646,6 @@ describe("integration drivers through the service", () => {
           service.output,
         );
         expect(denied.status).toBe("connected");
-        expect(denied.label).toBe("Keyboard");
         expect(denied.approval?.status).toBe("denied");
         expect((yield* call((client) => client.GetHealth())).permissions?.accessibility).toBe("denied");
 

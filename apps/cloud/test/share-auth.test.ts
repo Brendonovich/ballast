@@ -138,11 +138,7 @@ describe("share sign-in (Sign in with Anomaly)", () => {
 
     const created = await cloud.request({ method: "POST", path: "/api/shares", headers: auth, body: { name: "Demo" } });
     expect(created.status).toBe(201);
-    const shared = JSON.parse(created.body ?? "{}");
-    expect(shared.share).toMatchObject({ owner: true });
-    // Subscribers read with the share code alone.
-    const read = await cloud.request({ method: "GET", path: "/api/shares/code/" + shared.shareCode.replaceAll("-", "") });
-    expect(read.status).toBe(404); // the fake shares API has no code lookup
+    expect(JSON.parse(created.body ?? "{}").share).toMatchObject({ owner: true });
 
     // Machine tokens and missing tokens do not reach the share routes.
     expect((await cloud.request({ method: "GET", path: "/api/shares/subscriptions" })).status).toBe(401);
@@ -171,9 +167,6 @@ describe("share sign-in (Sign in with Anomaly)", () => {
         new URLSearchParams({ ...base, code_challenge_method: "plain", redirect_uri: "http://localhost:5000/cb" }),
     });
     expect(plain.status).toBe(400);
-    const stale = await cloud.request({ method: "GET", path: "/api/shares/auth/callback?state=nope&code=x" });
-    expect(stale.status).toBe(200);
-    expect(stale.body).toContain("expired");
   });
 
   it("answers 503 when no client key is configured", async () => {

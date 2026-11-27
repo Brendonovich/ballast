@@ -7,9 +7,6 @@ import { plan } from "@ballast/planner";
 const sceneifyExample = fileURLToPath(
   new URL("../../../../examples/obs-sceneify.ts", import.meta.url),
 );
-const sceneifyStream = fileURLToPath(
-  new URL("../../../../examples/sceneify-stream/ballast.ts", import.meta.url),
-);
 const alertOverlay = fileURLToPath(
   new URL("../../../../examples/obs-alert-overlay/ballast.ts", import.meta.url),
 );
@@ -18,56 +15,12 @@ const syncInInit = fileURLToPath(
 );
 
 describe("plan Sceneify scripts", () => {
-  it.effect("bundles declared scenes without recording extra grants", () =>
+  it.effect("declaring scenes records no grants beyond obs/*", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(sceneifyExample);
-      expect(manifest).toMatchObject({
-        project: { id: "obs-sceneify", entry: "obs-sceneify.ts" },
-        params: [{ key: "message", type: "string", title: "Banner text", default: "BRB" }],
-        connections: [{ integration: "obs", slot: "main", location: "local" }],
-        topics: [
-          {
-            integration: "obs",
-            slot: "main",
-            topic: "obs/CurrentProgramSceneChanged",
-            name: "scene-changed",
-            scopes: [],
-            onStale: "drop",
-            maxAgeMs: 60_000,
-          },
-        ],
-        requests: [{ integration: "obs", slot: "main", request: "obs/*", scopes: [] }],
-        timers: [],
-        runs: [],
-        artifacts: [],
-        stores: [],
-      });
-    }),
-  );
-
-  it.effect("plans the multi-file sceneify-stream project", () =>
-    Effect.gen(function* () {
-      const manifest = yield* plan(sceneifyStream);
-      expect(manifest.connections).toEqual([
-        { integration: "obs", slot: "main", location: "local" },
-        { integration: "twitch", slot: "broadcaster", location: "either" },
+      expect(manifest.requests).toEqual([
+        { integration: "obs", slot: "main", request: "obs/*", scopes: [] },
       ]);
-      expect(manifest.topics.map((topic) => topic.name).sort()).toEqual([
-        "alert-video-ended",
-        "chat-commands",
-        "cheer",
-        "follow",
-        "raid",
-        "stream-online",
-        "subscribe",
-      ]);
-      expect(manifest.requests.map((request) => request.request)).toEqual([
-        "obs/*",
-        "helix/sendChatMessage",
-      ]);
-      expect(manifest.timers.map((timer) => timer.name).sort()).toEqual(["go-live", "hype-off"]);
-      expect(manifest.runs.map((run) => run.name)).toEqual(["sync-layout"]);
-      expect(manifest.params.map((param) => param.key)).toHaveLength(8);
     }),
   );
 

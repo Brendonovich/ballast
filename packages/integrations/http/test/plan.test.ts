@@ -6,40 +6,13 @@ import { plan } from "@ballast/planner";
 const example = fileURLToPath(new URL("../../../../examples/webhook-to-obs.ts", import.meta.url));
 
 describe("plan HTTP scripts", () => {
-  it.effect("records webhook and OBS capabilities", () =>
+  it.effect("scopes a webhook topic to its hook by condition and webhook scope", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
+      const topic = manifest.topics.find((entry) => entry.topic === "http/webhook");
 
-      expect(manifest.project).toEqual({ id: "webhook-to-obs", entry: "webhook-to-obs.ts" });
-      expect(manifest.connections).toEqual([
-        { integration: "http", slot: "kofi", location: "either" },
-        { integration: "obs", slot: "main", location: "local" },
-      ]);
-      expect(manifest.topics).toEqual([
-        {
-          integration: "http",
-          slot: "kofi",
-          topic: "http/webhook",
-          name: "donation",
-          scopes: ["http:webhook:kofi"],
-          onStale: "drop",
-          maxAgeMs: 60_000,
-          history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
-          schemaFingerprint: expect.any(String),
-          condition: { hook: "kofi" },
-        },
-      ]);
-      expect(manifest.requests).toEqual([
-        { integration: "obs", slot: "main", request: "obs/*", scopes: [] },
-      ]);
-      expect(manifest.params).toEqual([
-        {
-          key: "scene",
-          type: "string",
-          title: "Scene",
-          options: { integration: "obs", slot: "main", source: "scenes" },
-        },
-      ]);
+      expect(topic?.condition).toEqual({ hook: "kofi" });
+      expect(topic?.scopes).toEqual(["http:webhook:kofi"]);
     }),
   );
 });

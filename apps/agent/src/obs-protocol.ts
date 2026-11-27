@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import { sha256 } from "./service/fs.ts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -97,21 +98,13 @@ const decodePacket = (text: string): IncomingPacket =>
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const digestBase64 = (
-  value: string,
-): Effect.Effect<string, never, Crypto.Crypto> =>
-  Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
-    const digest = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(value))
-      .pipe(Effect.orDie);
-    return Base64.encode(digest);
-  });
+const digestBase64 = (value: string): Effect.Effect<string> =>
+  Effect.map(sha256(new TextEncoder().encode(value)), Base64.encode);
 
 const authenticate = (
   password: string,
   authentication: Schema.Schema.Type<typeof AuthenticationSchema>,
-): Effect.Effect<string, never, Crypto.Crypto> =>
+): Effect.Effect<string, never, SecureRandom.SecureRandom> =>
   Effect.gen(function* () {
     const secret = yield* digestBase64(password + authentication.salt);
     return yield* digestBase64(secret + authentication.challenge);
@@ -134,12 +127,12 @@ export const connectObsSocket = (
 ): Effect.Effect<
   ObsSocketClient,
   Error,
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
   | Socket.WebSocketConstructor
   | import("effect/Scope").Scope
 > =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const socket = yield* Socket.makeWebSocket(url);
     const writer = yield* socket.writer;
     const reader = yield* socket.reader;
@@ -148,7 +141,7 @@ export const connectObsSocket = (
     const closed = yield* Deferred.make<void>();
     const events = yield* Queue.unbounded<ObsEventPacket>();
     const pending = new Map<string, PendingRequest>();
-    const requestPrefix = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const requestPrefix = yield* crypto.uuidV4().pipe(Effect.orDie);
     let requestSequence = 0;
     let helloReceived = false;
 
@@ -166,7 +159,7 @@ export const connectObsSocket = (
 
     const handlePacket = (
       packet: IncomingPacket,
-    ): Effect.Effect<void, Error, Crypto.Crypto> => {
+    ): Effect.Effect<void, Error, SecureRandom.SecureRandom> => {
       switch (packet.op) {
         case 0: {
           if (helloReceived) {

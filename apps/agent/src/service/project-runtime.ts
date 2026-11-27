@@ -2,7 +2,7 @@ import type { MessagePort } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -50,7 +50,7 @@ import type { RunDatabases } from "./database.ts";
 import type { RuntimeSession } from "../runtime-session.ts";
 import { ConnectionManager } from "./connections.ts";
 import type { ActiveScript } from "./connections.ts";
-import { contentHash, readJson, writeJsonAtomic } from "./fs.ts";
+import { contentHash, readJson, sha256, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ensureProjectTypes } from "./scaffold.ts";
@@ -315,11 +315,10 @@ const walkProject = (
 
 const projectFingerprint = (
   root: string,
-): Effect.Effect<string, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> =>
+): Effect.Effect<string, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const crypto = yield* Crypto.Crypto;
     const encoder = new TextEncoder();
     const files: Array<string> = [];
     const directories: Array<string> = [];
@@ -339,8 +338,7 @@ const projectFingerprint = (
       combined.set(part, offset);
       offset += part.byteLength;
     }
-    const digest = yield* crypto.digest("SHA-256", combined).pipe(Effect.orDie);
-    return Hex.encode(digest);
+    return Hex.encode(yield* sha256(combined));
   });
 
 const unitKindOf = (manifest: Manifest, name: string): UnitSummary["kind"] | undefined => {
@@ -378,7 +376,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
     const hub = yield* ServiceHub;
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     // The stable artifact URL is a plan/runtime bundle constant: fixed origin
     // plus a per-project read capability derived from project state.
     const artifactOrigin = artifactOriginFromEnv();
@@ -390,10 +388,10 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         catch: () => undefined,
       }).pipe(Effect.catch(() => Effect.succeed(undefined)));
     const platform = yield* Effect.context<
-      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+      SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
     >();
     const provide = <A, E>(
-      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const ensureTypes = provide(
       ensureProjectTypes({

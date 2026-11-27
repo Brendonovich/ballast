@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -120,16 +120,16 @@ export const startTwitchRuntime = (
 ): Effect.Effect<
   TwitchRuntime,
   never,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path | Scope.Scope
 > =>
   Effect.gen(function* () {
     const runtimeScope = yield* Scope.Scope;
     const path = yield* Path.Path;
     const platform = yield* Effect.context<
-      Crypto.Crypto | FileSystem.FileSystem | Path.Path
+      SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
     >();
     const provide = <A, E>(
-      effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+      effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
     ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
     const env = runtimeOptions.env ?? (yield* readEnvironment([
       "BALLAST_DATA_DIR",

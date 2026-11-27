@@ -122,6 +122,15 @@ export const SubscribeProjectRequest = Schema.Struct({
 });
 export type SubscribeProjectRequest = typeof SubscribeProjectRequest.Type;
 
+/** A subscribed project's update state right after asking its share server. */
+export const CheckProjectUpdateResult = Schema.Struct({
+  projectId: Schema.String,
+  installedSha: Schema.String,
+  /** Absent when the installed version is the share's current deploy. */
+  available: Schema.optionalKey(ProjectUpdateAvailable),
+});
+export type CheckProjectUpdateResult = typeof CheckProjectUpdateResult.Type;
+
 export const ApplyProjectUpdateResult = Schema.Struct({
   projectId: Schema.String,
   fromSha: Schema.String,

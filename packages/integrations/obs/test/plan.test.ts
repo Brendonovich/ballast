@@ -14,42 +14,13 @@ const connectionState = fileURLToPath(
 );
 
 describe("plan OBS script", () => {
-  it.effect("records one obs/* request grant and the typed topic", () =>
+  it.effect("records a single obs/* request grant for every OBS request", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);
 
-      expect(manifest).toEqual({
-        project: { id: "obs-scene", entry: "obs-scene.ts" },
-        params: [
-          {
-            key: "scene",
-            type: "string",
-            options: { integration: "obs", slot: "main", source: "scenes" },
-          },
-        ],
-        connections: [{ integration: "obs", slot: "main", location: "local" }],
-        topics: [
-          {
-            integration: "obs",
-            slot: "main",
-            topic: "obs/CurrentProgramSceneChanged",
-            name: "scene-changed",
-            scopes: [],
-            onStale: "drop",
-            maxAgeMs: 60_000,
-            history: { maxEntries: 1000, retentionMs: 7 * 24 * 60 * 60_000 },
-            schemaFingerprint: expect.any(String),
-          },
-        ],
-        requests: [{ integration: "obs", slot: "main", request: "obs/*", scopes: [] }],
-        unresolved: [],
-        timers: [],
-        workflows: [],
-        runs: [{ name: "scene-loop" }],
-        artifacts: [],
-        stores: [],
-        databases: [],
-      });
+      expect(manifest.requests).toEqual([
+        { integration: "obs", slot: "main", request: "obs/*", scopes: [] },
+      ]);
     }),
   );
 

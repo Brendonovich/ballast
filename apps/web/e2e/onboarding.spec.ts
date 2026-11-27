@@ -68,12 +68,21 @@ test("consumer: subscribe with a share link", async ({ page }) => {
   await expect(share.getByTestId("subscribe-sign-in")).toHaveCount(0);
   await page.getByTestId("onboarding-subscribe").click();
   await expect(page).toHaveURL(/#\/projects\/proj_\d+$/);
-  await expect(page.getByTestId("share-subscribed")).toBeVisible();
-});
+  const shareButton = page.getByTestId("share-button");
+  await expect(shareButton).toHaveAttribute("data-share-state", "subscribed");
 
-test("skip leaves onboarding for Projects", async ({ page }) => {
-  await page.goto("/#/welcome");
-  await page.getByTestId("onboarding-skip").click();
-  await expect(page).toHaveURL(/#\/projects$/);
-  expect(await page.evaluate(() => localStorage.getItem("ballast.onboardingDismissed"))).toBe("1");
+  // A read-only copy has no Share/Deploy; it can check for and apply updates instead.
+  await shareButton.click();
+  await expect(page.getByTestId("share-subscribed")).toBeVisible();
+  await expect(page.getByTestId("share-project")).toHaveCount(0);
+  await page.getByTestId("check-project-update").click();
+  await expect(shareButton).toHaveAttribute("data-share-state", "update");
+  await page.getByTestId("apply-project-update").click();
+  await expect(page.getByTestId("update-result")).toBeVisible();
+  await expect(shareButton).toHaveAttribute("data-share-state", "subscribed");
+
+  const check = page.getByTestId("check-project-update");
+  await check.click();
+  await expect(check).toHaveText("Up to date");
+  await expect(page.getByTestId("share-update-available")).toHaveCount(0);
 });

@@ -11,6 +11,7 @@ import {
   agentError,
   type AgentError,
   type ApplyProjectUpdateResult,
+  type CheckProjectUpdateResult,
   type DeployProjectResult,
   type ProjectDetail,
   type ProjectShare,
@@ -69,6 +70,8 @@ export interface ProjectSharesService {
   }) => Effect.Effect<ProjectDetail, AgentError>;
   readonly unsubscribe: (projectId: string) => Effect.Effect<ProjectDetail, AgentError>;
   readonly applyUpdate: (projectId: string) => Effect.Effect<ApplyProjectUpdateResult, AgentError>;
+  /** Ask one subscription's share server for its current deploy now. */
+  readonly checkUpdate: (projectId: string) => Effect.Effect<CheckProjectUpdateResult, AgentError>;
   /** Ask each share server for the current deploy of every subscription. */
   readonly checkUpdates: Effect.Effect<void, AgentError>;
 }
@@ -404,6 +407,23 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
         }
       });
 
+      const checkUpdate = (projectId: string) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(projectId);
+          const share = project.share;
+          if (share?._tag !== "subscribed")
+            return yield* Effect.fail(agentError("invalid", "The project is not a subscription"));
+          const found = yield* servers.fetchPublic(share.server, SharedProjectResponse, shareCodePath(share.shareCode));
+          yield* fromInfo(share.server, found.share);
+          const current = (yield* requireProject(projectId)).share;
+          const latest = current?._tag === "subscribed" ? current : share;
+          return {
+            projectId,
+            installedSha: latest.installedSha,
+            ...(latest.available === undefined ? {} : { available: latest.available }),
+          };
+        });
+
       const applyUpdate = (projectId: string) =>
         Effect.gen(function* () {
           const project = yield* requireProject(projectId);
@@ -495,6 +515,7 @@ export const ProjectSharesLive = (options: { readonly dataDir: string }) =>
         subscribe,
         unsubscribe,
         applyUpdate,
+        checkUpdate,
         checkUpdates,
       });
     }),

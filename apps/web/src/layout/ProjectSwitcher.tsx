@@ -2,14 +2,14 @@ import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 
 import { useAgent } from "../state/context.tsx";
-import { useShareSignIn } from "../screens/settings/SharingSection.tsx";
 import { statusTone } from "../lib/project-health.ts";
-import { ChevronDownIcon, CodeIcon, PlusIcon, ProjectsIcon, UploadIcon } from "../ui/icons.tsx";
-import { Spinner, StatusDot, cx } from "../ui/primitives.tsx";
+import { ChevronDownIcon, CodeIcon, PlusIcon, ProjectsIcon } from "../ui/icons.tsx";
+import { StatusDot, cx } from "../ui/primitives.tsx";
 
 /**
  * The project window's top-left control: the current project and a menu to
- * share or deploy it, configure a coding agent, see all projects or create one.
+ * configure a coding agent, see all projects or create one. Sharing lives in
+ * the top bar's Share button.
  */
 export const ProjectSwitcher = (props: {
   readonly projectId: string;
@@ -26,15 +26,11 @@ export const ProjectSwitcher = (props: {
     const project = current();
     return project === undefined ? "neutral" : statusTone(project);
   };
-  const canShare = (): boolean => {
+  // A subscribed copy is read-only, so there is nothing for a coding agent to build.
+  const canConfigureAgent = (): boolean => {
     const project = current();
     return project !== undefined && project.share?._tag !== "subscribed";
   };
-  const sharing = (): boolean => store.isPending(`project:${props.projectId}:share`);
-  const signIn = useShareSignIn();
-  // Shared projects deploy to their own server; a new share goes to the default.
-  const shareServer = (): string | undefined => current()?.share?.server;
-  const signedIn = (): boolean => store.signedInToShareServer(shareServer());
 
   onMount(() => {
     const onPointer = (event: PointerEvent): void => {
@@ -76,9 +72,6 @@ export const ProjectSwitcher = (props: {
         <span class="min-w-0 truncate text-[13px] font-medium text-strong">
           {current()?.name ?? "Project"}
         </span>
-        <Show when={sharing()}>
-          <Spinner size={11} />
-        </Show>
         <ChevronDownIcon size={12} class="shrink-0 text-faint" />
       </button>
 
@@ -88,28 +81,7 @@ export const ProjectSwitcher = (props: {
           data-no-drag
           class="absolute left-0 top-8 z-40 w-[240px] rounded-md border border-edge-strong bg-layer p-1 shadow-[var(--v2-elevation-overlay)]"
         >
-          <Show when={canShare()}>
-            <button
-              type="button"
-              data-testid="share-project"
-              title={
-                !signedIn()
-                  ? "Sign in with Anomaly to share projects"
-                  : current()?.share === undefined
-                    ? "Share through your share server and get a share code"
-                    : "Deploy the current files to subscribers"
-              }
-              disabled={sharing()}
-              class={itemClass}
-              onClick={() => {
-                setOpen(false);
-                if (!signedIn()) void signIn(shareServer());
-                else void store.shareProject(props.projectId);
-              }}
-            >
-              <UploadIcon size={13} class="text-faint" />
-              {!signedIn() ? "Sign in to share" : current()?.share === undefined ? "Share" : "Deploy"}
-            </button>
+          <Show when={canConfigureAgent()}>
             <button
               type="button"
               data-testid="connect-agent"

@@ -1,4 +1,5 @@
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -56,9 +57,9 @@ export const readText = (
 
 const temporaryName = (
   path: string,
-): Effect.Effect<string, PlatformError.PlatformError, Crypto.Crypto> =>
+): Effect.Effect<string, PlatformError.PlatformError, SecureRandom.SecureRandom> =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const bytes = yield* crypto.randomBytes(4);
     return `${path}.${Hex.encode(bytes)}.tmp`;
   });
@@ -74,7 +75,7 @@ export const writeJsonAtomic = (
 ): Effect.Effect<
   void,
   PlatformError.PlatformError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
 > =>
   writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`, mode);
 
@@ -85,7 +86,7 @@ export const writeTextAtomic = (
 ): Effect.Effect<
   void,
   PlatformError.PlatformError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -108,11 +109,12 @@ export const fileExists = (
 ): Effect.Effect<boolean, PlatformError.PlatformError, FileSystem.FileSystem> =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(path));
 
-export const contentHash = (
-  content: string,
-): Effect.Effect<string, PlatformError.PlatformError, Crypto.Crypto> =>
+/** SHA-256 on WebCrypto; needs no service. */
+export const sha256 = (data: Uint8Array): Effect.Effect<Uint8Array> =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
-    const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(content));
-    return Hex.encode(digest).slice(0, 16);
-  });
+    const digest = yield* Digest.Digest;
+    return yield* digest.digest(Digest.sha256, data);
+  }).pipe(Effect.provide(Digest.layerWebCrypto));
+
+export const contentHash = (content: string): Effect.Effect<string> =>
+  Effect.map(sha256(new TextEncoder().encode(content)), (digest) => Hex.encode(digest).slice(0, 16));

@@ -15,6 +15,7 @@ import {
 } from "./cloud.ts";
 import {
   ApplyProjectUpdateResult,
+  CheckProjectUpdateResult,
   DeployProjectResult,
   ShareProjectRequest,
   ShareServerRequest,
@@ -349,6 +350,17 @@ export const UnsubscribeProject = Rpc.make("UnsubscribeProject", {
 });
 
 /**
+ * Ask a subscribed project's share server for its current deploy now,
+ * instead of waiting for the periodic check. Marks "update available" when
+ * there is a newer deploy; never applies it.
+ */
+export const CheckProjectUpdate = Rpc.make("CheckProjectUpdate", {
+  payload: ProjectIdRequest,
+  success: CheckProjectUpdateResult,
+  error: AgentError,
+});
+
+/**
  * Apply the available update: download the changed files, verify them, swap
  * them in, then restart a running project once. Overwrites local edits.
  */
@@ -592,6 +604,7 @@ export const AgentRpcs = RpcGroup.make(
   SetDefaultShareServer,
   SubscribeProject,
   UnsubscribeProject,
+  CheckProjectUpdate,
   ApplyProjectUpdate,
   ListTimers,
   CancelTimer,

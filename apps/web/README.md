@@ -201,67 +201,20 @@ against Vite.
 - Keep `/rpc`, `/health` and `/oauth/*` out of the static handler.
 - `index.html` no-cache, hashed assets immutable. No external requests are made.
 
-## Tests and screenshots
+## Tests
 
-- `src/state/store.test.ts` — snapshot/projects, create/add/remove, detail and units,
-  start/stop, watch changes, project files, connections/auth, cloud, lifecycle.
-- `src/agent/client.test.ts` — mock default, query/env precedence, ws/wss, token handling.
-- `src/lib/format.test.ts` — project, unit and connection presentation.
-- `e2e/smoke.spec.ts` — mock: home → project route scope, compact project rail, project
-  workspace,
-  units, source, logs+source split, sidebar parameter area, splitter drag + persistence,
-  maximize/restore both panes, sidebar collapse/expand, narrow auto-collapse, connection dialog,
-  cursor rule, no page errors, `#boot` gone and viewport filled. Two-window screenshots are
-  composed from two mock project pages when ffmpeg is available.
-- `e2e/bridge.spec.ts` — fake `window.ballast`: running state, restart/stop through the bridge,
-  native folder picker.
-- `e2e/approvals.spec.ts` — real service VTube Studio and macOS Accessibility approval rows,
-  status text, request hook, and light/dark dialog screenshots.
-- `e2e/real-service.spec.ts` — real service served UI: create an OBS instance with no project
-  against a mock obs-websocket server, create a project needing `obs/main`, see the proposed
-  binding, Start-confirm it, review consent bindings, start the worker, add a second OBS instance,
-  rebind the running project with the restart warning, verify the service refuses deleting the
-  bound instance, and observe **Needs connections** for a project with two candidate instances.
-  Also covers unit-filtered logs, source jump, failed reload, string/strings parameters and timer
-  cancel.
+Tests follow the policy in the root `AGENTS.md`: unit tests that pin down specific invariants, plus
+full-flow Playwright journeys. No presentation, layout or copy tests.
 
-Screenshots (1440×1000):
-
-```
-screenshots/dark-01-projects.png
-screenshots/dark-02-new-project.png
-screenshots/dark-03-project.png
-screenshots/dark-home.png
-screenshots/dark-project-window.png
-screenshots/dark-project-second.png
-screenshots/dark-two-windows.png
-screenshots/dark-04-source.png
-screenshots/dark-05-logs.png
-screenshots/dark-06-connections.png
-screenshots/dark-07-settings.png
-screenshots/light-01-projects.png … light-07-settings.png
-screenshots/light-home.png
-screenshots/light-project-window.png
-screenshots/light-project-second.png
-screenshots/light-two-windows.png
-
-screenshots/real-dark-01-projects.png
-screenshots/real-dark-02-new-project.png
-screenshots/real-dark-03-project.png
-screenshots/real-dark-04-source-jump.png
-screenshots/real-dark-05-logs-unit.png
-screenshots/real-dark-06-consent.png
-screenshots/real-dark-07-reload-failed.png
-screenshots/real-dark-08-connections.png
-screenshots/real-dark-09-add-connection.png
-screenshots/real-dark-10-project-connections.png
-screenshots/real-light-01-projects.png … real-light-10-project-connections.png
-
-screenshots/approvals-vtuber-studio-dark.png
-screenshots/approvals-vtuber-studio-light.png
-screenshots/approvals-accessibility-dark.png
-screenshots/approvals-accessibility-light.png
-```
+- `src/state/store.test.ts` — store against `MockAgentLayer`: rejected actions, changes from other clients.
+- `src/agent/client.test.ts` — transport resolution: mock default, query/env precedence, ws/wss, invalid URLs.
+- `src/lib/routes.test.ts` — route encoding round-trips.
+- `e2e/workspace.spec.ts` — mock: tabs, topic events, View mode, Open in.
+- `e2e/bridge.spec.ts` — fake `window.ballast`: service actions and window routing through the bridge.
+- `e2e/health.spec.ts` — each project issue leads to where it can be seen or fixed.
+- `e2e/onboarding.spec.ts` — creator and consumer onboarding journeys (writes `screenshots/onboarding-*.png`).
+- `e2e/real-service.spec.ts` — real service: connection instances, bindings, workers, artifacts,
+  logs, failed changes and topic events.
 
 Bundle before the redesign: **408.98 kB JS / 48.57 kB CSS** (118.54 / 8.68 kB gzip).
 Bundle now: **371.75 kB JS / 31.06 kB CSS** (118.17 / 6.76 kB gzip).

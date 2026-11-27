@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -159,10 +159,10 @@ export const ProjectManagerLive = (dataDir: string) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const platform = yield* Effect.context<
-        Crypto.Crypto | FileSystem.FileSystem | Path.Path
+        SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path
       >();
       const provide = <A, E>(
-        effect: Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+        effect: Effect.Effect<A, E, SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path>,
       ): Effect.Effect<A, E> => Effect.provideContext(effect, platform);
       const registry = yield* Ref.make(yield* loadRegistry(dataDir));
 
@@ -199,7 +199,7 @@ export const ProjectManagerLive = (dataDir: string) =>
             );
           }
           const now = Date.now();
-          const crypto = Context.get(platform, Crypto.Crypto);
+          const crypto = Context.get(platform, SecureRandom.SecureRandom);
           const id = yield* crypto.randomBytes(4).pipe(
             Effect.map((bytes) => `proj_${Hex.encode(bytes)}`),
             Effect.orDie,

@@ -11,9 +11,8 @@
     "typecheck": "tsgo -b",
     "test": "vitest run",
     "sync-client": "node scripts/sync-client.mjs",
-    "alchemy": "node --experimental-transform-types --no-warnings=ExperimentalWarning node_modules/alchemy/bin/alchemy.js",
-    "deploy": "pnpm alchemy deploy --stage prod",
-    "dev": "pnpm alchemy dev"
+    "deploy": "alchemy deploy --stage prod",
+    "dev": "alchemy dev"
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "catalog:",

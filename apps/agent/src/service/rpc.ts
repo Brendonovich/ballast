@@ -335,6 +335,8 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         Effect.tap(shares.subscribe(request), () => publishHealth),
       UnsubscribeProject: ({ projectId }: { readonly projectId: string }) =>
         shares.unsubscribe(projectId),
+      CheckProjectUpdate: ({ projectId }: { readonly projectId: string }) =>
+        shares.checkUpdate(projectId),
       ApplyProjectUpdate: ({ projectId }: { readonly projectId: string }) =>
         shares.applyUpdate(projectId),
 
