@@ -89,6 +89,7 @@ const startService = (root: string): Effect.Effect<Service, Error> =>
           BALLAST_STATE_DIR: join(root, "state"),
           BALLAST_DATA_DIR: join(root, "data"),
           BALLAST_LOG_DIR: join(root, "logs"),
+          BALLAST_ARTIFACT_PORT: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
       },

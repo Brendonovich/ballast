@@ -18,7 +18,7 @@ import {
   type RestoredWindows,
   type StoredBounds,
 } from "./window-state.ts";
-import { planRescope, titleBarOptions } from "./window-scope.ts";
+import { devWindowUrl, planRescope, titleBarOptions } from "./window-scope.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const preloadPath = path.resolve(here, "../preload/index.cjs");
@@ -240,14 +240,21 @@ export function createWindowController(options: WindowControllerOptions): Window
     if (record.window.isDestroyed()) return;
 
     if (config.uiUrl !== undefined) {
-      const target = new URL(config.uiUrl);
-      const hash = routeHash(record);
-      if (hash !== "") target.hash = hash;
+      if (!status.running || status.url === null) {
+        await loadFallback(record);
+        return;
+      }
+      const connection = await options.getConnection();
+      if (connection === null) {
+        await loadFallback(record);
+        return;
+      }
+      const target = new URL(devWindowUrl(config.uiUrl, connection, routeHash(record)));
       const key = target.toString();
       if (record.mode !== "dev" || record.loadedKey !== key) {
         record.mode = "dev";
         record.loadedOrigin = target.origin;
-        record.loadedPid = null;
+        record.loadedPid = status.pid;
         record.loadedKey = key;
         try {
           await record.window.loadURL(key);
@@ -555,9 +562,8 @@ export function createWindowController(options: WindowControllerOptions): Window
       if (source.mode === "service") {
         source.loadedKey = [source.loadedOrigin, source.loadedPid ?? "none", routeHash(source)].join("|");
       } else if (source.mode === "dev" && config.uiUrl !== undefined) {
-        const target = new URL(config.uiUrl);
-        const hash = routeHash(source);
-        if (hash !== "") target.hash = hash;
+        const target = new URL(source.loadedKey ?? config.uiUrl);
+        target.hash = routeHash(source);
         source.loadedKey = target.toString();
       }
       scheduleSave();

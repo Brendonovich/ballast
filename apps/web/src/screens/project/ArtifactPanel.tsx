@@ -23,18 +23,15 @@ export const ArtifactPanel = (props: {
   readonly projectId: string;
   readonly artifact: ArtifactSummary;
   readonly fullscreen: boolean;
-  /** Pop-out windows: the window's top bar names the artifact, so no header. */
+  /** Pop-out windows and View mode name the artifact elsewhere, so no header. */
   readonly bare?: boolean;
   readonly onToggleFullscreen?: () => void;
   readonly onPopOut?: () => void;
-  readonly onOpenSource?: (file: string, line: number) => void;
+  readonly onOpenSource?: ((file: string, line: number) => void) | undefined;
 }): JSX.Element => {
   const store = useAgent();
   const [view, setView] = createSignal<ArtifactView>();
   const [error, setError] = createSignal<string>();
-  const [menuOpen, setMenuOpen] = createSignal(false);
-  const [urlsOpen, setUrlsOpen] = createSignal(false);
-  let menu: HTMLDivElement | undefined;
   let refreshTimer: number | undefined;
   let renewAt = 0;
   let generation = 0;
@@ -131,10 +128,6 @@ export const ArtifactPanel = (props: {
   });
 
   onMount(() => {
-    const closeMenu = (event: PointerEvent): void => {
-      if (!(event.target instanceof Node) || menu === undefined) return;
-      if (!menu.contains(event.target)) setMenuOpen(false);
-    };
     // Timers are throttled in hidden windows, so catch up when the window comes
     // back instead of waiting for an expired token's next renewal.
     const renewIfDue = (): void => {
@@ -142,11 +135,9 @@ export const ArtifactPanel = (props: {
       if (loading || renewing) return;
       if (Date.now() >= renewAt) void renew();
     };
-    document.addEventListener("pointerdown", closeMenu);
     document.addEventListener("visibilitychange", renewIfDue);
     window.addEventListener("focus", renewIfDue);
     onCleanup(() => {
-      document.removeEventListener("pointerdown", closeMenu);
       document.removeEventListener("visibilitychange", renewIfDue);
       window.removeEventListener("focus", renewIfDue);
     });
@@ -174,58 +165,13 @@ export const ArtifactPanel = (props: {
           <span class="hidden shrink-0 text-[10px] text-faint sm:inline">
             {artifactStatusLabel(props.artifact.status)}
           </span>
-          <span class="ml-auto flex shrink-0 items-center gap-0.5">
-            <Show when={props.onToggleFullscreen}>
-              <IconButton
-                label={props.fullscreen ? "Exit full screen" : "Full screen"}
-                size="small"
-                testId="artifact-fullscreen"
-                onClick={() => props.onToggleFullscreen?.()}
-              >
-                <Show when={props.fullscreen} fallback={<MaximizeIcon size={12} />}>
-                  <MinimizeIcon size={12} />
-                </Show>
-              </IconButton>
-            </Show>
-            <div ref={menu} class="relative">
-              <IconButton
-                label="Artifact actions"
-                size="small"
-                testId="artifact-menu"
-                onClick={() => setMenuOpen((current) => !current)}
-              >
-                <MoreIcon size={13} />
-              </IconButton>
-              <Show when={menuOpen()}>
-                <div class="absolute right-0 top-7 z-20 w-36 rounded-md border border-edge-strong bg-layer py-1 shadow-[var(--v2-elevation-overlay)]">
-                  <button
-                    type="button"
-                    data-testid="artifact-urls"
-                    class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setUrlsOpen(true);
-                    }}
-                  >
-                    URLs…
-                  </button>
-                  <Show when={props.onPopOut}>
-                    <button
-                      type="button"
-                      data-testid="artifact-popout"
-                      class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        props.onPopOut?.();
-                      }}
-                    >
-                      Open in new window
-                    </button>
-                  </Show>
-                </div>
-              </Show>
-            </div>
-          </span>
+          <ArtifactActions
+            projectId={props.projectId}
+            artifact={props.artifact}
+            fullscreen={props.fullscreen}
+            onToggleFullscreen={props.onToggleFullscreen}
+            onPopOut={props.onPopOut}
+          />
         </div>
       </Show>
 
@@ -303,7 +249,85 @@ export const ArtifactPanel = (props: {
           </Show>
         </Show>
       </div>
+    </section>
+  );
+};
 
+/** An artifact's full screen toggle and actions menu (URLs, pop out). */
+export const ArtifactActions = (props: {
+  readonly projectId: string;
+  readonly artifact: ArtifactSummary;
+  readonly fullscreen: boolean;
+  readonly onToggleFullscreen?: (() => void) | undefined;
+  readonly onPopOut?: (() => void) | undefined;
+}): JSX.Element => {
+  const [menuOpen, setMenuOpen] = createSignal(false);
+  const [urlsOpen, setUrlsOpen] = createSignal(false);
+  let menu: HTMLDivElement | undefined;
+
+  onMount(() => {
+    const closeMenu = (event: PointerEvent): void => {
+      if (!(event.target instanceof Node) || menu === undefined) return;
+      if (!menu.contains(event.target)) setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeMenu);
+    onCleanup(() => document.removeEventListener("pointerdown", closeMenu));
+  });
+
+  return (
+    <>
+      <span class="ml-auto flex shrink-0 items-center gap-0.5">
+        <Show when={props.onToggleFullscreen}>
+          <IconButton
+            label={props.fullscreen ? "Exit full screen" : "Full screen"}
+            size="small"
+            testId="artifact-fullscreen"
+            onClick={() => props.onToggleFullscreen?.()}
+          >
+            <Show when={props.fullscreen} fallback={<MaximizeIcon size={12} />}>
+              <MinimizeIcon size={12} />
+            </Show>
+          </IconButton>
+        </Show>
+        <div ref={menu} class="relative">
+          <IconButton
+            label="Artifact actions"
+            size="small"
+            testId="artifact-menu"
+            onClick={() => setMenuOpen((current) => !current)}
+          >
+            <MoreIcon size={13} />
+          </IconButton>
+          <Show when={menuOpen()}>
+            <div class="absolute right-0 top-7 z-20 w-36 rounded-md border border-edge-strong bg-layer py-1 shadow-[var(--v2-elevation-overlay)]">
+              <button
+                type="button"
+                data-testid="artifact-urls"
+                class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setUrlsOpen(true);
+                }}
+              >
+                URLs…
+              </button>
+              <Show when={props.onPopOut}>
+                <button
+                  type="button"
+                  data-testid="artifact-popout"
+                  class="block w-full px-2.5 py-1.5 text-left text-[12px] text-body hover:bg-hover"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    props.onPopOut?.();
+                  }}
+                >
+                  Open in new window
+                </button>
+              </Show>
+            </div>
+          </Show>
+        </div>
+      </span>
       <Show when={urlsOpen()}>
         <ArtifactUrlsDialog
           projectId={props.projectId}
@@ -311,6 +335,6 @@ export const ArtifactPanel = (props: {
           onClose={() => setUrlsOpen(false)}
         />
       </Show>
-    </section>
+    </>
   );
 };

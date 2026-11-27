@@ -7,7 +7,6 @@ import type { ProjectSection } from "../lib/routes.ts";
 import { ArrowLeftIcon } from "../ui/icons.tsx";
 import { cx, surface } from "../ui/primitives.tsx";
 import { ConnectionsScreen } from "./ConnectionsScreen.tsx";
-import { SettingsScreen } from "./SettingsScreen.tsx";
 
 const safeDecode = (value: string): string => {
   try {
@@ -18,7 +17,7 @@ const safeDecode = (value: string): string => {
 };
 
 /**
- * Connections or Settings inside a project window. The route keeps the
+ * Connections inside a project window. The route keeps the
  * project id, so the window stays scoped to its project.
  */
 const ProjectSectionScreen = (props: { readonly section: ProjectSection }): JSX.Element => {
@@ -41,7 +40,7 @@ const ProjectSectionScreen = (props: { readonly section: ProjectSection }): JSX.
             <ArrowLeftIcon size={13} />
             <span class="max-w-[320px] truncate">Back to {name()}</span>
           </button>
-          {props.section === "connections" ? <ConnectionsScreen /> : <SettingsScreen />}
+          <ConnectionsScreen />
         </div>
       </div>
     </div>
@@ -50,8 +49,4 @@ const ProjectSectionScreen = (props: { readonly section: ProjectSection }): JSX.
 
 export const ProjectConnectionsScreen = (): JSX.Element => (
   <ProjectSectionScreen section="connections" />
-);
-
-export const ProjectSettingsScreen = (): JSX.Element => (
-  <ProjectSectionScreen section="settings" />
 );

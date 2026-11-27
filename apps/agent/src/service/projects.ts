@@ -5,8 +5,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Hex from "effect/encoding/Hex";
-import { agentError } from "@ballast/agent-protocol";
+import { ProjectShare, agentError } from "@ballast/agent-protocol";
 import type { AgentError } from "@ballast/agent-protocol";
 import { ensureDir, readJson, writeJsonAtomic } from "./fs.ts";
 
@@ -16,6 +17,8 @@ export interface ProjectRecord {
   readonly root: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** Sharing state (decision 0013). */
+  readonly share?: ProjectShare;
 }
 
 export interface DiscoveredScript {
@@ -36,7 +39,12 @@ interface ProjectManagerService {
   readonly add: (input: {
     readonly path: string;
     readonly name?: string;
+    readonly share?: ProjectShare;
   }) => Effect.Effect<ProjectRecord, AgentError>;
+  readonly setShare: (
+    projectId: string,
+    share: ProjectShare | undefined,
+  ) => Effect.Effect<ProjectRecord, AgentError>;
   readonly remove: (projectId: string) => Effect.Effect<void, AgentError>;
   readonly touch: (projectId: string) => Effect.Effect<void>;
   readonly scan: (project: ProjectRecord) => Effect.Effect<ReadonlyArray<DiscoveredScript>>;
@@ -86,12 +94,14 @@ const loadRegistry = (
       ) {
         continue;
       }
+      const share = Schema.decodeUnknownOption(ProjectShare)(entry["share"]);
       parsed.push({
         id: entry["id"],
         name: entry["name"],
         root: path.resolve(entry["root"]),
         createdAt: typeof entry["createdAt"] === "number" ? entry["createdAt"] : Date.now(),
         updatedAt: typeof entry["updatedAt"] === "number" ? entry["updatedAt"] : Date.now(),
+        ...(share._tag === "Some" ? { share: share.value } : {}),
       });
     }
     return { version: 1, projects: parsed };
@@ -169,6 +179,7 @@ export const ProjectManagerLive = (dataDir: string) =>
       const add = (input: {
         readonly path: string;
         readonly name?: string;
+        readonly share?: ProjectShare;
       }): Effect.Effect<ProjectRecord, AgentError> =>
         Effect.gen(function* () {
           const raw = input.path.trim();
@@ -199,6 +210,7 @@ export const ProjectManagerLive = (dataDir: string) =>
             root,
             createdAt: now,
             updatedAt: now,
+            ...(input.share === undefined ? {} : { share: input.share }),
           };
           const next: ProjectRegistry = {
             version: 1,
@@ -223,6 +235,33 @@ export const ProjectManagerLive = (dataDir: string) =>
           };
           yield* Ref.set(registry, next);
           yield* save(next);
+        });
+
+      const setShare = (
+        projectId: string,
+        share: ProjectShare | undefined,
+      ): Effect.Effect<ProjectRecord, AgentError> =>
+        Effect.gen(function* () {
+          const current = yield* Ref.get(registry);
+          const existing = current.projects.find((project) => project.id === projectId);
+          if (existing === undefined) {
+            return yield* Effect.fail(agentError("not-found", `No project "${projectId}"`));
+          }
+          const { share: _previous, ...rest } = existing;
+          const updated: ProjectRecord = {
+            ...rest,
+            updatedAt: Date.now(),
+            ...(share === undefined ? {} : { share }),
+          };
+          const next: ProjectRegistry = {
+            version: 1,
+            projects: current.projects.map((project) =>
+              project.id === projectId ? updated : project,
+            ),
+          };
+          yield* Ref.set(registry, next);
+          yield* save(next);
+          return updated;
         });
 
       const touch = (projectId: string): Effect.Effect<void> =>
@@ -253,6 +292,7 @@ export const ProjectManagerLive = (dataDir: string) =>
         projects,
         get,
         add,
+        setShare,
         remove,
         touch,
         scan,

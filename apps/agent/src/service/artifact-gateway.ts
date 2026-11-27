@@ -39,6 +39,7 @@ import {
   type TimerSummary,
   type UnitSummary,
 } from "@ballast/agent-protocol";
+import { artifactOriginFromEnv, artifactPageUrl } from "../artifact-url.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
 import { ArtifactTokens } from "./artifact-tokens.ts";
 import { EventHistory } from "./event-history.ts";
@@ -176,6 +177,7 @@ const artifactSummary = async (
     readonly description?: string;
     readonly source?: { readonly file: string; readonly line: number; readonly column: number };
   },
+  readUrl: string | undefined,
 ): Promise<ArtifactSummary> => {
   const root = await artifactRoot(project, artifact.name);
   const fingerprint = await contentHash(join(project.root, artifact.entry));
@@ -186,6 +188,7 @@ const artifactSummary = async (
     ...(artifact.source === undefined ? {} : { source: artifact.source }),
     fingerprint,
     status: root === undefined ? "building" : "ready",
+    ...(readUrl === undefined ? {} : { readUrl }),
   };
 };
 
@@ -293,36 +296,52 @@ export const ArtifactGatewayLive = Layer.effect(
     let nextWorkerRequest = 1;
     const server = createServer();
     const wss = new WebSocketServer({ noServer: true });
-    const port = yield* Effect.sync(() => {
-      const raw = process.env["BALLAST_ARTIFACT_PORT"];
-      if (raw === undefined || raw === "") return 0;
-      const value = Number(raw);
-      return Number.isInteger(value) && value >= 0 && value <= 65_535 ? value : 0;
-    });
+    // Fixed by default so a copied OBS URL survives service restarts. Tests
+    // set BALLAST_ARTIFACT_PORT=0 for an ephemeral port.
+    const configured = artifactOriginFromEnv();
     const listening = yield* Effect.callback<number>((resume) => {
-      const onError = (cause: Error) => resume(Effect.die(cause));
+      const onError = (cause: Error) =>
+        resume(
+          Effect.die(
+            new Error(
+              "The artifact gateway could not bind " +
+                configured.origin +
+                ": " +
+                cause.message +
+                ". Stable artifact URLs need that port; stop the other process or set BALLAST_ARTIFACT_PORT.",
+            ),
+          ),
+        );
       server.once("error", onError);
-      server.listen(port, "127.0.0.1", () => {
+      server.listen(configured.port, "127.0.0.1", () => {
         server.off("error", onError);
         const address = server.address();
         resume(
           Effect.succeed(
-            typeof address === "object" && address !== null ? address.port : port,
+            typeof address === "object" && address !== null ? address.port : configured.port,
           ),
         );
       });
     });
-    const url = "http://127.0.0.1:" + String(listening);
+    const url = configured.stable
+      ? configured.origin
+      : "http://127.0.0.1:" + String(listening);
 
     const preview = (
-      record: { readonly id: string; readonly scope: ArtifactScope; readonly transparent: boolean },
+      record: {
+        readonly id: string;
+        readonly artifact: string;
+        readonly scope: ArtifactScope;
+        readonly transparent: boolean;
+      },
     ): string =>
       url +
       "/a/••••/" +
-      (record.transparent ? "index.html?background=transparent" : "index.html");
+      encodeURIComponent(record.artifact) +
+      (record.transparent ? "/index.html?background=transparent" : "/index.html");
 
-    const copyUrl = (token: string, transparent: boolean): string =>
-      url + "/a/" + token + (transparent ? "/index.html?background=transparent" : "/index.html");
+    const copyUrl = (token: string, artifact: string, transparent: boolean): string =>
+      artifactPageUrl(url, token, artifact, transparent);
 
     const requireProject = (projectId: string): Effect.Effect<ProjectRecord, AgentError> =>
       Effect.gen(function* () {
@@ -343,10 +362,17 @@ export const ArtifactGatewayLive = Layer.effect(
           Effect.catch(() => Effect.succeed(undefined)),
         );
         if (detail === undefined) return [];
+        const readToken = yield* tokens
+          .readToken(project)
+          .pipe(Effect.catch(() => Effect.succeed(undefined)));
         return yield* Effect.promise(() =>
           Promise.all(
             (detail.manifest.artifacts ?? []).map((artifact) =>
-              artifactSummary(project, artifact),
+              artifactSummary(
+                project,
+                artifact,
+                readToken === undefined ? undefined : artifactPageUrl(url, readToken, artifact.name),
+              ),
             ),
           ),
         );
@@ -365,7 +391,7 @@ export const ArtifactGatewayLive = Layer.effect(
         const minted = yield* tokens.mintEmbed(project, artifact, "action");
         return {
           url,
-          pageUrl: url + "/a/" + minted.token + "/index.html",
+          pageUrl: artifactPageUrl(url, minted.token, artifact),
           token: minted.token,
           scope: "action",
           expiresAt: minted.expiresAt,
@@ -406,14 +432,13 @@ export const ArtifactGatewayLive = Layer.effect(
           procedures,
           scope: input.scope,
           transparent: input.transparent,
-          previewUrl: (id, scope, transparent) =>
-            preview({ id, scope, transparent }),
+          previewUrl: (record) => preview(record),
           copyUrl,
         });
       });
 
     const listUrls: ArtifactGatewayService["listUrls"] = (filter) =>
-      tokens.listUrls(filter, preview);
+      tokens.listUrls(filter, preview, copyUrl);
 
     const revokeUrl = (id: string) => tokens.revokeUrl(id);
     const listConfirmations = (projectId?: string) => tokens.listConfirmations(projectId);
@@ -430,8 +455,7 @@ export const ArtifactGatewayLive = Layer.effect(
           project,
           artifact: confirmation.artifact,
           transparent: confirmation.transparent,
-          previewUrl: (urlId, scope, transparent) =>
-            preview({ id: urlId, scope, transparent }),
+          previewUrl: (record) => preview(record),
           copyUrl,
         });
       });
@@ -704,7 +728,7 @@ export const ArtifactGatewayLive = Layer.effect(
     const forwardCustom = (
       grant: {
         readonly projectId: string;
-        readonly artifact: string;
+        readonly artifact?: string;
         readonly scopes: ReadonlyArray<ArtifactScope>;
         readonly tokenHash: string;
       },
@@ -758,7 +782,7 @@ export const ArtifactGatewayLive = Layer.effect(
       });
 
     const handleRequest = (
-      grant: { readonly projectId: string; readonly artifact: string; readonly scopes: ReadonlyArray<ArtifactScope>; readonly tokenHash: string },
+      grant: { readonly projectId: string; readonly artifact?: string; readonly scopes: ReadonlyArray<ArtifactScope>; readonly tokenHash: string },
       socket: WebSocket,
       message: {
         readonly _tag: "Request";
@@ -793,7 +817,7 @@ export const ArtifactGatewayLive = Layer.effect(
       socket: WebSocket,
       grant: {
         readonly projectId: string;
-        readonly artifact: string;
+        readonly artifact?: string;
         readonly scopes: ReadonlyArray<ArtifactScope>;
         readonly tokenHash: string;
         readonly expiresAt?: number;
@@ -802,7 +826,7 @@ export const ArtifactGatewayLive = Layer.effect(
     ): void => {
       sockets.set(socket, {
         projectId: grant.projectId,
-        artifact: grant.artifact,
+        artifact: grant.artifact ?? "",
         tokenHash: grant.tokenHash,
         ...(grant.expiresAt === undefined ? {} : { expiresAt: grant.expiresAt }),
       });
@@ -888,18 +912,29 @@ export const ArtifactGatewayLive = Layer.effect(
           response.end("not found");
           return;
         }
+        // /a/<token>/<artifact>/<file…>
         const rest = requestUrl.pathname.slice(prefix.length);
-        const slash = rest.indexOf("/");
-        if (slash < 0) {
+        const segments = rest.split("/");
+        const tokenSegment = segments[0];
+        const artifactSegment = segments[1];
+        if (tokenSegment === undefined || tokenSegment === "" || artifactSegment === undefined || artifactSegment === "") {
           response.writeHead(401, { "content-type": "text/plain" });
-          response.end("missing artifact token");
+          response.end("missing artifact token or name");
           return;
         }
-        const token = decodeURIComponent(rest.slice(0, slash));
+        const token = decodeURIComponent(tokenSegment);
+        const artifactName = decodeURIComponent(artifactSegment);
         const grant = await Effect.runPromise(tokens.resolve(token));
         if (grant === undefined) {
           response.writeHead(401, { "content-type": "text/plain" });
           response.end("invalid or expired artifact token");
+          return;
+        }
+        // View/action tokens are bound to one artifact; the stable read token
+        // covers every artifact in its project.
+        if (grant.artifact !== undefined && grant.artifact !== artifactName) {
+          response.writeHead(403, { "content-type": "text/plain" });
+          response.end("this token belongs to another artifact");
           return;
         }
         const project = await Effect.runPromise(projects.get(grant.projectId));
@@ -908,13 +943,13 @@ export const ArtifactGatewayLive = Layer.effect(
           response.end("project not found");
           return;
         }
-        const root = await artifactRoot(project, grant.artifact);
+        const root = await artifactRoot(project, artifactName);
         if (root === undefined) {
           response.writeHead(404, { "content-type": "text/plain" });
           response.end("artifact is not built");
           return;
         }
-        const requested = rest.slice(slash + 1) === "" ? "index.html" : rest.slice(slash + 1);
+        const requested = segments.slice(2).join("/") === "" ? "index.html" : segments.slice(2).join("/");
         const normalized = normalize(requested).replace(/^(\.\.[/\\])+/, "");
         const file = resolve(root, normalized);
         if (!file.startsWith(resolve(root) + "/") && file !== resolve(root, "index.html")) {
@@ -1039,7 +1074,7 @@ export const ArtifactGatewayLive = Layer.effect(
           const fingerprint =
             project === undefined || declared === undefined
               ? "changed"
-              : (yield* Effect.promise(() => artifactSummary(project, declared))).fingerprint;
+              : (yield* Effect.promise(() => artifactSummary(project, declared, undefined))).fingerprint;
           yield* hub.publish({
             _tag: "artifact-changed",
             projectId,

@@ -67,7 +67,11 @@ async function versionFrom(directory: string): Promise<string | undefined> {
 
 /** Resolve the shipped/configured service build. Throws when main.mjs is missing. */
 export async function resolveServiceBuild(config: DesktopConfig): Promise<ServiceBuild> {
-  const version = config.serviceVersion ?? (await versionFrom(config.serviceBuildDir)) ?? "0.0.0-dev";
+  const baseVersion =
+    config.serviceVersion ?? (await versionFrom(config.serviceBuildDir)) ?? "0.0.0-dev";
+  // A Vite UI needs the service's dev origin rules. Give that mode a distinct
+  // stage/version so switching modes never adopts a service with the wrong rules.
+  const version = config.uiUrl === undefined ? baseVersion : `${baseVersion}+vite`;
   assertVersion(version);
   if ((await pathType(path.join(config.serviceBuildDir, "main.mjs"))) !== "file") {
     throw new Error("service build has no main.mjs: " + config.serviceBuildDir);

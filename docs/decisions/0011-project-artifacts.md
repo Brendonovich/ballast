@@ -415,9 +415,9 @@ artifact token = 32 random bytes, stored as a hash
 - the UI shows “rotate token” and “revoke”;
 - tokens are logged only as fingerprints, never as plaintext.
 
-**URL form for OBS:** `http://127.0.0.1:<artifact-port>/a/<token>/index.html`
-plus a read-only/action variant. Query-string tokens are the pragmatic choice
-for a Browser Source because the user must copy one stable URL. Mitigations:
+**URL form for OBS:** `http://127.0.0.1:<artifact-port>/a/<token>/<artifact>/index.html`
+(see "Stable read URLs" below). Query-string/path tokens are the pragmatic
+choice for a Browser Source because the user must copy one stable URL. Mitigations:
 no-referrer, no external navigation, no service cookie, token is project-local,
 and rotate/revoke invalidates the old URL. A first-message handshake is a
 possible hardening step, but OBS reload behavior makes a URL token simpler.
@@ -432,6 +432,47 @@ tokens, each with its own expiry. Sockets stay connected while the token is
 renewed; when an embed token expires the gateway closes its sockets with
 `1008` and rejects new HTTP/WebSocket requests, so pages must renew before
 `expiresAt`.
+
+### Stable read URLs (2026-11-27)
+
+OBS needs a URL that is copyable now and still valid after a service restart,
+and a script must be able to name it during init (sceneify sources are declared
+there). Three changes make that true:
+
+- **Fixed origin.** `BALLAST_ARTIFACT_PORT` defaults to `47831` instead of an
+  ephemeral port; the gateway binds `127.0.0.1` only. Copied URLs therefore
+  survive restarts. `0` remains a test-only ephemeral mode.
+- **Derived read capability.** The read URL is
+  `http://127.0.0.1:47831/a/r1.<projectId>.<hmac>/<artifact>/index.html`, where
+  `hmac = HMAC-SHA256(secret, "ballast-artifact-read-v1:<projectId>")` and the
+  secret is 32 random bytes in `<project>/.ballast/artifact-secret` (0600).
+  The token is scoped to one project's artifacts and only grants `read`; it is
+  verified by recomputing the HMAC, so no token record is needed. Deleting or
+  rotating the secret invalidates the project's read URLs.
+- **Init reference.** The planner and runtime bundles fold
+  `globalThis.__BALLAST_ARTIFACT_HOST__ = { origin, readToken }` in as a
+  constant (only when the origin is stable). `Ballast.Artifact(name, options)`
+  returns `{ name, title?, url, transparent }` with `url: string`, built from
+  that constant with no I/O, so init can pass it straight to another
+  declaration: `Sceneify.Input.declare(Sceneify.BrowserSource, { settings: { url: overlay.url } })`.
+  Without a gateway, `ballast plan` returns a clearly marked placeholder and
+  records an `unresolved` entry the first time `url` is read, while
+  standalone `ballast run` throws `ArtifactUrlUnavailableError`.
+- **Action URLs are still explicit.** They keep their random, stored,
+  revocable token and require confirmation. Persistent URL records now store
+  their plaintext token in `artifact-tokens.json` (0600) as well as the hash, so
+  the app can copy them again after a restart; the hash remains the audit
+  fingerprint and the revocation key.
+- **UI:** `ArtifactSummary.readUrl` carries the stable read URL, and
+  `ArtifactUrlSummary.url` carries a persistent URL's full value when the
+  service has it. "Artifact URLs…" shows/copies the stable URL (transparency is
+  a `?background=transparent` page query) and adds copy actions to existing
+  rows.
+
+The gateway path is `/a/<token>/<artifact>/<file…>`. A view/action token must
+match the path artifact; a stable read token covers every artifact in its
+project. WebSocket paths are unchanged (`/rpc?token=…`, `/metadata?token=…`);
+the self-describing read token resolves without an artifact hint.
 
 ### Routing
 

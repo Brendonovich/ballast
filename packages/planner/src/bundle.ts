@@ -101,6 +101,7 @@ export interface BundledPlanScript {
 export const bundlePlanScript = async (
   entry: string,
   resolveDir: string | undefined,
+  artifactHost?: import("@ballast/core").ArtifactHost,
 ): Promise<BundledPlanScript> => {
   const absoluteEntry = resolve(entry);
   const directory = await mkdtemp(join(tmpdir(), "ballast-plan-"));
@@ -121,6 +122,9 @@ export const bundlePlanScript = async (
     transform: {
       define: {
         "globalThis.__BALLAST_PHASE__": JSON.stringify("plan"),
+        ...(artifactHost === undefined
+          ? {}
+          : { "globalThis.__BALLAST_ARTIFACT_HOST__": JSON.stringify(artifactHost) }),
       },
     },
     onwarn(warning) {

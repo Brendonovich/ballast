@@ -1069,8 +1069,9 @@ const mainArtifactUrl: ArtifactUrlSummary = {
   transparent: false,
   createdAt: base + 10 * MINUTE,
   lastUsedAt: base + 20 * MINUTE,
-  urlPreview: "http://127.0.0.1:49490/a/••••/index.html",
+  urlPreview: "http://127.0.0.1:49490/a/••••/dashboard/index.html",
   tokenFingerprint: "4c1f8d2a",
+  url: "http://127.0.0.1:49490/a/mock-read-token/dashboard/index.html",
 };
 
 const initialState = (): MockState => ({
@@ -1385,6 +1386,41 @@ const handlers = Effect.gen(function* () {
       return project === undefined ? [] : [project];
     });
 
+  const mockDeploy = (projectId: string, create: boolean) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.get(store.state);
+      const project = yield* requireProject(state, projectId);
+      const share = project.share;
+      if (share?._tag === "subscribed")
+        return yield* fail(agentError("invalid", "A subscribed project is read-only and cannot be shared"));
+      if (share === undefined && !create)
+        return yield* fail(agentError("invalid", "Share the project first"));
+      const now = Date.now();
+      const sha = (state.nextProjectSeq * 7919 + now).toString(16).padStart(40, "0").slice(-40);
+      const shared = {
+        _tag: "shared" as const,
+        shareId: share?.shareId ?? "shr_mock_" + projectId,
+        shareCode: share?.shareCode ?? "MOCK-SHAR-E" + projectId.length,
+        sha,
+        deployedAt: now,
+      };
+      const next: ProjectSummary = { ...project, share: shared };
+      const projects = new Map(state.projects);
+      projects.set(projectId, next);
+      yield* Ref.set(store.state, { ...state, projects });
+      yield* publish(store, [{ _tag: "project", project: next }]);
+      return {
+        projectId,
+        shareId: shared.shareId,
+        shareCode: shared.shareCode,
+        sha,
+        deployed: true,
+        files: 1,
+        bytes: 0,
+        notified: 0,
+      };
+    });
+
   const requirementsOf = (
     state: MockState,
     projectId: string,
@@ -1552,6 +1588,110 @@ const handlers = Effect.gen(function* () {
           };
         }),
       ),
+
+    ShareProject: (request: { readonly projectId: string; readonly message?: string }) =>
+      mockDeploy(request.projectId, true),
+
+    DeployProject: (request: { readonly projectId: string; readonly message?: string }) =>
+      mockDeploy(request.projectId, false),
+
+    SubscribeProject: (request: {
+      readonly shareCode: string;
+      readonly directory?: string;
+      readonly name?: string;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const now = Date.now();
+        const id = `proj_${state.nextProjectSeq}`;
+        const name = request.name ?? "Shared project";
+        const project: ProjectSummary = {
+          id,
+          name,
+          root: request.directory ?? `/Users/streamer/ballast-projects/${id}`,
+          entry: "ballast.ts",
+          enabled: false,
+          status: "stopped",
+          unitCount: 0,
+          createdAt: now,
+          updatedAt: now,
+          issues: [],
+          share: {
+            _tag: "subscribed",
+            shareId: "shr_mock_" + request.shareCode.replaceAll("-", "").toLowerCase(),
+            installedSha: "0".repeat(40),
+            installedAt: now,
+          },
+        };
+        const projects = new Map(state.projects);
+        projects.set(id, project);
+        const next = {
+          ...state,
+          projects,
+          projectOrder: [...state.projectOrder, id],
+          nextProjectSeq: state.nextProjectSeq + 1,
+        };
+        yield* Ref.set(store.state, next);
+        yield* publish(store, [{ _tag: "project", project }]);
+        return {
+          summary: project,
+          manifest: projectManifestOf(next, project),
+          requirements: requirementsOf(next, id),
+          units: unitsOf(next, id),
+          issues: project.issues,
+        };
+      }),
+
+    UnsubscribeProject: ({ projectId }: { readonly projectId: string }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const existing = yield* requireProject(state, projectId);
+        const { share: _share, ...project } = existing;
+        const projects = new Map(state.projects);
+        projects.set(projectId, project);
+        const next = { ...state, projects };
+        yield* Ref.set(store.state, next);
+        yield* publish(store, [{ _tag: "project", project }]);
+        return {
+          summary: project,
+          manifest: projectManifestOf(next, project),
+          requirements: requirementsOf(next, projectId),
+          units: unitsOf(next, projectId),
+          issues: project.issues,
+        };
+      }),
+
+    ApplyProjectUpdate: ({ projectId }: { readonly projectId: string }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const project = yield* requireProject(state, projectId);
+        const share = project.share;
+        if (share?._tag !== "subscribed" || share.available === undefined)
+          return yield* fail(agentError("invalid", "No update is available for this project"));
+        const next: ProjectSummary = {
+          ...project,
+          share: {
+            _tag: "subscribed",
+            shareId: share.shareId,
+            installedSha: share.available.sha,
+            installedAt: Date.now(),
+          },
+        };
+        const projects = new Map(state.projects);
+        projects.set(projectId, next);
+        yield* Ref.set(store.state, { ...state, projects });
+        yield* publish(store, [{ _tag: "project", project: next }]);
+        return {
+          projectId,
+          fromSha: share.installedSha,
+          toSha: share.available.sha,
+          changed: ["ballast.ts"],
+          deleted: [],
+          bytes: 0,
+          overwritten: [],
+          restarted: project.status === "running",
+        };
+      }),
 
     RestartProject: ({ projectId }: { readonly projectId: string }) =>
       Effect.flatMap(Ref.get(store.state), (state) =>
@@ -1896,6 +2036,8 @@ const handlers = Effect.gen(function* () {
                 ...withSource(mainSourceOf("dashboard")),
                 fingerprint: "mock-dashboard-v1",
                 status: "ready" as const,
+                readUrl:
+                  "http://127.0.0.1:49490/a/mock-read-token/dashboard/index.html",
               },
               {
                 name: "overlay",
@@ -1983,8 +2125,10 @@ const handlers = Effect.gen(function* () {
           scope: "read",
           transparent: request.transparent,
           createdAt: Date.now(),
-          urlPreview: "http://127.0.0.1:49490/a/••••/index.html",
+          urlPreview:
+            "http://127.0.0.1:49490/a/••••/dashboard/index.html",
           tokenFingerprint: "mock-" + id,
+          url: "http://127.0.0.1:49490/a/mock-read-token/dashboard/index.html",
         };
         yield* Ref.set(store.state, {
           ...state,
@@ -1996,7 +2140,7 @@ const handlers = Effect.gen(function* () {
           _tag: "created" as const,
           url,
           copyUrl:
-            "http://127.0.0.1:49490/a/mock-read-token/index.html" +
+            "http://127.0.0.1:49490/a/mock-read-token/dashboard/index.html" +
             (request.transparent ? "?background=transparent" : ""),
         };
       }),
@@ -2063,8 +2207,10 @@ const handlers = Effect.gen(function* () {
             scope: "action",
             transparent: confirmation.transparent,
             createdAt: Date.now(),
-            urlPreview: "http://127.0.0.1:49490/a/••••/index.html",
+            urlPreview:
+              "http://127.0.0.1:49490/a/••••/dashboard/index.html",
             tokenFingerprint: "mock-" + id,
+            url: "http://127.0.0.1:49490/a/mock-action-token/dashboard/index.html",
           };
           yield* Ref.set(store.state, {
             ...state,

@@ -164,7 +164,10 @@ export const Client = (
 
 export interface ServerOptions {
   readonly host?: string;
-  /** Recorded as the listen capability; the connection config may override it. */
+  /**
+   * Recorded as the listen capability and used as-is; the connection's port
+   * setting is only the fallback for a script that declares no port.
+   */
   readonly port?: number;
   readonly path?: string;
 }

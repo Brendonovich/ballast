@@ -1,5 +1,6 @@
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -104,20 +105,27 @@ export const startRunDatabases = (
     const scope = yield* Scope.fork(parent, "parallel");
     // node:sqlite requires the parent directory to exist before it can open.
     yield* Effect.sync(() => mkdirSync(directory, { recursive: true }));
-    const clients = new Map<string, Effect.Effect<Client.SqlClient, SqlError>>();
+    // One connection per name for the scope's lifetime. Concurrent first uses
+    // share the open; a failed open is forgotten so the next call retries.
+    const clients = new Map<string, Deferred.Deferred<Client.SqlClient, SqlError>>();
 
-    const open = (name: string): Effect.Effect<Client.SqlClient, SqlError> => {
-      const existing = clients.get(name);
-      if (existing !== undefined) return existing;
-      const effect = SqliteClient.make({
-        filename: join(directory, name + ".sqlite"),
-      }).pipe(
-        Effect.provideService(Scope.Scope, scope),
-        Effect.provide(Reactivity.layer),
-      );
-      clients.set(name, effect);
-      return effect;
-    };
+    const open = (name: string): Effect.Effect<Client.SqlClient, SqlError> =>
+      Effect.suspend(() => {
+        const existing = clients.get(name);
+        if (existing !== undefined) return Deferred.await(existing);
+        const deferred = Deferred.makeUnsafe<Client.SqlClient, SqlError>();
+        clients.set(name, deferred);
+        return SqliteClient.make({
+          filename: join(directory, name + ".sqlite"),
+        }).pipe(
+          Effect.provideService(Scope.Scope, scope),
+          Effect.provide(Reactivity.layer),
+          Effect.onExit((exit) => {
+            if (exit._tag === "Failure") clients.delete(name);
+            return Deferred.done(deferred, exit);
+          }),
+        );
+      });
 
     return {
       execute: (input) =>

@@ -118,7 +118,7 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await expect(page).toHaveTitle("Main Channel — Ballast");
   await expect(page.getByTestId("top-bar")).toBeVisible();
   await expect(page.getByTestId("project-switcher")).toContainText("Main Channel");
-  await expect(page.getByTestId("project-status")).toHaveText("Running");
+  await expect(page.getByTestId("project-status")).toHaveText("3 issues");
   // A plain browser has an ordinary bar, not a draggable title bar.
   expect(
     await page
@@ -221,15 +221,19 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
     .filter({ hasText: "Alert overlay" });
   await expect(failedArtifact).toHaveAttribute("data-status", "error");
   await expect(failedArtifact.getByTestId("artifact-error-source")).toHaveAttribute("title", /main\.ts:9/);
-  await failedArtifact.getByRole("button").first().click();
-  const failedPanel = page.locator('[data-testid="artifact-tab-panel"][data-artifact="overlay"]');
+  // Pinned, so opening its source below adds a tab instead of replacing it.
+  await failedArtifact.getByRole("button").first().dblclick();
+  const failedPanel = page.locator('[data-testid="artifact-pane"][data-artifact="overlay"]');
   await expect(failedPanel.getByTestId("artifact-panel")).toContainText("Artifact build failed");
   await expect(failedPanel.getByTestId("artifact-panel")).toContainText("Expected a closing tag");
   await expect(failedPanel.getByTestId("artifact-panel-error-source")).toContainText("main.ts:9");
   await failedPanel.getByTestId("artifact-panel-error-source").click();
   // The mock serves a one-line placeholder for files other than ballast.ts.
   await expect(page.getByTestId("source-panel")).toHaveAttribute("data-path", "artifacts/overlay/main.ts");
-  await expect(page.getByTestId("project-tab")).toHaveCount(4);
+  // The dashboard was a preview, so the overlay took its place.
+  expect(
+    await page.getByTestId("project-tab").evaluateAll((tabs) => tabs.map((tab) => tab.getAttribute("data-tab"))),
+  ).toEqual(["file:ballast.ts", "artifact:overlay", "file:artifacts/overlay/main.ts"]);
 
   // The outline lists artifacts first, then everything else the project declares.
   await expect(page.locator('[data-testid="outline-group"]')).toHaveCount(6);
@@ -333,6 +337,18 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   expect(await cursorOf(external)).toBe("pointer");
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
+  await page
+    .locator('[data-testid="connection-row"][data-connection-id="twitch/broadcaster"]')
+    .getByRole("button", { name: "Manage" })
+    .click();
+  const cloudAuthDialog = page.getByRole("dialog");
+  await cloudAuthDialog.getByTestId("connection-auth").click();
+  await expect(cloudAuthDialog.getByTestId("connection-auth-check")).toBeVisible();
+  await expect(cloudAuthDialog).toContainText("does not need a pairing code");
+  await cloudAuthDialog.getByTestId("connection-auth-check").click();
+  await expect(cloudAuthDialog.getByTestId("connection-auth-check")).toHaveCount(0);
+  await cloudAuthDialog.getByRole("button", { name: "Close" }).click();
+
   // Add a service-level connection, then delete it while unbound.
   await page.getByTestId("add-connection").click();
   const addDialog = page.getByRole("dialog");
@@ -412,9 +428,7 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   });
 
   await page.getByTestId("project-switcher").click();
-  await expect(
-    page.locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"]'),
-  ).toContainText("Needs you");
+  await expect(page.getByTestId("share-project")).toBeVisible();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-17-switcher-open.png` });
   await page.keyboard.press("Escape");
@@ -503,9 +517,9 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-06-connections.png` });
 
-  // From a project window the top bar's Settings stays in the window.
-  await page.getByTestId("project-nav-settings").click();
-  await expect(page.getByTestId("project-section")).toHaveAttribute("data-section", "settings");
+  // Settings is a home-window screen only.
+  await page.goto("/#/settings");
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-07-settings.png` });
 };
@@ -520,11 +534,13 @@ test("collapses the project sidebar in a narrow window", async ({ page }) => {
   await expect(page.getByTestId("project-sidebar")).toBeVisible();
 });
 
-test("reaches Connections and Settings from the top bar and returns", async ({ page }) => {
+test("reaches Connections from the top bar and returns", async ({ page }) => {
   const errors = collectPageErrors(page);
   await useTheme(page, "dark");
   await openProjects(page);
   await openProject(page, "Main Channel");
+  await expect(page.getByTestId("project-nav-settings")).toHaveCount(0);
+  await expect(page.getByTestId("service-status")).toHaveCount(0);
 
   await page.getByTestId("project-nav-connections").click();
   await expect(page).toHaveURL(/#\/projects\/proj_main\/connections$/);
@@ -532,21 +548,11 @@ test("reaches Connections and Settings from the top bar and returns", async ({ p
   await expect(page.getByTestId("connection-row").first()).toBeVisible();
   await expect(page).toHaveTitle("Connections — Main Channel — Ballast");
   await expect(page.getByTestId("connections-attention")).toBeVisible();
-  await expect(page.getByTestId("service-status")).toHaveAttribute("aria-label", /connected/);
-  await page.getByTestId("project-back").click();
-  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
-  await expect(page.getByTestId("project-navigator")).toBeVisible();
-
-  await page.getByTestId("project-nav-settings").click();
-  await expect(page).toHaveURL(/#\/projects\/proj_main\/settings$/);
-  await expect(page.getByTestId("project-section")).toHaveAttribute("data-section", "settings");
-  await expect(page).toHaveTitle("Settings — Main Channel — Ballast");
-  await expect(page.getByTestId("project-nav-settings")).toHaveAttribute("aria-current", "page");
-  await expect(page.getByTestId("project-nav-connections")).not.toHaveAttribute("aria-current", "page");
   // Project actions belong to the project view only.
   await expect(page.getByTestId("toggle-project")).toHaveCount(0);
-  await page.getByTestId("project-switcher").click();
-  await page.locator('[data-testid="project-switcher-row"][data-current="true"] button').first().click();
+  await expect(page.getByTestId("toggle-project-sidebar")).toHaveCount(0);
+  await page.getByTestId("project-back").click();
+  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
   await expect(page.getByTestId("project-navigator")).toBeVisible();
   await expect(page.getByTestId("toggle-project")).toBeVisible();
   await expect(page).toHaveTitle("Main Channel — Ballast");
@@ -558,9 +564,7 @@ test("reaches Connections and Settings from the top bar and returns", async ({ p
   expect(errors).toEqual([]);
 });
 
-test("the project switcher re-scopes the window, lists projects and creates one", async ({
-  page,
-}) => {
+test("the project menu shares, creates a project and lists all projects", async ({ page }) => {
   const errors = collectPageErrors(page);
   await useTheme(page, "dark");
   await openProjects(page);
@@ -569,26 +573,13 @@ test("the project switcher re-scopes the window, lists projects and creates one"
   await page.getByTestId("project-switcher").click();
   const menu = page.getByTestId("project-switcher-menu");
   await expect(menu).toBeVisible();
-  await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
-  await expect(
-    page.locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"]'),
-  ).toContainText("Needs you");
-  // Opening another window is a desktop affordance.
-  await expect(page.getByTestId("project-switcher-new-window")).toHaveCount(0);
+  await expect(page.getByTestId("share-project")).toHaveText("Share");
+  await expect(page.getByTestId("project-switcher-row")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
 
-  // Re-scope this window to another project.
-  await page.getByTestId("project-switcher").click();
-  await page
-    .locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"] button')
-    .first()
-    .click();
-  await expect(page).toHaveURL(/#\/projects\/proj_alt$/);
-  await expect(page).toHaveTitle("Second Channel — Ballast");
-  await expect(page.getByTestId("project-switcher")).toContainText("Second Channel");
-  await expect(page.getByRole("heading", { name: "Second Channel" })).toBeAttached();
-  await expect(page.getByTestId("source-panel")).toContainText("mock source");
+  // The top bar's actions no longer carry Share.
+  await expect(page.getByTestId("top-bar-actions").getByTestId("share-project")).toHaveCount(0);
 
   // New project… uses the existing create flow, then shows the new project.
   await page.getByTestId("project-switcher").click();
@@ -600,10 +591,9 @@ test("the project switcher re-scopes the window, lists projects and creates one"
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByTestId("project-switcher")).toContainText("Switcher Channel");
   await expect(page).toHaveTitle("Switcher Channel — Ballast");
-  await page.getByTestId("project-switcher").click();
-  await expect(page.getByTestId("project-switcher-row")).toHaveCount(4);
 
   // All projects goes to the projects list.
+  await page.getByTestId("project-switcher").click();
   await page.getByTestId("project-switcher-all").click();
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   await expect(page.getByTestId("project-row")).toHaveCount(4);

@@ -191,71 +191,17 @@ test("a desktop project window switches to Connections and Settings in place", a
   await expect(page).toHaveURL(/#\/projects\/proj_main$/);
   await expect(page.getByTestId("project-navigator")).toBeVisible();
 
-  // The switcher's current row also leads back to the project view.
-  await page.getByTestId("project-nav-settings").click();
-  await expect(page).toHaveURL(/#\/projects\/proj_main\/settings$/);
-  await page.getByTestId("project-switcher").click();
-  await page.locator('[data-testid="project-switcher-row"][data-current="true"] button').first().click();
-  await expect(page.getByTestId("project-navigator")).toBeVisible();
-
   expect(page.context().pages().length).toBe(before);
   expect(await bridgeCalls(page)).toEqual([]);
 });
 
-test("switching project re-scopes the desktop window through the bridge", async ({ page }) => {
+test("the project menu's All projects focuses the home window", async ({ page }) => {
   await installBridge(page);
   await page.goto("/#/projects/proj_main");
-  await expect(page.getByTestId("project-switcher")).toContainText("Main Channel");
-
-  await page.getByTestId("project-switcher").click();
-  await page
-    .locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"] button')
-    .first()
-    .click();
-  await expect(page).toHaveURL(/#\/projects\/proj_alt$/);
-  await expect(page).toHaveTitle("Second Channel — Ballast");
-  await expect(page.getByTestId("project-switcher")).toContainText("Second Channel");
-  await expect(page.getByTestId("project-navigator")).toBeVisible();
-  expect(await bridgeCalls(page)).toEqual(["rescope:proj_alt:rescoped"]);
-});
-
-test("switching to a project open in another window focuses it instead", async ({ page }) => {
-  await installBridge(page, { openElsewhere: ["proj_alt"] });
-  await page.goto("/#/projects/proj_main");
-  await page.getByTestId("project-switcher").click();
-  await page
-    .locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"] button')
-    .first()
-    .click();
-  await expect.poll(() => bridgeCalls(page)).toEqual(["rescope:proj_alt:focused"]);
-  // This window keeps its project.
-  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
-  await expect(page.getByTestId("project-switcher")).toContainText("Main Channel");
-  await expect(page.getByTestId("project-switcher-menu")).toHaveCount(0);
-});
-
-test("the switcher opens a project in a new desktop window on request", async ({ page }) => {
-  await installBridge(page);
-  await page.goto("/#/projects/proj_main");
-  await page.getByTestId("project-switcher").click();
-  const alt = page.locator('[data-testid="project-switcher-row"][data-project-id="proj_alt"]');
-  // The current project has no new-window button; others do.
-  await expect(
-    page.locator('[data-testid="project-switcher-row"][data-current="true"] [data-testid="project-switcher-new-window"]'),
-  ).toHaveCount(0);
-  await alt.getByTestId("project-switcher-new-window").click();
-  await expect.poll(() => bridgeCalls(page)).toEqual(["open:proj_alt:new"]);
-  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
-
-  // A modifier-click on the row does the same.
-  await page.getByTestId("project-switcher").click();
-  await alt.locator("button").first().click({ modifiers: ["ControlOrMeta"] });
-  await expect.poll(() => bridgeCalls(page)).toEqual(["open:proj_alt:new", "open:proj_alt:new"]);
-
-  // All projects focuses the home window through the bridge.
   await page.getByTestId("project-switcher").click();
   await page.getByTestId("project-switcher-all").click();
   await expect.poll(() => bridgeCalls(page)).toContain("home:projects");
+  await expect(page).toHaveURL(/#\/projects\/proj_main$/);
 });
 
 test("on macOS the top bar is the draggable title bar with clickable controls", async ({ page }) => {
@@ -268,19 +214,33 @@ test("on macOS the top bar is the draggable title bar with clickable controls", 
       .getByTestId(testId)
       .evaluate((element) => getComputedStyle(element).getPropertyValue("-webkit-app-region"));
   expect(await region("top-bar")).toBe("drag");
-  for (const control of [
+  const controls = [
+    "toggle-left-sidebar",
     "project-switcher",
-    "toggle-project-sidebar",
+    "project-status",
     "toggle-project",
+    "project-run-menu",
     "project-nav-connections",
-    "project-nav-settings",
-  ]) {
+    "toggle-project-sidebar",
+  ];
+  for (const control of controls) {
     expect(await region(control)).toBe("no-drag");
   }
   // The first control clears the traffic lights.
   const switcher = await page.getByTestId("project-switcher").boundingBox();
   expect(switcher?.x ?? 0).toBeGreaterThanOrEqual(80);
-  expect((await bar.boundingBox())?.height).toBe(40);
+  const barBox = await bar.boundingBox();
+  expect(barBox?.height).toBe(34);
+  for (const control of controls) {
+    const box = await page.getByTestId(control).boundingBox();
+    expect(box?.height, control).toBe(28);
+    expect(box?.y, control).toBe((barBox?.y ?? 0) + 6);
+    expect((box?.y ?? 0) + (box?.height ?? 0), control).toBe(
+      (barBox?.y ?? 0) + (barBox?.height ?? 0),
+    );
+  }
+  const tabsBox = await page.getByTestId("tab-area").boundingBox();
+  expect(tabsBox?.y).toBe((barBox?.y ?? 0) + (barBox?.height ?? 0) + 8);
   await page.getByTestId("project-switcher").click();
   await expect(page.getByTestId("project-switcher-menu")).toBeVisible();
   expect(await region("project-switcher-menu")).toBe("no-drag");

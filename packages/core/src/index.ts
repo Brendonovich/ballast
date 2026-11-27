@@ -74,8 +74,13 @@ export type {
   ConnectionRequestError,
   ConnectionRequestErrorWire,
 } from "./errors.ts";
-export { Artifact, ArtifactDeclarationError } from "./artifact.ts";
-export type { ArtifactOptions } from "./artifact.ts";
+export {
+  Artifact,
+  ArtifactDeclarationError,
+  ArtifactUrlUnavailableError,
+  artifactPageUrl,
+} from "./artifact.ts";
+export type { ArtifactHandle, ArtifactHost, ArtifactOptions } from "./artifact.ts";
 export * as Api from "./api.ts";
 export type {
   ApiHostService,

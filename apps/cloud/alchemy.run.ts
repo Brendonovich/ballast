@@ -3,6 +3,7 @@ import * as Alchemy from "alchemy";
 import { Effect } from "effect";
 
 import { BallastCloudWorker } from "./src/cloud-worker.ts";
+import { SharesApi, SharesDatabase, makeSharesApiLayer } from "@ballast/shares-api";
 import { BallastDatabase } from "./src/resources.ts";
 import BallastCloudWorkerLayer from "./src/worker.ts";
 
@@ -18,6 +19,13 @@ const enabled = (value: string | undefined): boolean =>
  */
 const isDev = enabled(process.env.ALCHEMY_DEV);
 const remoteDev = isDev && enabled(process.env.BALLAST_CLOUD_REMOTE_DEV);
+
+// Project sharing runs in the shares API Worker (`@ballast/shares-api`). Local
+// workerd only offers Artifacts as a remote binding (credentials needed), so
+// local dev leaves sharing off unless BALLAST_SHARES points at the
+// simulator bridge (`pnpm shares:bridge`). The shares API reads it as a
+// Config during init, which binds the value into its env.
+if (isDev && !remoteDev) process.env.BALLAST_SHARES ??= "off";
 
 export default Alchemy.Stack(
   "Ballast",
@@ -44,6 +52,15 @@ export default Alchemy.Stack(
     }
     const deploy = Effect.gen(function* () {
       yield* BallastDatabase;
+      yield* SharesDatabase;
+      // Its own dev port, so it never takes the cloud's strict BALLAST_DEV_PORT.
+      yield* SharesApi.pipe(
+        Effect.provide(
+          makeSharesApiLayer({
+            devPort: Number(process.env.BALLAST_SHARES_DEV_PORT ?? "1339"),
+          }),
+        ),
+      );
       const worker = yield* BallastCloudWorker.pipe(
         Effect.provide(BallastCloudWorkerLayer),
       );

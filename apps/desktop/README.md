@@ -36,17 +36,23 @@ shell's unit tests.
 ## Run it
 
 ```bash
-pnpm --filter @ballast/desktop dev                  # build + Electron (window)
+pnpm dev                                            # Vite HMR + real service + Electron
+pnpm --filter @ballast/desktop dev                  # same, from any directory
 pnpm --filter @ballast/desktop dev -- --background  # start in the tray only
 ```
 
-With the web dev server (decision 0003 §3):
+By default `dev` starts Vite on `http://127.0.0.1:5173` and points Electron at it with the real
+service URL and token, so UI edits hot-reload without losing live projects or connections. The
+agent service and Electron main/preload are still rebuilt once per launch. Use
+`BALLAST_VITE_DEV=0 pnpm --filter @ballast/desktop dev` for the production-style built UI.
+
+To use an already-running UI server instead:
 
 ```bash
 BALLAST_UI_URL=http://localhost:5173 pnpm --filter @ballast/desktop dev
 ```
 
-Without `BALLAST_UI_URL` the window waits for `service.json`, loads the service UI at
+With the production-style flow the window waits for `service.json`, loads the service UI at
 `http://127.0.0.1:<port>/?token=…` (the service sets an `HttpOnly; SameSite=Strict` cookie and
 redirects to `/`), or shows the bundled fallback page while it comes up. Every launch calls
 `service.start()` (the same call the tray uses), so the freshly built stage is started, or
@@ -74,7 +80,8 @@ Environment overrides, mostly for tests and development:
 | `BALLAST_SERVICE_SKIP_BUILD`, `BALLAST_SERVICE_SKIP_WEB_BUILD` | reuse an existing agent/web build when running device/pack |
 | `BALLAST_SERVICE_VERSION` | force the staged version (otherwise `version.json` / `package.json`) |
 | `BALLAST_SERVICE_PORT` | fixed port for development (default random) |
-| `BALLAST_UI_URL` | load a Vite dev UI instead of the service origin |
+| `BALLAST_UI_URL` | load an already-running dev UI instead of starting Vite automatically |
+| `BALLAST_VITE_DEV` | `0`: skip Vite and load the production-style service UI |
 | `BALLAST_AUTOSTART` | `0`: do not start the service on launch (fallback-page E2E) |
 | `BALLAST_START_TIMEOUT_MS` | start/verify budget (default 30000) |
 | `BALLAST_UPDATE_URL` | build-time generic electron-updater feed |
@@ -103,13 +110,16 @@ On start it is copied to:
 A stage is **never overwritten**: the same version reuses the directory even if the bundled files
 changed, so the version must change for new code. Dev builds append a content hash to the
 version, so a rebuilt service is a new stage and `dev` replaces the running service with it.
+Vite dev stages append `+vite` and start the service with `--dev`, keeping its origin
+rules separate from a production-style service when switching between the two flows.
 Old stages are removed on launch and after a successful replacement, keeping the running stage.
 
 ### Building the real service
 
 ```bash
-# dev: builds apps/web + apps/agent/dist-service, then Electron
-pnpm --filter @ballast/desktop dev
+# dev: builds apps/agent/dist-service, then Vite + Electron
+# (also builds apps/web when BALLAST_VITE_DEV=0)
+pnpm dev
 
 # reuse an existing build
 BALLAST_SERVICE_SKIP_BUILD=1 pnpm --filter @ballast/desktop dev
@@ -118,8 +128,9 @@ BALLAST_SERVICE_SKIP_BUILD=1 pnpm --filter @ballast/desktop dev
 pnpm --filter @ballast/desktop run pack
 ```
 
-`script/service-build.mjs` runs `pnpm --filter @ballast/web build` and then
-`node apps/agent/scripts/build-service.mjs`, so `dist-service/web/` contains the real Solid UI.
+`script/service-build.mjs` runs `pnpm --filter @ballast/web build` when the built UI is
+needed and then `node apps/agent/scripts/build-service.mjs`, so `dist-service/web/` contains the
+real Solid UI. The default Vite dev flow skips the redundant production web build.
 The service honours `BALLAST_STATE_DIR`, `BALLAST_DATA_DIR`, `BALLAST_LOG_DIR`,
 `BALLAST_SERVICE_PORT`; writes `service.json` with `apiVersion`, `version`, `url`, `token`, `pid`,
 `startedAt`; answers `GET /health` with `ok`, `apiVersion`, `version`, `pid`; and always exits

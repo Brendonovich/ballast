@@ -59,6 +59,7 @@ const startService = (root: string): Effect.Effect<Service, Error> =>
           BALLAST_STATE_DIR: join(root, "state"),
           BALLAST_DATA_DIR: join(root, "data"),
           BALLAST_LOG_DIR: join(root, "logs"),
+          BALLAST_ARTIFACT_PORT: "0",
           BALLAST_PROJECTS_DIR: join(root, "projects"),
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -580,6 +581,22 @@ describe("project health", () => {
             config: { connection: cloud.connectionId },
           }),
         );
+
+        // Re-authorizing a cloud connection opens the cloud's OAuth flow with
+        // the scopes the connection needs, not a dead-end message.
+        const auth = yield* call(root, (client) =>
+          client.StartConnectionAuth({ connectionId: connection.id }),
+        );
+        expect(auth._tag).toBe("browser");
+        if (auth._tag === "browser") {
+          expect(auth.url.startsWith(cloud.url + "/oauth/twitch/start?scopes=")).toBe(
+            true,
+          );
+          expect(decodeURIComponent(auth.url.split("scopes=")[1] ?? "")).toContain(
+            "user:read:email",
+          );
+          expect(auth.expiresAt).toBeGreaterThan(Date.now());
+        }
 
         cloud.setFailConnections(true);
         yield* call(root, (client) =>

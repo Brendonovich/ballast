@@ -323,10 +323,13 @@ export const ConnectionDialog = (props: {
     if (result !== undefined) setAuth(result);
   };
 
-  const connect = async (connection: ConnectionSummary): Promise<void> => {
+  const connect = async (
+    connection: ConnectionSummary,
+  ): Promise<ConnectionSummary | undefined> => {
     const next = await store.connectConnection(connection.id);
-    if (next === undefined) return;
+    if (next === undefined) return undefined;
     if (next.integration === "twitch" && mode() !== "cloud") await startAuth(next);
+    return next;
   };
 
   const connectActive = async (): Promise<void> => {
@@ -354,6 +357,23 @@ export const ConnectionDialog = (props: {
     const saved = await save();
     if (!saved) return;
     await startAuth(current);
+  };
+
+  const finishCloudAuth = async (): Promise<void> => {
+    const current = active();
+    if (current === undefined) return;
+    setError(undefined);
+    const next = await connect(current);
+    if (next === undefined) {
+      setError(store.lastActionError() ?? "Could not check the Twitch authorization.");
+      return;
+    }
+    await store.loadCloudAccounts();
+    if (next.requiresAuth) {
+      setError("Twitch authorization is not complete yet. Finish in your browser, then check again.");
+      return;
+    }
+    setAuth(undefined);
   };
 
   const approval = createMemo(() => {
@@ -784,7 +804,11 @@ export const ConnectionDialog = (props: {
                 {(browser) => (
                   <>
                     <div class="flex items-center justify-between gap-3">
-                      <span class="text-muted">Finish in your browser.</span>
+                      <span class="text-muted">
+                        {activeIntegration() === "twitch" && mode() === "cloud"
+                          ? "Finish in your browser, then check again."
+                          : "Finish in your browser."}
+                      </span>
                       <a
                         href={browser().url}
                         target="_blank"
@@ -794,6 +818,25 @@ export const ConnectionDialog = (props: {
                         Open page <ExternalLinkIcon size={11} />
                       </a>
                     </div>
+                    <Show when={activeIntegration() === "twitch" && mode() === "cloud"}>
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-[11px] text-faint">
+                          Re-authorizing this account does not need a pairing code.
+                        </span>
+                        <Button
+                          size="small"
+                          variant="outline"
+                          data-testid="connection-auth-check"
+                          loading={
+                            store.isPending("cloud:accounts") ||
+                            store.isPending(`connection:${active()?.id}:connect`)
+                          }
+                          onClick={() => void finishCloudAuth()}
+                        >
+                          Check again
+                        </Button>
+                      </div>
+                    </Show>
                   </>
                 )}
               </Show>

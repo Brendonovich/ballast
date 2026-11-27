@@ -62,6 +62,16 @@ still open, and what to build next.
   worker and publishes `reload-failed` with the file/line. State is project-scoped:
   `.ballast/settings.json` (`enabled`, `params`) and `.ballast/applied.json`. This is a clean
   reset; old per-script state is not migrated.
+- **Artifact URLs outside the app.** Artifacts are served by a dedicated
+  `127.0.0.1` gateway (default port 47831, `BALLAST_ARTIFACT_PORT`) with a
+  strict CSP, so Chrome or an OBS Browser Source can load them with no Electron
+  preload or bridge. Each project has a stable read capability derived from
+  `.ballast/artifact-secret`; `Ballast.Artifact(...)` returns a handle whose
+  `url` is a plan/runtime bundle constant, usable in init. Action URLs remain
+  random, persisted (0600, so they can be copied again) and confirmation-gated.
+  The "Artifact URLs…" dialog copies the stable read URL and every persistent
+  URL; the external-browser flow was exercised with Playwright against the
+  real service (`apps/agent/test/artifacts-gateway.test.ts` covers restarts).
 - **Live params and runtime types.** A param change is pushed to the running
   worker's `Settings` Ref; the next read in a handler or `Ballast.run` loop sees
   it without a restart or generation change. `Ballast.Runtime` makes param,
@@ -71,6 +81,20 @@ still open, and what to build next.
 - **Cloud.** Cloudflare Worker/Alchemy app for OAuth, Twitch EventSub and webhook ingress, machine
   pairing/relay, and a per-machine RPC link. It typechecks and has protocol/unit tests; a deployed
   end-to-end run is still a next task.
+- **Project sharing (0013).** An author runs `ballast projects share <id>` (or the
+  Share action / MCP `ballast_share`) to push the project to a Cloudflare Artifacts repo
+  through the cloud and get an unlisted share code; `deploy` pushes new versions with
+  isomorphic-git (no git install). `ballast projects subscribe <code>` installs a read-only,
+  stopped copy on another machine. Deploys reach subscribers as a `share_update` relay
+  message (plus a 5-minute poll for offline machines) and show as "update available";
+  `ballast projects update <id>` / "Apply update" downloads only the changed files, verifies
+  their git SHAs, swaps them in with a rollback journal while the project's sync is paused,
+  and reloads once. Storage is its own cloud package (`packages/shares-api`: D1,
+  Artifacts namespace, shares API Worker) that the cloud stack includes and calls over a service
+  binding; the cloud keeps auth, authorization and the relay push. Exercised end to end
+  against local `alchemy dev` (cloud + shares API Workers) + wrangler's Artifacts simulator with
+  two services paired as different users; not yet against deployed Artifacts.
+  **Subscribed code runs unsandboxed.**
 - **Verification.** `pnpm typecheck` and `pnpm test` pass across the workspace. Project-bundle
   planning is also exercised from the built `apps/agent/dist-service` against a temporary project
   outside the repo. The desktop E2E
@@ -91,6 +115,7 @@ still open, and what to build next.
 | 0006 | Durable timers as declared, schema-typed events persisted per project; no resumable `sleep` | Core, planner and service integration implemented and tested; recurring/cron remains future work |
 | 0007 | Effect workflows with a durable engine | Deferred: service integration was canceled for the decision 0008 project-model redesign; the `packages/workflow` prototype stays with its own workstream |
 | 0008 | Project = one bundle with an explicit `ballast.ts` entry and named declarations | W4 service runtime and the protocol half of W5 implemented; UI half remains |
+| 0013 | Project sharing: one-way shares (share/deploy/subscribe/update) over Cloudflare Artifacts, manifest diffs, staged atomic apply; shares API in `packages/shares-api` behind the cloud | Implemented; verified locally with the wrangler Artifacts simulator bridge; deployed Artifacts untested |
 
 ## 3. Packages and apps
 
@@ -112,6 +137,7 @@ still open, and what to build next.
 | `apps/agent` | `ballast` CLI + `ballast serve` service + `dist-service` build |
 | `apps/web` | Solid web UI served by the agent (scripts, source, logs, connections, settings) |
 | `apps/desktop` | Electron shell: service launcher, tray, bridge, updater |
+| `packages/shares-api` | Shares API (D1, Artifacts namespace, Worker) as Alchemy resources; included by the cloud stack, deployable on its own |
 | `apps/cloud` | Cloudflare Worker: OAuth vault, Twitch EventSub, webhooks, machine relay |
 | `examples` | Example scripts (tick, OBS, Twitch, VTS, MIDI, keyboard, WebSocket, webhook) |
 
@@ -135,9 +161,12 @@ node --experimental-strip-types --no-warnings=ExperimentalWarning \
 pnpm --filter @ballast/web dev
 pnpm --filter @ballast/web build
 
-# Desktop (builds web + agent dist-service, then Electron). A rebuilt service gets a new
+# Desktop: Vite HMR against the real service + Electron. The agent service and
+# Electron main/preload build once per launch. A rebuilt service gets a new
 # content-hashed dev version, so dev replaces the running service with it.
-pnpm --filter @ballast/desktop dev
+pnpm dev
+# Production-style built UI, or an already-running dev UI:
+BALLAST_VITE_DEV=0 pnpm --filter @ballast/desktop dev
 BALLAST_UI_URL=http://localhost:5173 pnpm --filter @ballast/desktop dev
 
 # Real Electron E2E: real service, real UI + screenshot, service outlives the UI
@@ -225,6 +254,13 @@ existing `dist-service`.
   integration (decision 0007) is intentionally deferred until decision 0008 lands. Timer tests use
   real short durations and stop scripts before polling persisted state, so they do not depend on
   log timing; the agent suite runs files sequentially.
+
+- **Project sharing** is verified only against wrangler's local Artifacts simulator
+  (`packages/shares-api/scripts/shares-dev`, `BALLAST_SHARES=<bridge url>`). Deploy
+  the cloud (it now also deploys the `SharesApi` Worker and its D1) and check the
+  service binding, the Artifacts binding (`repo.raw` reads on Alchemy beta.84), token auth and
+  isomorphic-git push/fetch against real Artifacts. Subscribed code runs without a sandbox;
+  there is no share delete, history UI or rollback yet.
 
 ## 7. Next tasks
 

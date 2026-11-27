@@ -17,6 +17,9 @@
       "path": "packages/cloud-protocol"
     },
     {
+      "path": "packages/shares-api"
+    },
+    {
       "path": "packages/agent-protocol"
     },
     {

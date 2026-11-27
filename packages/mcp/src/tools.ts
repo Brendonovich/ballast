@@ -574,6 +574,27 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
       }),
   }),
   defineTool({
+    name: "ballast_share",
+    description:
+      "Share a Ballast project through the user's Ballast cloud, or deploy a new version of an already-shared one. The first call creates the share and returns its share code; anyone with a paired Ballast and the code can subscribe to a read-only copy. Every deploy notifies subscribed machines, whose users choose when to apply it (consent still applies on their machines). Deploys the files on disk exactly (excluding .ballast, node_modules, dist, .git and .env files), so run ballast_check first. Requires a cloud-paired machine; subscribed projects cannot be shared.",
+    parameters: Schema.Struct({
+      project: Schema.String,
+      message: Schema.optionalKey(Schema.String),
+    }),
+    run: (input) =>
+      Effect.gen(function* () {
+        const project = yield* context.adapter.resolveProject(input.project);
+        const deployed = yield* context.adapter.shareProject(project.id, input.message);
+        const text = [
+          deployed.deployed
+            ? "deployed " + deployed.sha.slice(0, 12) + " (" + deployed.files + " files, " + deployed.bytes + " bytes); " + deployed.notified + " subscribed machine(s) notified"
+            : "no changes since " + deployed.sha.slice(0, 12) + "; nothing deployed",
+          "share code: " + deployed.shareCode,
+        ].join("\n");
+        return result(text, deployed);
+      }),
+  }),
+  defineTool({
     name: "ballast_status",
     description:
       "Report the service and one project (or all projects): running, waiting_for_user (with reason), previous_version_running_latest_failed, stopped or error; artifacts with build status; artifact/API/store declarations; every connection requirement as bound, proposed, unbound or missing; missing scopes; and per-unit status and source links. Call it after ballast_apply or when the user asks what Ballast is doing. This is a snapshot; it does not plan or change anything.",
@@ -631,6 +652,12 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
                 " · " +
                 project.unitCount +
                 " units" +
+                (project.share === undefined
+                  ? ""
+                  : project.share._tag === "shared"
+                    ? " · shared (share code " + project.share.shareCode + ")"
+                    : " · subscribed, read-only" +
+                      (project.share.available === undefined ? "" : " · update available")) +
                 (project.issues.length === 0
                   ? ""
                   : " · issues: " +

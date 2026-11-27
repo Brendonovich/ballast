@@ -1,4 +1,6 @@
 import type {
+  ApplyProjectUpdateResult,
+  DeployProjectResult,
   ArtifactSummary,
   ArtifactUrlConfirmation,
   ArtifactUrlSummary,
@@ -143,6 +145,13 @@ export interface AgentStore {
   readonly startProject: (projectId: string) => Promise<ProjectDetail | undefined>;
   readonly stopProject: (projectId: string) => Promise<ProjectDetail | undefined>;
   readonly restartProject: (projectId: string) => Promise<ProjectDetail | undefined>;
+  /** Share (first time) or deploy the project's files to subscribers. */
+  readonly shareProject: (projectId: string) => Promise<DeployProjectResult | undefined>;
+  readonly subscribeProject: (
+    shareCode: string,
+    directory?: string,
+  ) => Promise<ProjectDetail | undefined>;
+  readonly applyProjectUpdate: (projectId: string) => Promise<ApplyProjectUpdateResult | undefined>;
   readonly setProjectParam: (
     projectId: string,
     key: string,
@@ -949,6 +958,43 @@ export const createAgentStore = (
       runtime.client.RestartProject({ projectId }),
     );
 
+  const shareProject = async (projectId: string): Promise<DeployProjectResult | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:share`,
+      runtime.client.ShareProject({ projectId }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const subscribeProject = async (
+    shareCode: string,
+    directory?: string,
+  ): Promise<ProjectDetail | undefined> => {
+    const outcome = await execute(
+      "project:subscribe",
+      runtime.client.SubscribeProject({
+        shareCode: shareCode.trim(),
+        ...(directory === undefined || directory.trim() === "" ? {} : { directory: directory.trim() }),
+      }),
+    );
+    if (!outcome.ok) return undefined;
+    applyProjectDetail(outcome.value);
+    return outcome.value;
+  };
+
+  const applyProjectUpdate = async (
+    projectId: string,
+  ): Promise<ApplyProjectUpdateResult | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:update`,
+      runtime.client.ApplyProjectUpdate({ projectId }),
+    );
+    if (!outcome.ok) return undefined;
+    bumpRevision(projectId);
+    bumpFileRevision(projectId);
+    return outcome.value;
+  };
+
   const setProjectParam = (
     projectId: string,
     key: string,
@@ -1279,6 +1325,9 @@ export const createAgentStore = (
     startProject,
     stopProject,
     restartProject,
+    shareProject,
+    subscribeProject,
+    applyProjectUpdate,
     setProjectParam,
     approveProjectConsent,
     rejectProjectConsent,

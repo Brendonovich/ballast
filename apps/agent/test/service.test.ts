@@ -158,6 +158,7 @@ describe("ballast serve", () => {
         const env = {
           BALLAST_STATE_DIR: stateDir,
           BALLAST_DATA_DIR: dataDir,
+          BALLAST_ARTIFACT_PORT: "0",
           BALLAST_WEB_DIR: join(root, "missing-web"),
         };
         const service = yield* Effect.acquireRelease(spawnService(env), (process) => process.kill);
@@ -309,6 +310,7 @@ describe("ballast serve", () => {
             BALLAST_STATE_DIR: stateDir,
             BALLAST_DATA_DIR: dataDir,
             BALLAST_LOG_DIR: logDir,
+            BALLAST_ARTIFACT_PORT: "0",
             BALLAST_SERVICE_VERSION: "9.9.9-desktop-test",
             BALLAST_WEB_DIR: join(root, "missing-web"),
           }),
@@ -391,6 +393,7 @@ describe("ballast serve", () => {
         const env = {
           BALLAST_STATE_DIR: stateDir,
           BALLAST_DATA_DIR: dataDir,
+          BALLAST_ARTIFACT_PORT: "0",
           BALLAST_WEB_DIR: join(root, "missing-web"),
         };
         const service = yield* Effect.acquireRelease(spawnService(env), (process) => process.kill);

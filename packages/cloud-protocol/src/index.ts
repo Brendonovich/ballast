@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 export * from "./events.ts";
 export * from "./http.ts";
+export * from "./shares.ts";
 export * from "./rpc.ts";
 export * from "./webhooks.ts";
 

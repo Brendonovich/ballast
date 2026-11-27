@@ -4,6 +4,7 @@ import * as Result from "effect/Result";
 import type {
   ArtifactSummary,
   ConnectionSummary,
+  DeployProjectResult,
   HealthStatus,
   ListProjectFilesResponse,
   ProjectCheckResult,
@@ -70,6 +71,10 @@ export interface ProjectAdapter {
     projectId: string,
   ) => Effect.Effect<ReadonlyArray<ArtifactSummary>, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
+  readonly shareProject: (
+    projectId: string,
+    message?: string,
+  ) => Effect.Effect<DeployProjectResult, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly health: () => Effect.Effect<HealthStatus, ToolError>;
   readonly queryEventHistory: AgentGateway["queryEventHistory"];
@@ -245,6 +250,7 @@ export const makeProjectAdapter = (gateway: AgentGateway): ProjectAdapter => {
     listArtifacts: gateway.listArtifacts,
     restartProject: (projectId) =>
       gateway.restartProject(projectId).pipe(Effect.map(normalizeDetail)),
+    shareProject: gateway.shareProject,
     listConnections: gateway.listConnections,
     health: gateway.health,
     queryEventHistory: gateway.queryEventHistory,

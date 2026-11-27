@@ -1,5 +1,5 @@
 /** Service-wide screens a project window can show without leaving its project. */
-export type ProjectSection = "connections" | "settings";
+export type ProjectSection = "connections";
 
 const safeDecode = (value: string): string => {
   try {
@@ -26,7 +26,6 @@ export const artifactFromPath = (path: string): string | undefined => {
 };
 
 export const projectSectionFromPath = (path: string): ProjectSection | undefined => {
-  const match = /^\/projects\/[^/?#]+\/(connections|settings)\/?$/.exec(path);
-  const section = match?.[1];
-  return section === "connections" || section === "settings" ? section : undefined;
+  const match = /^\/projects\/[^/?#]+\/(connections)\/?$/.exec(path);
+  return match?.[1] === "connections" ? "connections" : undefined;
 };

@@ -27,6 +27,13 @@ import {
   cx,
 } from "../ui/primitives.tsx";
 
+const shareLabel = (project: ProjectSummary): string | undefined => {
+  const share = project.share;
+  if (share === undefined) return undefined;
+  if (share._tag === "shared") return "Shared";
+  return share.available === undefined ? "Subscribed" : "Update available";
+};
+
 const projectHref = (projectId: string): string =>
   `/projects/${encodeURIComponent(projectId)}`;
 
@@ -36,6 +43,7 @@ export const ProjectsScreen = (): JSX.Element => {
   const bridge = getDesktopBridge();
   const [newOpen, setNewOpen] = createSignal(false);
   const [addOpen, setAddOpen] = createSignal(false);
+  const [subscribeOpen, setSubscribeOpen] = createSignal(false);
 
   const open = (projectId: string, options?: { readonly newWindow?: boolean }): void => {
     if (bridge !== undefined) {
@@ -82,6 +90,13 @@ export const ProjectsScreen = (): JSX.Element => {
         description="One bundle per project. Nothing starts automatically."
         actions={
           <>
+            <Button
+              variant="ghost"
+              data-testid="subscribe-project"
+              onClick={() => setSubscribeOpen(true)}
+            >
+              Subscribe
+            </Button>
             <Button variant="ghost" data-testid="add-project" onClick={() => setAddOpen(true)}>
               Add folder
             </Button>
@@ -137,6 +152,19 @@ export const ProjectsScreen = (): JSX.Element => {
                     {project.root}
                   </span>
                 </button>
+                <Show when={shareLabel(project)}>
+                  {(label) => (
+                    <span
+                      data-testid="project-share"
+                      class={cx(
+                        "shrink-0 text-[11px]",
+                        label() === "Update available" ? "text-warning" : "text-faint",
+                      )}
+                    >
+                      {label()}
+                    </span>
+                  )}
+                </Show>
                 <span class="hidden text-[11px] text-faint sm:block">
                   {plural(project.unitCount, "unit")}
                 </span>
@@ -180,6 +208,16 @@ export const ProjectsScreen = (): JSX.Element => {
           onClose={() => setNewOpen(false)}
           onCreated={(detail) => {
             setNewOpen(false);
+            open(detail.summary.id);
+          }}
+        />
+      </Show>
+
+      <Show when={subscribeOpen()}>
+        <SubscribeDialog
+          onClose={() => setSubscribeOpen(false)}
+          onSubscribed={(detail) => {
+            setSubscribeOpen(false);
             open(detail.summary.id);
           }}
         />
@@ -299,6 +337,72 @@ export const NewProjectDialog = (props: {
           onChange={setDirectory}
           testId="create-project-directory"
         />
+        <Show when={error()}>
+          <p class="text-[11px] text-danger">{error()}</p>
+        </Show>
+      </div>
+    </Dialog>
+  );
+};
+
+const SubscribeDialog = (props: {
+  readonly onClose: () => void;
+  readonly onSubscribed: (detail: ProjectDetail) => void;
+}): JSX.Element => {
+  const store = useAgent();
+  const [code, setCode] = createSignal("");
+  const [directory, setDirectory] = createSignal("");
+  const [error, setError] = createSignal<string>();
+
+  const subscribe = async (): Promise<void> => {
+    if (code().trim() === "") {
+      setError("Enter the share code you were given.");
+      return;
+    }
+    store.clearActionError();
+    const detail = await store.subscribeProject(code(), directory());
+    if (detail === undefined) {
+      setError(store.lastActionError() ?? "Could not subscribe.");
+      return;
+    }
+    props.onSubscribed(detail);
+  };
+
+  return (
+    <Dialog
+      title="Subscribe to a project"
+      description="Downloads a read-only copy of someone's shared project. It starts stopped, and you choose when to apply updates. Scripts from others run on this machine without a sandbox, so only subscribe to people you trust."
+      onClose={props.onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            data-testid="subscribe-project-submit"
+            loading={store.isPending("project:subscribe")}
+            onClick={() => void subscribe()}
+          >
+            Subscribe
+          </Button>
+        </>
+      }
+    >
+      <div class="space-y-3">
+        <Field label="Share code">
+          <TextInput
+            data-testid="subscribe-share-code"
+            value={code()}
+            autofocus
+            placeholder="ABCD-EFGH-JKLM"
+            onInput={(event) => setCode(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void subscribe();
+            }}
+          />
+        </Field>
+        <FolderPicker value={directory()} onChange={setDirectory} testId="subscribe-directory" />
         <Show when={error()}>
           <p class="text-[11px] text-danger">{error()}</p>
         </Show>

@@ -11,6 +11,7 @@ import {
   emptyManifest,
   evaluateScript,
   providePlan,
+  type ArtifactHost,
   type DeclarationSource,
   type Manifest,
   type ParamRead,
@@ -34,6 +35,12 @@ export interface PlanOptions {
   readonly resolveDir?: string;
   /** Project root used to make source links project-relative. */
   readonly projectRoot?: string;
+  /**
+   * Stable artifact origin and read capability folded into the plan bundle as
+   * `globalThis.__BALLAST_ARTIFACT_HOST__`. Omit when no artifact server is
+   * running; declarations then have no URL.
+   */
+  readonly artifactHost?: ArtifactHost;
 }
 
 export interface PlannedScript {
@@ -105,7 +112,7 @@ export const runPlanInfo = (
   Effect.gen(function* () {
     const absoluteEntry = resolve(entry);
     const bundle = yield* Effect.tryPromise({
-      try: () => bundlePlanScript(absoluteEntry, options.resolveDir),
+      try: () => bundlePlanScript(absoluteEntry, options.resolveDir, options.artifactHost),
       catch: (cause) =>
         new PlanError({
           message: `Failed to bundle ${absoluteEntry}: ${

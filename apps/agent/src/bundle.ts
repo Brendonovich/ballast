@@ -3,6 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import type { ArtifactHost } from "@ballast/core";
 import { rolldown } from "rolldown";
 import type { Plugin } from "rolldown";
 
@@ -56,6 +57,7 @@ const nodeResolvePlugin: Plugin = {
 export const bundleScript = (
   entry: string,
   generation: number,
+  artifactHost?: ArtifactHost,
 ): Effect.Effect<
   RuntimeBundle,
   BundleError,
@@ -103,6 +105,9 @@ export const bundleScript = (
           transform: {
             define: {
               "globalThis.__BALLAST_PHASE__": JSON.stringify("runtime"),
+              ...(artifactHost === undefined
+                ? {}
+                : { "globalThis.__BALLAST_ARTIFACT_HOST__": JSON.stringify(artifactHost) }),
             },
           },
           onwarn(warning) {

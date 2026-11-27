@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Builds once and starts Electron. Pass --background to start in the tray.
+// Starts Vite for UI HMR, builds the service/shell once, and starts Electron.
+// Pass --background to start in the tray, or BALLAST_VITE_DEV=0 to use the built UI.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -12,6 +13,10 @@ const require = createRequire(import.meta.url);
 const electron = require("electron");
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
+const repoRoot = path.resolve(root, "..", "..");
+const webRoot = path.join(repoRoot, "apps", "web");
+const webRequire = createRequire(path.join(webRoot, "package.json"));
+const viteBin = path.join(path.dirname(webRequire.resolve("vite/package.json")), "bin", "vite.js");
 
 /**
  * Load `apps/desktop/.env` for development. Electron passes its environment
@@ -38,20 +43,84 @@ const loadDevEnv = (file) => {
 
 loadDevEnv(path.join(root, ".env"));
 
-await buildAgentService();
+const autoVite =
+  process.env.BALLAST_UI_URL === undefined && process.env.BALLAST_VITE_DEV !== "0";
+const devUi = autoVite || process.env.BALLAST_UI_URL !== undefined;
+if (autoVite) process.env.BALLAST_UI_URL = "http://127.0.0.1:5173";
+
+await buildAgentService({ web: !devUi });
 await buildDesktop({ minify: false });
 
-const child = spawn(electron, [".", ...process.argv.slice(2)], {
+const exited = (process) => process.exitCode !== null || process.signalCode !== null;
+const stopProcess = async (process) => {
+  if (process === undefined || exited(process)) return;
+  await new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(force);
+      clearTimeout(done);
+      resolve();
+    };
+    const force = setTimeout(() => {
+      if (!exited(process)) process.kill("SIGKILL");
+    }, 2_000);
+    const done = setTimeout(finish, 4_000);
+    process.once("exit", finish);
+    process.kill("SIGTERM");
+  });
+};
+
+let vite;
+let child;
+let finishing = false;
+const finish = async (code) => {
+  if (finishing) return;
+  finishing = true;
+  // Do not exit until both direct children are gone; an immediate restart must
+  // never race a Vite process that still owns the port.
+  await Promise.all([stopProcess(vite), stopProcess(child)]);
+  process.exit(code);
+};
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => void finish(0));
+}
+
+if (autoVite) {
+  // Spawn Vite itself, not pnpm: killing a pnpm wrapper leaves the actual
+  // server behind holding port 5173 after Electron quits.
+  vite = spawn(
+    process.execPath,
+    [viteBin, "--host", "127.0.0.1", "--port", "5173", "--strictPort"],
+    { cwd: webRoot, stdio: "inherit", env: process.env },
+  );
+  vite.on("exit", (code) => {
+    if (!finishing) {
+      console.error("[desktop] Vite stopped; closing Electron");
+      void finish(code ?? 1);
+    }
+  });
+
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    if (exited(vite)) throw new Error("Vite exited before becoming ready");
+    try {
+      const response = await fetch(process.env.BALLAST_UI_URL, {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (response.ok) break;
+    } catch {
+      // Vite is still starting.
+    }
+    if (Date.now() >= deadline) {
+      await stopProcess(vite);
+      throw new Error("Timed out waiting for Vite at " + process.env.BALLAST_UI_URL);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+child = spawn(electron, [".", ...process.argv.slice(2)], {
   cwd: root,
   stdio: "inherit",
   env: process.env,
 });
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => child.kill(signal));
-}
-
-child.on("exit", (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  else process.exit(code ?? 0);
-});
+child.on("exit", (code) => void finish(code ?? 0));

@@ -25,11 +25,14 @@ const iconFor = (tab: ProjectTab, size: number): JSX.Element => {
 export const TabStrip = (props: {
   readonly tabs: ReadonlyArray<ProjectTab>;
   readonly active: string | undefined;
+  /** The preview tab, shown in italics until it is pinned. */
+  readonly preview: string | undefined;
   readonly label: (tab: ProjectTab) => string;
   readonly title: (tab: ProjectTab) => string;
   /** A dot before the label, e.g. a failed artifact build. */
   readonly danger?: (tab: ProjectTab) => boolean;
   readonly onActivate: (key: string) => void;
+  readonly onPin: (key: string) => void;
   readonly onClose: (key: string) => void;
   readonly end?: JSX.Element;
 }): JSX.Element => (
@@ -44,6 +47,7 @@ export const TabStrip = (props: {
         {(tab) => {
           const key = tabKey(tab);
           const selected = (): boolean => props.active === key;
+          const preview = (): boolean => props.preview === key;
           return (
             <div
               role="tab"
@@ -53,6 +57,7 @@ export const TabStrip = (props: {
               data-tab={key}
               data-kind={tab.kind}
               data-selected={selected() ? "true" : undefined}
+              data-preview={preview() ? "true" : undefined}
               title={props.title(tab)}
               class={cx(
                 "group flex h-7 min-w-[72px] max-w-[220px] shrink-0 items-center gap-1.5 rounded-md pl-2.5 pr-1 text-[13px] leading-4 transition-colors",
@@ -61,6 +66,7 @@ export const TabStrip = (props: {
                   : "text-muted hover:bg-hover",
               )}
               onClick={() => props.onActivate(key)}
+              onDblClick={() => props.onPin(key)}
               onMouseDown={(event) => {
                 // Keep middle-click from starting autoscroll.
                 if (event.button === 1) event.preventDefault();
@@ -81,7 +87,7 @@ export const TabStrip = (props: {
               <Show when={props.danger?.(tab) === true}>
                 <span class="size-1.5 shrink-0 rounded-full bg-danger" aria-label="failed" />
               </Show>
-              <span class="min-w-0 flex-1 truncate">{props.label(tab)}</span>
+              <span class={cx("min-w-0 flex-1 truncate", preview() && "italic")}>{props.label(tab)}</span>
               <button
                 type="button"
                 data-testid="project-tab-close"

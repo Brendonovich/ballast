@@ -15,6 +15,7 @@ import type { HttpRequest, HttpResponse } from "./http.ts";
 import { Relay, RelayLive } from "./relay/relay-do.ts";
 import type { RelayGatewayService } from "./relay/gateway.ts";
 import { BallastDatabase } from "./resources.ts";
+import { SharesApi } from "@ballast/shares-api";
 import { makeTokenVault } from "./secrets.ts";
 import { makeTwitchApi } from "./twitch-api.ts";
 
@@ -108,12 +109,15 @@ export const makeBallastCloudWorkerLayer = (options: {
           .enqueueWebhook(delivery, policy)
           .pipe(Effect.provideService(RuntimeContext, runtime)),
     };
+    // Project sharing: the shares API Worker over a service binding.
+    const shares = yield* Cloudflare.Workers.bindWorker(SharesApi);
     const app: CloudAppService = yield* makeCloudApp({
       config,
       store,
       vault,
       twitch,
       relay: relayGateway,
+      shares,
     });
 
     return {

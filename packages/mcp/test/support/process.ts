@@ -72,6 +72,7 @@ export const startService = async (): Promise<RunningService> => {
     BALLAST_STATE_DIR: stateDir,
     BALLAST_DATA_DIR: dataDir,
     BALLAST_LOG_DIR: logs,
+    BALLAST_ARTIFACT_PORT: "0",
   };
   const child: ChildProcess = spawn(
     process.execPath,

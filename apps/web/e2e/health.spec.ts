@@ -98,8 +98,9 @@ test("the top bar shows one status word and an issues popover without layout shi
   await useTheme(page, "dark");
   await openMain(page);
 
+  // Running shows only the issue count.
   const status = page.getByTestId("project-status");
-  await expect(status).toHaveText("Running");
+  await expect(status).toHaveText("3 issues");
   // Running with issues is amber, and nothing else sits in the bar's left side.
   expect(await toneOf(page, "project-switcher")).toBe("bg-warning");
   await expect(page.getByTestId("top-bar")).not.toContainText("/Users/streamer");
@@ -261,15 +262,20 @@ test("the start/stop action follows the real status", async ({ page }) => {
   await openMain(page);
   const action = page.getByTestId("toggle-project");
   await expect(action).toHaveText("Stop");
+  // Restart lives in Stop's dropdown.
+  await expect(page.getByTestId("project-run-menu")).toHaveCount(0);
+  await page.getByTestId("project-run-menu").click();
   await expect(page.getByTestId("restart-project")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("project-run-menu")).toHaveCount(0);
 
   // Stop and start round-trip through the mock.
   await action.click();
   await expect(page.getByTestId("project-status")).toHaveText("Stopped");
   await expect(action).toHaveText("Start");
-  await expect(page.getByTestId("restart-project")).toHaveCount(0);
+  await expect(page.getByTestId("project-run-menu")).toHaveCount(0);
   await action.click();
-  await expect(page.getByTestId("project-status")).toHaveText("Running");
+  await expect(page.getByTestId("project-status")).toHaveText("3 issues");
   await expect(action).toHaveText("Stop");
 
   // Failed: Start, no Restart, red dot.
@@ -277,12 +283,12 @@ test("the start/stop action follows the real status", async ({ page }) => {
   await expect(page.getByTestId("project-status")).toHaveText("Failed");
   expect(await toneOf(page, "project-switcher")).toBe("bg-danger");
   await expect(action).toHaveText("Start");
-  await expect(page.getByTestId("restart-project")).toHaveCount(0);
+  await expect(page.getByTestId("project-run-menu")).toHaveCount(0);
 
   // Needs you: Set up… opens the binding flow at the unbound OBS slot.
   await page.goto("/#/projects/proj_alt");
   await expect(action).toHaveText("Set up…");
-  await expect(page.getByTestId("restart-project")).toHaveCount(0);
+  await expect(page.getByTestId("project-run-menu")).toHaveCount(0);
   await action.click();
   const flashed = page.locator('[data-testid="project-requirement"][data-flash="true"]');
   await expect(flashed).toHaveAttribute("data-integration", "obs");

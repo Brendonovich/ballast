@@ -119,6 +119,8 @@ export const make = (client: ObsClient): Effect.Effect<Sceneify> =>
     return { socket, sync, scene };
   });
 
+export { BrowserSource } from "./browser-source.ts";
+export type { BrowserSourceDeclaration } from "./browser-source.ts";
 export {
   DeclaredSceneItemRemovalError,
   Filter,

@@ -11,10 +11,7 @@ import { ProjectScreen } from "./screens/ProjectScreen.tsx";
 import { ArtifactWindowScreen } from "./screens/ArtifactWindowScreen.tsx";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen.tsx";
 import { SettingsScreen } from "./screens/SettingsScreen.tsx";
-import {
-  ProjectConnectionsScreen,
-  ProjectSettingsScreen,
-} from "./screens/ProjectSectionScreen.tsx";
+import { ProjectConnectionsScreen } from "./screens/ProjectSectionScreen.tsx";
 
 /**
  * Re-scoping a window changes only the route's project id. Remount the
@@ -39,7 +36,6 @@ export const App = (props: { readonly store: AgentStore }): JSX.Element => (
         component={ArtifactWindowScreen}
       />
       <Route path="/projects/:projectId/connections" component={ProjectConnectionsScreen} />
-      <Route path="/projects/:projectId/settings" component={ProjectSettingsScreen} />
       <Route path="/projects/:projectId" component={ProjectRoute} />
       <Route path="/connections" component={ConnectionsScreen} />
       <Route path="/settings" component={SettingsScreen} />

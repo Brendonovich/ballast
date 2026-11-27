@@ -1,6 +1,9 @@
 /**
  * The project window's tabs: files, artifacts and topic event views, one
  * shown at a time. Open tabs and the active one persist per project window.
+ *
+ * Like VS Code, a single click opens a preview tab that the next preview
+ * replaces; a double click (or opening it pinned) keeps it.
  */
 export type ProjectTab =
   | { readonly kind: "file"; readonly path: string }
@@ -10,28 +13,48 @@ export type ProjectTab =
 export interface TabsState {
   readonly tabs: ReadonlyArray<ProjectTab>;
   readonly active: string | undefined;
+  /** The one tab that the next preview replaces, if any. */
+  readonly preview: string | undefined;
 }
 
 export const tabKey = (tab: ProjectTab): string =>
   tab.kind === "file" ? `file:${tab.path}` : `${tab.kind}:${tab.name}`;
 
-export const EMPTY_TABS: TabsState = { tabs: [], active: undefined };
+export const EMPTY_TABS: TabsState = { tabs: [], active: undefined, preview: undefined };
 
 /** Nothing opened yet: the entry file. */
 export const defaultTabs = (entry: string): TabsState => {
   const tab: ProjectTab = { kind: "file", path: entry };
-  return { tabs: [tab], active: tabKey(tab) };
+  return { tabs: [tab], active: tabKey(tab), preview: undefined };
 };
 
 export const activeTab = (state: TabsState): ProjectTab | undefined =>
   state.tabs.find((tab) => tabKey(tab) === state.active);
 
-/** Opening something already open focuses it; anything else is appended. */
+/** Open pinned: an open tab is focused (and pinned), anything else appended. */
 export const openTab = (state: TabsState, tab: ProjectTab): TabsState => {
   const key = tabKey(tab);
-  if (state.tabs.some((entry) => tabKey(entry) === key)) return { ...state, active: key };
-  return { tabs: [...state.tabs, tab], active: key };
+  const preview = state.preview === key ? undefined : state.preview;
+  if (state.tabs.some((entry) => tabKey(entry) === key)) return { ...state, active: key, preview };
+  return { tabs: [...state.tabs, tab], active: key, preview };
 };
+
+/**
+ * Open as a preview: an open tab is focused as it is; anything else takes
+ * the current preview tab's place, or is appended when there is none.
+ */
+export const previewTab = (state: TabsState, tab: ProjectTab): TabsState => {
+  const key = tabKey(tab);
+  if (state.tabs.some((entry) => tabKey(entry) === key)) return { ...state, active: key };
+  const index = state.tabs.findIndex((entry) => tabKey(entry) === state.preview);
+  const tabs =
+    index === -1 ? [...state.tabs, tab] : state.tabs.map((entry, position) => (position === index ? tab : entry));
+  return { tabs, active: key, preview: key };
+};
+
+/** Keep a preview tab open. */
+export const pinTab = (state: TabsState, key: string): TabsState =>
+  state.preview === key ? { ...state, preview: undefined } : state;
 
 export const activateTab = (state: TabsState, key: string): TabsState =>
   state.tabs.some((tab) => tabKey(tab) === key) ? { ...state, active: key } : state;
@@ -41,9 +64,10 @@ export const closeTab = (state: TabsState, key: string): TabsState => {
   const index = state.tabs.findIndex((tab) => tabKey(tab) === key);
   if (index === -1) return state;
   const tabs = state.tabs.filter((_, position) => position !== index);
-  if (state.active !== key) return { tabs, active: state.active };
+  const preview = state.preview === key ? undefined : state.preview;
+  if (state.active !== key) return { tabs, active: state.active, preview };
   const next = tabs[index] ?? tabs[index - 1];
-  return { tabs, active: next === undefined ? undefined : tabKey(next) };
+  return { tabs, active: next === undefined ? undefined : tabKey(next), preview };
 };
 
 const parseTab = (value: unknown): ProjectTab | undefined => {
@@ -63,7 +87,8 @@ const parseTab = (value: unknown): ProjectTab | undefined => {
 /**
  * A stored state, or `undefined` when nothing was stored (or it is
  * unreadable) so the caller can open the entry file instead. Duplicate and
- * malformed tabs are dropped; a missing active tab falls back to the first.
+ * malformed tabs are dropped; a missing active tab falls back to the first,
+ * and a missing preview tab leaves every tab pinned.
  */
 export const parseTabs = (raw: string | null): TabsState | undefined => {
   if (raw === null) return undefined;
@@ -80,6 +105,7 @@ export const parseTabs = (raw: string | null): TabsState | undefined => {
       }
     }
     const active: unknown = Reflect.get(value, "active");
+    const preview: unknown = Reflect.get(value, "preview");
     const first = tabs[0];
     return {
       tabs,
@@ -89,6 +115,7 @@ export const parseTabs = (raw: string | null): TabsState | undefined => {
           : first === undefined
             ? undefined
             : tabKey(first),
+      preview: typeof preview === "string" && tabs.some((tab) => tabKey(tab) === preview) ? preview : undefined,
     };
   } catch {
     return undefined;

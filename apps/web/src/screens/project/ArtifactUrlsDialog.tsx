@@ -23,6 +23,17 @@ interface CreatedUrl {
   readonly copyUrl: string;
 }
 
+/**
+ * The stable read URL is the same before and after a restart. OBS overlays ask
+ * for a transparent page; the gateway does not need a second token for that.
+ */
+const withBackground = (url: string, transparent: boolean): string =>
+  !transparent
+    ? url
+    : url.includes("?")
+      ? url + "&background=transparent"
+      : url + "?background=transparent";
+
 export const ArtifactUrlsDialog = (props: {
   readonly projectId: string;
   readonly artifact: ArtifactSummary;
@@ -157,6 +168,36 @@ export const ArtifactUrlsDialog = (props: {
           )}
         </Show>
 
+        <Show when={props.artifact.readUrl}>
+          {(readUrl) => (
+            <div
+              data-testid="artifact-url-stable"
+              class="rounded-md border border-edge bg-layer-2 px-2.5 py-2"
+            >
+              <p class="text-[11px] font-medium text-body">Stable read-only URL</p>
+              <p class="mt-0.5 text-[10px] text-faint">
+                Always available and unchanged across service restarts. Use it
+                for OBS browser sources; it cannot call action procedures.
+              </p>
+              <div class="mt-1 flex items-center gap-2">
+                <p
+                  data-testid="artifact-url-stable-value"
+                  class="min-w-0 flex-1 break-all font-mono text-[10px] text-body"
+                >
+                  {withBackground(readUrl(), transparent())}
+                </p>
+                <IconButton
+                  label="Copy stable URL"
+                  testId="artifact-url-stable-copy"
+                  onClick={() => void copy(withBackground(readUrl(), transparent()))}
+                >
+                  <CopyIcon size={12} />
+                </IconButton>
+              </div>
+            </div>
+          )}
+        </Show>
+
         <div class="rounded-md border border-edge bg-layer-2 px-2.5 py-2">
           <div class="grid grid-cols-2 gap-2">
             <Field label="Scope">
@@ -258,6 +299,18 @@ export const ArtifactUrlsDialog = (props: {
                         : ` · used ${formatRelative(url.lastUsedAt)}`}
                     </p>
                   </div>
+                  <Show when={url.url}>
+                    {(copyValue) => (
+                      <IconButton
+                        label="Copy URL"
+                        testId="artifact-url-copy-existing"
+                        size="small"
+                        onClick={() => void copy(copyValue())}
+                      >
+                        <CopyIcon size={12} />
+                      </IconButton>
+                    )}
+                  </Show>
                   <IconButton
                     label="Revoke URL"
                     testId="artifact-url-revoke"

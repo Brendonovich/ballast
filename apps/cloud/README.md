@@ -21,6 +21,15 @@ See `docs/decisions/0002-twitch-auth-and-cloud-gateway.md` for the design.
 | `GET /api/hooks` | List a machine's hooks without secrets |
 | `/hooks/:machineId/:hookId` | Public generic webhook ingress, any method |
 | `GET /relay/:machineId` | Authenticated agent WebSocket |
+| `POST /api/shares` | Share a project: create its repo and share code |
+| `GET /api/shares/:id` | Share info (owner or subscriber) |
+| `POST /api/shares/:id/deploy-token` | Short-lived git write token + remote (owner) |
+| `POST /api/shares/:id/deploys` | Record a pushed commit as the current deploy; notifies subscribers (`share_update`) |
+| `GET /api/shares/:id/diff?from=&to=` | Changed files between two deploys, by commit SHA (no `from` = full snapshot) |
+| `POST /api/shares/subscriptions` | Subscribe this machine with a share code |
+| `GET /api/shares/subscriptions` | This machine's subscriptions and their current deploys |
+| `POST /api/shares/unsubscribe` | Stop following a share |
+| `POST /api/shares/installed` | Report the deploy a subscriber applied |
 
 All `/api/*` routes except pairing use `Authorization: Bearer blst_m_…`.
 
@@ -94,6 +103,26 @@ The demo starts a fake Twitch provider on `:4010`, runs OAuth → pairing → re
 signed EventSub notification while the agent is offline (buffered by the relay), then connects
 a WebSocket and sends a live notification. Override the cloud URL with `BALLAST_CLOUD_URL` when
 the dev server is on another port, and `BALLAST_DEV_PORT`/`BALLAST_PUBLIC_ORIGIN` to move it.
+
+## Project sharing (decision 0013)
+
+The cloud is the front door for `/api/shares/*`: it authenticates the machine, decides who
+may share, deploy, subscribe or read, rate-limits subscribe attempts and pushes
+`share_update` over the relay. Storage lives in the shares API,
+`packages/shares-api` (`@ballast/shares-api`): its own D1 database, a Cloudflare Artifacts namespace (one git
+repo per share) and a Worker the cloud calls over a service binding
+(`Cloudflare.Workers.bindWorker(SharesApi)`). `alchemy.run.ts` includes those resources,
+so `pnpm deploy` deploys both Workers.
+
+`BALLAST_SHARES` selects the shares API's storage: `artifacts` (default, the Worker binding),
+`off`, or an `http(s)` URL of the local simulator bridge. Alchemy's local workerd only offers
+Artifacts as a remote binding, so `pnpm dev:local` defaults to `off`. To develop sharing
+locally (Git >= 2.32 on PATH, no Cloudflare account):
+
+```sh
+pnpm shares:bridge                                   # terminal 1: wrangler's Artifacts simulator
+BALLAST_SHARES=http://127.0.0.1:8799 pnpm dev:local  # terminal 2
+```
 
 ## Abuse and auth hardening
 

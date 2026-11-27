@@ -12,6 +12,7 @@ import { AgentRpcs } from "@ballast/agent-protocol";
 import type {
   AgentClient,
   ConnectionSummary,
+  DeployProjectResult,
   EventRecord,
   HealthStatus,
   ArtifactSummary,
@@ -131,6 +132,11 @@ export interface AgentGateway {
     projectId: string,
   ) => Effect.Effect<ReadonlyArray<ArtifactSummary>, ToolError>;
   readonly restartProject: (projectId: string) => Effect.Effect<ProjectDetail, ToolError>;
+  /** Share (first time) or deploy a new version to subscribers. */
+  readonly shareProject: (
+    projectId: string,
+    message?: string,
+  ) => Effect.Effect<DeployProjectResult, ToolError>;
   readonly listConnections: () => Effect.Effect<ReadonlyArray<ConnectionSummary>, ToolError>;
   readonly queryEventHistory: (
     request: QueryEventHistoryRequest,
@@ -194,6 +200,10 @@ export const makeAgentGateway = (options: GatewayOptions): AgentGateway => ({
     ),
   restartProject: (projectId) =>
     withAgentClient(options, (client) => client.RestartProject({ projectId })),
+  shareProject: (projectId, message) =>
+    withAgentClient(options, (client) =>
+      client.ShareProject({ projectId, ...(message === undefined ? {} : { message }) }),
+    ),
   listConnections: () =>
     withAgentClient(options, (client) => client.ListConnections()).pipe(
       Effect.map((response) => response.connections),
