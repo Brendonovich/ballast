@@ -1,5 +1,5 @@
 // An alert overlay built as a Ballast artifact and declared directly in OBS.
-// The artifact handle exposes its read-only URL as a plain string during init,
+// The artifact handle exposes its stable URL as a plain string during init,
 // so an ordinary Sceneify browser source can use it with no I/O.
 import * as Ballast from "@ballast/core";
 import * as OBS from "@ballast/module-obs";
@@ -25,7 +25,7 @@ export default Effect.gen(function* () {
         source: Sceneify.Input.declare(Sceneify.BrowserSource, {
           name: "Alert Overlay",
           settings: {
-            // overlay.url is the stable, read-only, transparent page URL.
+            // overlay.url is the stable, transparent page URL.
             url: overlay.url,
             width: 1920,
             height: 1080,

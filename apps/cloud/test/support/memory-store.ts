@@ -5,6 +5,10 @@ import type {
   MachineRow,
   OAuthStateRow,
   PairingCodeRow,
+  ShareAuthCodeRow,
+  ShareSessionRow,
+  ShareSignInRow,
+  ShareUserRow,
   SubscriptionOwnerRow,
   SubscriptionRow,
   TwitchAccountRow,
@@ -22,6 +26,15 @@ export const makeMemoryStore = (): CloudStoreService => {
   const accounts = new Map<string, TwitchAccountRow>();
   const machines = new Map<string, MachineRow>();
   const pairingCodes = new Map<string, PairingCodeRow>();
+  const shareSignIns = new Map<string, ShareSignInRow>();
+  const shareUsers = new Map<string, ShareUserRow>();
+  const shareCodes = new Map<string, ShareAuthCodeRow>();
+  const shareSessions = new Map<string, ShareSessionRow>();
+  const takeLive = <A extends { readonly expiresAt: number }>(map: Map<string, A>, key: string, now: number) => {
+    const row = map.get(key);
+    map.delete(key);
+    return row === undefined || row.expiresAt <= now ? Option.none<A>() : Option.some(row);
+  };
   const subscriptions = new Map<string, SubscriptionRow>();
   const owners = new Map<string, SubscriptionOwnerRow>();
   const deliveries = new Map<string, { accountId: string; receivedAt: number }>();
@@ -35,6 +48,40 @@ export const makeMemoryStore = (): CloudStoreService => {
   const copySubscription = (row: SubscriptionRow): SubscriptionRow => structuredClone(row);
 
   return {
+    insertShareSignIn: (row) => Effect.sync(() => void shareSignIns.set(row.state, { ...row })),
+    takeShareSignIn: (state, now) => Effect.sync(() => takeLive(shareSignIns, state, now)),
+    upsertShareUser: (row) =>
+      Effect.sync(() => {
+        const existing = [...shareUsers.values()].find(
+          (user) => user.issuer === row.issuer && user.subject === row.subject,
+        );
+        const stored: ShareUserRow =
+          existing === undefined
+            ? { ...row }
+            : { ...existing, name: row.name, username: row.username, updatedAt: row.updatedAt };
+        shareUsers.set(stored.id, stored);
+        return stored;
+      }),
+    findShareUser: (id) => Effect.sync(() => Option.fromNullishOr(shareUsers.get(id))),
+    insertShareAuthCode: (row) => Effect.sync(() => void shareCodes.set(row.codeHash, { ...row })),
+    takeShareAuthCode: (codeHash, now) => Effect.sync(() => takeLive(shareCodes, codeHash, now)),
+    insertShareSession: (row) => Effect.sync(() => void shareSessions.set(row.id, { ...row })),
+    findShareSessionByTokenHash: (tokenHash) =>
+      Effect.sync(() =>
+        Option.fromNullishOr([...shareSessions.values()].find((row) => row.tokenHash === tokenHash)),
+      ),
+    touchShareSession: (id, now) =>
+      Effect.sync(() => {
+        const row = shareSessions.get(id);
+        if (row !== undefined) shareSessions.set(id, { ...row, lastUsedAt: now });
+      }),
+    deleteShareSession: (id) => Effect.sync(() => void shareSessions.delete(id)),
+    pruneShareAuth: (now, staleBefore) =>
+      Effect.sync(() => {
+        for (const [key, row] of shareSignIns) if (row.expiresAt <= now) shareSignIns.delete(key);
+        for (const [key, row] of shareCodes) if (row.expiresAt <= now) shareCodes.delete(key);
+        for (const [key, row] of shareSessions) if (row.lastUsedAt < staleBefore) shareSessions.delete(key);
+      }),
     insertOAuthState: (row) => Effect.sync(() => void oauthStates.set(row.state, { ...row })),
     takeOAuthState: (state, now) =>
       Effect.sync(() => {

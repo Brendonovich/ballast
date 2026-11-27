@@ -23,8 +23,8 @@ const detail: ProjectDetail = {
     api: {
       source: { file: "ballast.ts", line: 12, column: 3 },
       procedures: [
-        { name: "Snapshot", kind: "query", stream: false },
-        { name: "ResetCounters", kind: "action", stream: false },
+        { name: "Snapshot", stream: false },
+        { name: "ResetCounters", stream: false },
       ],
     },
   },

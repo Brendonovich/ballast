@@ -7,6 +7,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { AGENT_NAME, hostAllowed, originAllowed, tokenEquals } from "./config.ts";
 import type { LifecycleService } from "./lifecycle.ts";
+import { SHARE_AUTH_CALLBACK_ROUTE } from "./share-servers.ts";
 import { fileExists } from "./fs.ts";
 
 const SESSION_COOKIE = "ballast_session";
@@ -141,7 +142,30 @@ export interface HttpRoutesOptions {
   readonly version: string;
   readonly pid: number;
   readonly health: () => Effect.Effect<Record<string, unknown>>;
+  /**
+   * The share-server sign-in callback (decision 0014). The browser arrives
+   * without the service token; the one-time state and the PKCE verifier the
+   * service keeps are what make it safe.
+   */
+  readonly shareSignIn: (query: URLSearchParams) => Effect.Effect<{ readonly ok: boolean; readonly message: string }>;
 }
+
+const escapeHtml = (value: string): string =>
+  value.replace(/[&<>"']/g, (character) => "&#" + character.charCodeAt(0) + ";");
+
+const signInPage = (result: { readonly ok: boolean; readonly message: string }) =>
+  HttpServerResponse.text(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Ballast</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; line-height: 1.5">
+<h1>${result.ok ? "Signed in" : "Sign-in failed"}</h1>
+<p>${escapeHtml(result.message)}</p>
+</body></html>`,
+    {
+      status: result.ok ? 200 : 400,
+      contentType: "text/html; charset=utf-8",
+      headers: { "cache-control": "no-store", "referrer-policy": "no-referrer" },
+    },
+  );
 
 export const registerHttpRoutes = (
   router: HttpRouter.HttpRouter,
@@ -163,6 +187,8 @@ export const registerHttpRoutes = (
         }
         const { pathname, url } = pathOf(request);
         if (pathname === "/health") return yield* effect;
+        if (pathname === SHARE_AUTH_CALLBACK_ROUTE && request.method === "GET")
+          return signInPage(yield* options.shareSignIn(url.searchParams));
         const queryToken = url.searchParams.get("token");
         if (
           (pathname === "/" || pathname === "/auth") &&

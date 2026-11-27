@@ -1,12 +1,10 @@
 import { Effect, Option } from "effect";
 
 import type { ShareCommit, ShareReposService } from "../../src/repos.ts";
-import type { ShareSubscriptionRow, ShareRow, ShareStoreService } from "../../src/store.ts";
+import type { ShareRow, ShareStoreService } from "../../src/store.ts";
 
 export const makeMemoryStore = (): ShareStoreService => {
   const shares = new Map<string, ShareRow>();
-  const subscriptions = new Map<string, ShareSubscriptionRow>();
-  const key = (share: string, machine: string) => share + "\u0000" + machine;
   return {
     insertShare: (row) => Effect.sync(() => void shares.set(row.id, row)),
     findShare: (id) => Effect.sync(() => Option.fromNullishOr(shares.get(id))),
@@ -25,30 +23,6 @@ export const makeMemoryStore = (): ShareStoreService => {
           updatedAt: input.deployedAt,
         });
         return true;
-      }),
-    upsertSubscription: (row) =>
-      Effect.sync(() => {
-        if (!subscriptions.has(key(row.shareId, row.machineId)))
-          subscriptions.set(key(row.shareId, row.machineId), row);
-      }),
-    findSubscription: (share, machine) =>
-      Effect.sync(() => Option.fromNullishOr(subscriptions.get(key(share, machine)))),
-    deleteSubscription: (share, machine) => Effect.sync(() => void subscriptions.delete(key(share, machine))),
-    listSubscriptionsByMachine: (machine) =>
-      Effect.sync(() =>
-        [...subscriptions.values()].flatMap((subscription) => {
-          const share = shares.get(subscription.shareId);
-          return subscription.machineId === machine && share !== undefined ? [{ subscription, share }] : [];
-        }),
-      ),
-    listSubscribedMachines: (share) =>
-      Effect.sync(() =>
-        [...subscriptions.values()].filter((row) => row.shareId === share).map((row) => row.machineId),
-      ),
-    setInstalledSha: (share, machine, sha) =>
-      Effect.sync(() => {
-        const row = subscriptions.get(key(share, machine));
-        if (row !== undefined) subscriptions.set(key(share, machine), { ...row, installedSha: sha });
       }),
   };
 };

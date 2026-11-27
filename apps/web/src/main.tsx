@@ -13,6 +13,7 @@ import { ProjectConsentRequest } from "@ballast/agent-protocol";
 import { Schema } from "effect";
 import { toast } from "./ui/toast.tsx";
 import { initialiseTheme } from "./ui/theme.ts";
+import { resetOnboarding, testOnboarding } from "./lib/onboarding.ts";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
@@ -73,6 +74,7 @@ const mount = (view: () => JSX.Element): void => {
 };
 
 const boot = async (): Promise<void> => {
+  if (testOnboarding) resetOnboarding();
   const transport = await resolvePageTransport();
   try {
     const runtime = await createAgentRuntime(transport);

@@ -21,17 +21,21 @@ See `docs/decisions/0002-twitch-auth-and-cloud-gateway.md` for the design.
 | `GET /api/hooks` | List a machine's hooks without secrets |
 | `/hooks/:machineId/:hookId` | Public generic webhook ingress, any method |
 | `GET /relay/:machineId` | Authenticated agent WebSocket |
+| `GET /api/shares/auth/login` | Browser: start Sign in with Anomaly for an agent's loopback `redirect_uri` (PKCE S256) |
+| `GET /api/shares/auth/callback` | Browser: the issuer's redirect; sends a one-time code back to the agent |
+| `POST /api/shares/auth/token` | Agent: redeem the code with its PKCE verifier for a `blst_s_…` session token |
+| `GET /api/shares/auth/me` · `POST /api/shares/auth/logout` | The signed-in user · revoke the session |
+| `GET /api/shares/auth/client.json` | Client ID metadata document (when `ANOMALY_CLIENT_KEY` is set) |
 | `POST /api/shares` | Share a project: create its repo and share code |
-| `GET /api/shares/:id` | Share info (owner or subscriber) |
+| `GET /api/shares/:id` | Share info and code (owner) |
 | `POST /api/shares/:id/deploy-token` | Short-lived git write token + remote (owner) |
-| `POST /api/shares/:id/deploys` | Record a pushed commit as the current deploy; notifies subscribers (`share_update`) |
-| `GET /api/shares/:id/diff?from=&to=` | Changed files between two deploys, by commit SHA (no `from` = full snapshot) |
-| `POST /api/shares/subscriptions` | Subscribe this machine with a share code |
-| `GET /api/shares/subscriptions` | This machine's subscriptions and their current deploys |
-| `POST /api/shares/unsubscribe` | Stop following a share |
-| `POST /api/shares/installed` | Report the deploy a subscriber applied |
+| `POST /api/shares/:id/deploys` | Record a pushed commit as the current deploy (subscribers poll) |
+| `GET /api/shares/code/:code` | Share info by share code; no sign-in (subscribers) |
+| `GET /api/shares/code/:code/diff?from=&to=` | Changed files between two deploys by commit SHA (no `from` = full snapshot); no sign-in |
+| `GET /s/:code` | Share link page for browsers |
 
-All `/api/*` routes except pairing use `Authorization: Bearer blst_m_…`.
+Publishing `/api/shares/*` routes use `Authorization: Bearer blst_s_…` from Sign in with Anomaly;
+the share code is the only credential for `/api/shares/code/*` (rate-limited per client IP); every other `/api/*` route except pairing uses `Authorization: Bearer blst_m_…`.
 
 When `scopes` is omitted, `/oauth/twitch/start` requests the cloud's default scopes. The cloud
 has no project-consent-driven incremental authorization yet, so that default is currently a
@@ -62,23 +66,16 @@ Alchemy requires Node 22.22.3+ or 24.11.1+. Use `fnm`/nvm if the system Node is 
 
 ## Remote dev (default)
 
-`pnpm dev` runs `scripts/dev-remote.mjs`, which starts `alchemy dev` with stage
-`dev-brendonovich` and sets `BALLAST_CLOUD_REMOTE_DEV=1`, `BALLAST_WORKER_NAME`,
-`BALLAST_PUBLIC_ORIGIN`, `BALLAST_D1_NAME` and `CLOUDFLARE_WORKERS_SUBDOMAIN`. Override the
-stage/subdomain with `BALLAST_CLOUD_STAGE` / `CLOUDFLARE_WORKERS_SUBDOMAIN`. The stack uses
-`Cloudflare.state()` and every resource is registered inside `Alchemy.remote()`, so
-`alchemy dev` creates/adopts real Cloudflare resources while still watching files and
-reapplying on change:
+`pnpm dev` is `alchemy dev --stage dev-$USER` (override with `BALLAST_CLOUD_STAGE`) with
+`BALLAST_CLOUD_REMOTE_DEV=1`, which wraps the stack in `Alchemy.remote()` and uses the
+Cloudflare state store: `alchemy dev` creates/adopts real Cloudflare resources (the Worker, its
+D1 and the Relay Durable Object namespace) while still watching files and reapplying on change.
 
-- Worker `ballast-cloud-dev-brendonovich` at
-  `https://ballast-cloud-dev-brendonovich.brendonovich.workers.dev`
-- D1 `ballast-cloud-dev-brendonovich-db`, with `migrations/` applied
-- the Relay Durable Object namespace (class `Relay`) hosted by that Worker
-
-No custom route or domain is attached. `BALLAST_PUBLIC_ORIGIN` is computed from the stage and
-`CLOUDFLARE_WORKERS_SUBDOMAIN`, so OAuth `redirect_uri`, EventSub callbacks and `/hooks/...`
-all use the public HTTPS origin. Secrets still come from the gitignored `.dev.vars`/`.env`.
-The `dev-brendonovich` name and `dev-*` stage guard keep remote dev away from production.
+The Worker reads the URL it is served at with `Cloudflare.Worker.URL` (its `workers.dev` URL,
+a custom domain, or the local dev server), so OAuth `redirect_uri`, EventSub callbacks,
+`/hooks/...` and the share sign-in callback all use it; nothing is configured. Secrets still
+come from the gitignored `.dev.vars`/`.env`. The `dev-*` stage guard in `alchemy.run.ts`
+keeps remote dev away from production.
 
 ## Local development without Cloudflare
 
@@ -102,13 +99,14 @@ pnpm demo
 The demo starts a fake Twitch provider on `:4010`, runs OAuth → pairing → reconcile, sends a
 signed EventSub notification while the agent is offline (buffered by the relay), then connects
 a WebSocket and sends a live notification. Override the cloud URL with `BALLAST_CLOUD_URL` when
-the dev server is on another port, and `BALLAST_DEV_PORT`/`BALLAST_PUBLIC_ORIGIN` to move it.
+the dev server is on another port, and `BALLAST_DEV_PORT` to move it.
 
-## Project sharing (decision 0013)
+## Project sharing (decisions 0013, 0014)
 
-The cloud is the front door for `/api/shares/*`: it authenticates the machine, decides who
-may share, deploy, subscribe or read, rate-limits subscribe attempts and pushes
-`share_update` over the relay. Storage lives in the shares API,
+The cloud is the front door for `/api/shares/*`: publishers sign in with Anomaly and only a
+share's owner may deploy it; subscribers never sign in, the share code (or its `/s/<code>`
+link) is their read capability. Sign-ins, new shares and share-code reads are rate-limited.
+Subscribers poll for deploys; nothing is pushed over the relay. Storage lives in the shares API,
 `packages/shares-api` (`@ballast/shares-api`): its own D1 database, a Cloudflare Artifacts namespace (one git
 repo per share) and a Worker the cloud calls over a service binding
 (`Cloudflare.Workers.bindWorker(SharesApi)`). `alchemy.run.ts` includes those resources,
@@ -123,6 +121,26 @@ locally (Git >= 2.32 on PATH, no Cloudflare account):
 pnpm shares:bridge                                   # terminal 1: wrangler's Artifacts simulator
 BALLAST_SHARES=http://127.0.0.1:8799 pnpm dev:local  # terminal 2
 ```
+
+### Sign in with Anomaly
+
+The cloud is a confidential OpenID Connect client of `ANOMALY_ISSUER` (default
+`https://account.anoma.ly`; use `https://account.dev.anoma.ly` for dev stages). It sends the
+authorization request to `/par` with an ES256 `private_key_jwt` assertion, uses PKCE S256,
+binds the code to a per-sign-in DPoP key, requests `openid profile` plus an essential
+`preferred_username`, validates the ID token and stores the user as `(iss, sub)`
+(`share_users`, migration `0005`).
+
+```sh
+node scripts/anomaly-client.mjs https://<public origin> ballast
+```
+
+prints the `ANOMALY_CLIENT_ID` / `ANOMALY_CLIENT_KEY` secrets and the first-party
+`ACCOUNT_CLIENTS` entry (public key only) to add to the stage in anomalyco/account. Without a
+registration, a public https deployment can leave `ANOMALY_CLIENT_ID` unset: the client id is
+then its own metadata document, `<origin>/api/shares/auth/client.json`. Without
+`ANOMALY_CLIENT_KEY`, sign-in answers 503. A plain-http loopback issuer is allowed for local
+development.
 
 ## Abuse and auth hardening
 

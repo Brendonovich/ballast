@@ -17,13 +17,12 @@ export interface ArtifactOptions {
 /**
  * The stable artifact origin and capability the host folds into plan/runtime
  * bundles. It is a build-time constant, so init can build a URL without I/O.
- * The read token is a per-project capability; it never grants action
- * procedures.
+ * The token is a per-project capability; artifacts are private to the project.
  */
 export interface ArtifactHost {
   /** For example "http://127.0.0.1:47831". */
   readonly origin: string;
-  readonly readToken: string;
+  readonly stableToken: string;
 }
 
 declare global {
@@ -34,8 +33,8 @@ declare global {
  * A declared artifact. `url` is always a string so it can be passed straight
  * to a schema-typed declaration such as a Sceneify browser source.
  *
- * - With an artifact host (the Ballast service), it is the stable, read-only,
- *   transparent page URL, and survives service restarts.
+ * - With an artifact host (the Ballast service), it is the stable page URL,
+ *   and survives service restarts.
  * - During standalone `ballast plan`, it is a clearly marked placeholder and
  *   the first read records a manifest `unresolved` entry.
  * - During standalone `ballast run`, reading it throws
@@ -83,7 +82,7 @@ export const artifactPageUrl = (
 ): string =>
   host.origin +
   "/a/" +
-  encodeURIComponent(host.readToken) +
+  encodeURIComponent(host.stableToken) +
   "/" +
   encodeURIComponent(artifact) +
   "/index.html" +
@@ -161,7 +160,7 @@ export const Artifact = (
               recorder.unresolved({
                 path: "artifact:" + name,
                 reason:
-                  `Artifact "${name}" has no URL while planning, so its .url is the placeholder ${unresolvedArtifactUrl(name, transparent)}. Run the project through the Ballast service, which injects the stable read-only artifact URL.`,
+                  `Artifact "${name}" has no URL while planning, so its .url is the placeholder ${unresolvedArtifactUrl(name, transparent)}. Run the project through the Ballast service, which injects the stable artifact URL.`,
               }),
             );
           }

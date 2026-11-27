@@ -68,6 +68,7 @@ import { TabStrip } from "./project/TabStrip.tsx";
 import { TopicEventsView } from "./project/TopicEventsView.tsx";
 import { ShareBar } from "./project/ShareBar.tsx";
 import { RunButton } from "./project/RunButton.tsx";
+import { OpenInButton } from "./project/OpenInButton.tsx";
 import { buildOutline } from "../lib/outline.ts";
 import type { OutlineItem } from "../lib/outline.ts";
 import {
@@ -777,6 +778,9 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
             <ProjectModeToggle mode={mode()} onChange={selectMode} />
           </TopBarCenter>
           <TopBarActions>
+            <Show when={!viewOnly()}>
+              <OpenInButton projectId={projectId()} projectName={project().name} />
+            </Show>
             <RunButton
               action={action()}
               canRestart={canRestart(status())}

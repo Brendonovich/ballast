@@ -89,16 +89,6 @@ export const RelayServerMessage = Schema.Union([
   Schema.TaggedStruct("ping", {
     at: Schema.Number,
   }),
-  /**
-   * A share this machine subscribes to has a new deploy. Not buffered:
-   * agents also poll their subscriptions after (re)connecting.
-   */
-  Schema.TaggedStruct("share_update", {
-    shareId: Schema.String,
-    sha: Schema.String,
-    message: Schema.NullOr(Schema.String),
-    deployedAt: Schema.Number,
-  }),
 ]);
 export type RelayServerMessage = typeof RelayServerMessage.Type;
 

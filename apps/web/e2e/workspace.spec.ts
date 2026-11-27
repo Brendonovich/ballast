@@ -525,3 +525,44 @@ test.describe("pane close-ups", () => {
     });
   }
 });
+
+test("Open in lists installed apps and configured agents, and remembers the last choice", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await useTheme(page, "dark");
+  await openMain(page);
+
+  const primary = page.getByTestId("open-in-primary");
+  await expect(primary).toBeVisible();
+  // No agent is configured yet, so OpenCode Desktop is the default.
+  await expect(primary).toHaveAttribute("title", "Open in OpenCode");
+
+  await page.getByTestId("open-in-menu").click();
+  const options = page.getByTestId("open-in-options");
+  await expect(options).toBeVisible();
+  await expect(options.locator('[data-agent]')).toHaveCount(0);
+  await expect(options.locator('[data-opener="ghostty"]')).toBeVisible();
+  await expect(options.locator('[data-opener="files"]')).toContainText("Finder");
+
+  // Configuring Claude Code adds it, started in the first terminal that can run agents.
+  await page.getByTestId("open-in-configure-agents").click();
+  await page.getByTestId("agent-option-opencode").click();
+  await page.getByTestId("agent-option-claude-code").click();
+  await page.getByTestId("write-agent-configs").click();
+  await expect(page.getByTestId("agent-start-claude-code")).toBeVisible();
+  await page.getByRole("button", { name: "Done" }).click();
+
+  await page.getByTestId("open-in-menu").click();
+  const claude = options.locator('[data-agent="claude-code"]');
+  await expect(claude).toContainText("Claude Code");
+  await expect(claude).toContainText("in Ghostty");
+  await page.screenshot({ path: "screenshots/open-in-menu.png" });
+  await claude.click();
+  await expect(options).toHaveCount(0);
+  await expect(primary).toHaveAttribute("title", "Open in Claude Code in Ghostty");
+  expect(await page.evaluate(() => localStorage.getItem("ballast.openIn"))).toBe("ghostty:claude-code");
+
+  // View mode has no Open button.
+  await page.getByTestId("project-mode-view").click();
+  await expect(page.getByTestId("open-in")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

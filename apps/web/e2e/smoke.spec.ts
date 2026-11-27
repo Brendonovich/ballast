@@ -175,7 +175,7 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await expect(page.getByTestId("project-sidebar")).toBeVisible();
   await expect(page.getByTestId("project-tabs")).toBeVisible();
 
-  // Persistent URLs sit behind the overflow menu; action URLs need approval.
+  // Persistent URLs sit behind the overflow menu.
   await page.getByTestId("artifact-menu").click();
   await page.getByTestId("artifact-urls").click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -189,20 +189,6 @@ test("reduced mock workspace: projects, artifacts, outline, source, logs and a c
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("mock-read-token");
-  await page.getByTestId("artifact-url-scope").selectOption("action");
-  await page.getByTestId("artifact-url-create").click();
-  await expect(page.getByTestId("artifact-url-confirmation")).toBeVisible();
-  await page
-    .getByTestId("artifact-url-confirmation")
-    .getByRole("button", { name: "Approve" })
-    .click();
-  await expect(page.getByTestId("artifact-url-copy-value")).toContainText(
-    "mock-action-token",
-  );
-  await page.getByTestId("artifact-url-copy").click();
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toContain("mock-action-token");
   await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
 
   // A plain browser opens the artifact route in its own tab.
@@ -465,11 +451,6 @@ const capture = async (page: Page, theme: "dark" | "light"): Promise<void> => {
   await page.getByTestId("artifact-urls").click();
   await page.waitForTimeout(150);
   await page.screenshot({ path: `screenshots/${theme}-11-artifact-urls.png` });
-  await page.getByTestId("artifact-url-scope").selectOption("action");
-  await page.getByTestId("artifact-url-create").click();
-  await expect(page.getByTestId("artifact-url-confirmation")).toBeVisible();
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: `screenshots/${theme}-12-artifact-url-confirm.png` });
   await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
 
   // A topic picked in the outline opens its events tab.

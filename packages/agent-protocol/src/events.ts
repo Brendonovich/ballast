@@ -4,12 +4,11 @@ import { CloudStatus } from "./cloud.ts";
 import { ConnectionSummary } from "./connections.ts";
 import { HealthStatus, ServiceInfo } from "./service.ts";
 import {
-  ArtifactUrlConfirmation,
   ArtifactUrlSummary,
 } from "./artifacts.ts";
 import { ProjectConsentRequest, ProjectSummary, SourceLocation } from "./project.ts";
 import { TimerSummary } from "./timers.ts";
-import { ProjectUpdateAvailable } from "./shares.ts";
+import { ProjectUpdateAvailable, ShareServersStatus } from "./shares.ts";
 
 /**
  * The complete state a UI needs to render its first frame. `WatchService`
@@ -76,6 +75,16 @@ export const ServiceEvent = Schema.Union([
     shareId: Schema.String,
     update: ProjectUpdateAvailable,
   }),
+  /**
+   * Share servers changed: a sign-in finished or failed, a sign-out, or a
+   * new default. `signIn` reports how a browser sign-in ended.
+   */
+  Schema.TaggedStruct("share-servers", {
+    status: ShareServersStatus,
+    signIn: Schema.optionalKey(
+      Schema.Struct({ server: Schema.String, ok: Schema.Boolean, error: Schema.optionalKey(Schema.String) }),
+    ),
+  }),
   Schema.TaggedStruct("connection", {
     connection: ConnectionSummary,
   }),
@@ -100,13 +109,6 @@ export const ServiceEvent = Schema.Union([
   }),
   Schema.TaggedStruct("artifact-url", {
     url: ArtifactUrlSummary,
-  }),
-  Schema.TaggedStruct("artifact-url-confirmation", {
-    confirmation: ArtifactUrlConfirmation,
-  }),
-  Schema.TaggedStruct("artifact-url-confirmation-resolved", {
-    confirmationId: Schema.String,
-    approved: Schema.Boolean,
   }),
 ]);
 export type ServiceEvent = typeof ServiceEvent.Type;

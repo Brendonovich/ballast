@@ -1,3 +1,4 @@
+export * from "./agents.ts";
 export * from "./artifact-metadata.ts";
 export * from "./artifact-wire.ts";
 export * from "./artifacts.ts";

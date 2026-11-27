@@ -4,10 +4,6 @@ import { ParamValue } from "./common.ts";
 import { LogLevel } from "./logs.ts";
 import { ProjectStatus, SourceLocation, UnitKind } from "./project.ts";
 
-/** Artifact tokens are read-only unless the user creates an action URL. */
-export const ArtifactScope = Schema.Literals(["read", "action"]);
-export type ArtifactScope = typeof ArtifactScope.Type;
-
 export const ArtifactStatus = Schema.Literals(["ready", "building", "error"]);
 export type ArtifactStatus = typeof ArtifactStatus.Type;
 
@@ -22,11 +18,11 @@ export const ArtifactSummary = Schema.Struct({
   /** Present when the last build failed. */
   error: Schema.optionalKey(Schema.String),
   /**
-   * Stable, read-only URL for this artifact. Derived from the project secret
-   * and the fixed artifact origin, so it survives service restarts and is the
-   * same URL init sees from `Ballast.Artifact(...)`.
+   * Stable URL for this artifact. Derived from the project secret and the
+   * fixed artifact origin, so it survives service restarts and is the same URL
+   * init sees from `Ballast.Artifact(...)`.
    */
-  readUrl: Schema.optionalKey(Schema.String),
+  stableUrl: Schema.optionalKey(Schema.String),
 });
 export type ArtifactSummary = typeof ArtifactSummary.Type;
 
@@ -41,8 +37,8 @@ export const ListArtifactsResponse = Schema.Struct({
 export type ListArtifactsResponse = typeof ListArtifactsResponse.Type;
 
 /**
- * A short-lived, action-capable view token for the app's own iframe. The user
- * is already in the app, so in-app buttons may call action procedures.
+ * A short-lived view token for the app's own iframe. Artifacts are private to
+ * the project, so the token grants the same access as any other artifact URL.
  */
 export const GetArtifactViewRequest = Schema.Struct({
   projectId: Schema.String,
@@ -56,7 +52,6 @@ export const ArtifactView = Schema.Struct({
   /** Full page URL including the short-lived token. */
   pageUrl: Schema.String,
   token: Schema.String,
-  scope: ArtifactScope,
   expiresAt: Schema.Number,
 });
 export type ArtifactView = typeof ArtifactView.Type;
@@ -79,7 +74,6 @@ export const ArtifactUrlSummary = Schema.Struct({
   id: Schema.String,
   projectId: Schema.String,
   artifact: Schema.String,
-  scope: ArtifactScope,
   transparent: Schema.Boolean,
   createdAt: Schema.Number,
   lastUsedAt: Schema.optionalKey(Schema.Number),
@@ -100,36 +94,15 @@ export type ArtifactUrlSummary = typeof ArtifactUrlSummary.Type;
 export const CreateArtifactUrlRequest = Schema.Struct({
   projectId: Schema.String,
   artifact: Schema.String,
-  scope: ArtifactScope,
   transparent: Schema.Boolean,
 });
 export type CreateArtifactUrlRequest = typeof CreateArtifactUrlRequest.Type;
 
-/** An action URL request a person must approve. */
-export const ArtifactUrlConfirmation = Schema.Struct({
-  id: Schema.String,
-  projectId: Schema.String,
-  projectName: Schema.String,
-  artifact: Schema.String,
-  artifactTitle: Schema.optionalKey(Schema.String),
-  scope: Schema.Literal("action"),
-  transparent: Schema.Boolean,
-  createdAt: Schema.Number,
-  summary: Schema.String,
-  procedures: Schema.Array(Schema.String),
+export const CreateArtifactUrlResult = Schema.Struct({
+  url: ArtifactUrlSummary,
+  /** Full URL with its token. */
+  copyUrl: Schema.String,
 });
-export type ArtifactUrlConfirmation = typeof ArtifactUrlConfirmation.Type;
-
-export const CreateArtifactUrlResult = Schema.Union([
-  Schema.TaggedStruct("created", {
-    url: ArtifactUrlSummary,
-    /** Full URL with its token. Returned once, when created. */
-    copyUrl: Schema.String,
-  }),
-  Schema.TaggedStruct("confirmation-required", {
-    confirmation: ArtifactUrlConfirmation,
-  }),
-]);
 export type CreateArtifactUrlResult = typeof CreateArtifactUrlResult.Type;
 
 export const ListArtifactUrlsRequest = Schema.Struct({
@@ -147,34 +120,6 @@ export const RevokeArtifactUrlRequest = Schema.Struct({
   id: Schema.String,
 });
 export type RevokeArtifactUrlRequest = typeof RevokeArtifactUrlRequest.Type;
-
-export const ListArtifactUrlConfirmationsRequest = Schema.Struct({
-  projectId: Schema.optionalKey(Schema.String),
-});
-export type ListArtifactUrlConfirmationsRequest =
-  typeof ListArtifactUrlConfirmationsRequest.Type;
-
-export const ListArtifactUrlConfirmationsResponse = Schema.Struct({
-  confirmations: Schema.Array(ArtifactUrlConfirmation),
-});
-export type ListArtifactUrlConfirmationsResponse =
-  typeof ListArtifactUrlConfirmationsResponse.Type;
-
-export const ApproveArtifactUrlRequest = Schema.Struct({
-  confirmationId: Schema.String,
-});
-export type ApproveArtifactUrlRequest = typeof ApproveArtifactUrlRequest.Type;
-
-export const ApproveArtifactUrlResponse = Schema.Struct({
-  url: ArtifactUrlSummary,
-  copyUrl: Schema.String,
-});
-export type ApproveArtifactUrlResponse = typeof ApproveArtifactUrlResponse.Type;
-
-export const RejectArtifactUrlRequest = Schema.Struct({
-  confirmationId: Schema.String,
-});
-export type RejectArtifactUrlRequest = typeof RejectArtifactUrlRequest.Type;
 
 /** Built-in, service-handled metadata API exposed on the artifact gateway. */
 export const ArtifactUnitKind = Schema.Literals([

@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import type { ProjectDetail, ProjectSummary } from "@ballast/agent-protocol";
@@ -15,6 +15,11 @@ import {
   statusWord,
 } from "../lib/project-health.ts";
 import { requestProjectIntent } from "../lib/project-intent.ts";
+import {
+  ONBOARDING_PATH,
+  onboardingDismissed,
+  shouldAutoOpenOnboarding,
+} from "../lib/onboarding.ts";
 import {
   Button,
   Dialog,
@@ -44,6 +49,12 @@ export const ProjectsScreen = (): JSX.Element => {
   const [newOpen, setNewOpen] = createSignal(false);
   const [addOpen, setAddOpen] = createSignal(false);
   const [subscribeOpen, setSubscribeOpen] = createSignal(false);
+
+  onMount(() => {
+    if (shouldAutoOpenOnboarding(store.projects().length, onboardingDismissed())) {
+      navigate(ONBOARDING_PATH, { replace: true });
+    }
+  });
 
   const open = (projectId: string, options?: { readonly newWindow?: boolean }): void => {
     if (bridge !== undefined) {
@@ -92,6 +103,13 @@ export const ProjectsScreen = (): JSX.Element => {
           <>
             <Button
               variant="ghost"
+              data-testid="open-onboarding"
+              onClick={() => navigate(ONBOARDING_PATH)}
+            >
+              Get started
+            </Button>
+            <Button
+              variant="ghost"
               data-testid="subscribe-project"
               onClick={() => setSubscribeOpen(true)}
             >
@@ -116,10 +134,10 @@ export const ProjectsScreen = (): JSX.Element => {
         fallback={
           <EmptyState
             title="No projects yet"
-            description="Create a bundle or watch an existing folder to get started."
+            description="Build one with your coding agent, or use a project someone shared with you."
             action={
-              <Button variant="neutral" onClick={() => setNewOpen(true)}>
-                New project
+              <Button variant="neutral" onClick={() => navigate(ONBOARDING_PATH)}>
+                Get started
               </Button>
             }
           />
@@ -236,10 +254,12 @@ export const ProjectsScreen = (): JSX.Element => {
   );
 };
 
-const FolderPicker = (props: {
+export const FolderPicker = (props: {
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly testId: string;
+  readonly label?: string;
+  readonly placeholder?: string;
 }): JSX.Element => {
   const bridge = getDesktopBridge();
   const choose = async (): Promise<void> => {
@@ -254,11 +274,11 @@ const FolderPicker = (props: {
 
   return (
     <div class="flex items-end gap-2">
-      <Field label="Folder (optional)" class="min-w-0 flex-1">
+      <Field label={props.label ?? "Folder (optional)"} class="min-w-0 flex-1">
         <TextInput
           data-testid={props.testId}
           value={props.value}
-          placeholder="Defaults to ~/ballast-projects"
+          placeholder={props.placeholder ?? "Defaults to ~/ballast-projects"}
           onInput={(event) => props.onChange(event.currentTarget.value)}
         />
       </Field>
@@ -356,7 +376,7 @@ const SubscribeDialog = (props: {
 
   const subscribe = async (): Promise<void> => {
     if (code().trim() === "") {
-      setError("Enter the share code you were given.");
+      setError("Enter the share link or code you were given.");
       return;
     }
     store.clearActionError();
@@ -390,12 +410,12 @@ const SubscribeDialog = (props: {
       }
     >
       <div class="space-y-3">
-        <Field label="Share code">
+        <Field label="Share link or code">
           <TextInput
             data-testid="subscribe-share-code"
             value={code()}
             autofocus
-            placeholder="ABCD-EFGH-JKLM"
+            placeholder="https://…/s/ABCD-EFGH-JKLM"
             onInput={(event) => setCode(event.currentTarget.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") void subscribe();

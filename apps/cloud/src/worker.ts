@@ -71,25 +71,18 @@ const readCappedBody = (
     catch: () => new BodyTooLarge(),
   });
 
-export const makeBallastCloudWorkerLayer = (options: {
-  readonly name?: string;
-  /** The deployed URL; remote dev does not read it from the local env file. */
-  readonly publicOrigin?: string;
-} = {}) =>
-  BallastCloudWorker.make(
+export default BallastCloudWorker.make(
     {
       main: import.meta.url,
-      ...(options.name === undefined ? {} : { name: options.name }),
       dev: { port: Number(process.env.BALLAST_DEV_PORT ?? "1338"), strictPort: true },
     },
     Effect.gen(function* () {
-      const config = yield* loadCloudConfig(
-        options.publicOrigin === undefined ? {} : { publicOrigin: options.publicOrigin },
-      );
-    const vault = yield* makeTokenVault(config).pipe(Effect.orDie);
+    const configFor = yield* loadCloudConfig;
+    // The URL this Worker is served at (workers.dev, a custom domain, or the
+    // local dev server), for OAuth redirects, EventSub callbacks and hook URLs.
+    const selfUrl = yield* Cloudflare.Worker.URL;
     const database = yield* Cloudflare.D1.QueryDatabase(BallastDatabase);
     const store = makeD1CloudStore(yield* database.raw);
-    const twitch = yield* makeTwitchApi(config).pipe(Effect.provide(FetchHttpClient.layer));
     const relay = yield* Relay;
     const runtime = yield* RuntimeContext;
     const relayGateway: RelayGatewayService = {
@@ -111,14 +104,15 @@ export const makeBallastCloudWorkerLayer = (options: {
     };
     // Project sharing: the shares API Worker over a service binding.
     const shares = yield* Cloudflare.Workers.bindWorker(SharesApi);
-    const app: CloudAppService = yield* makeCloudApp({
-      config,
-      store,
-      vault,
-      twitch,
-      relay: relayGateway,
-      shares,
-    });
+    // The URL binding is only readable at request time, so the app is built on first use.
+    const app: Effect.Effect<CloudAppService> = yield* Effect.cached(
+      Effect.gen(function* () {
+        const config = configFor(yield* selfUrl.pipe(Effect.provideService(RuntimeContext, runtime)));
+        const vault = yield* makeTokenVault(config).pipe(Effect.orDie);
+        const twitch = yield* makeTwitchApi(config).pipe(Effect.provide(FetchHttpClient.layer));
+        return yield* makeCloudApp({ config, store, vault, twitch, relay: relayGateway, shares });
+      }),
+    );
 
     return {
       fetch: Effect.gen(function* () {
@@ -132,7 +126,7 @@ export const makeBallastCloudWorkerLayer = (options: {
           const machineId = decodeURIComponent(url.pathname.slice("/relay/".length));
           if (machineId.length === 0) return textResponse(400, "Missing machine id");
           const machine = yield* Effect.result(
-            app.authenticateMachine(normalize(source, new Uint8Array())),
+            (yield* app).authenticateMachine(normalize(source, new Uint8Array())),
           );
           if (Result.isFailure(machine))
             return textResponse(machine.failure.status, machine.failure.message);
@@ -155,7 +149,7 @@ export const makeBallastCloudWorkerLayer = (options: {
               : new Uint8Array(yield* Effect.promise(() => source.arrayBuffer()));
         if (body === undefined)
           return textResponse(413, "Payload Too Large");
-        const response = yield* app.fetch(normalize(source, body));
+        const response = yield* (yield* app).fetch(normalize(source, body));
         return HttpServerResponse.raw(toResponse(response), {
           status: response.status,
         });
@@ -170,18 +164,3 @@ export const makeBallastCloudWorkerLayer = (options: {
   ),
 );
 
-// The stack imports this default layer. Remote dev sets these from
-// scripts/dev-remote.mjs so the deployed Worker and its OAuth/EventSub origins
-// agree; local dev/e2e leave them unset or use their localhost origin.
-const configuredWorkerName = process.env.BALLAST_WORKER_NAME;
-// Not BALLAST_PUBLIC_ORIGIN: .env carries the local origin, and the dev
-// script's value must not be overwritten by the env-file loader.
-const configuredPublicOrigin = process.env.BALLAST_CLOUD_PUBLIC_ORIGIN;
-export default makeBallastCloudWorkerLayer({
-  ...(configuredWorkerName === undefined || configuredWorkerName === ""
-    ? {}
-    : { name: configuredWorkerName }),
-  ...(configuredPublicOrigin === undefined || configuredPublicOrigin === ""
-    ? {}
-    : { publicOrigin: configuredPublicOrigin }),
-});

@@ -1,6 +1,4 @@
 export {
-  action,
-  ArtifactAction,
   ArtifactMetadata,
   LogLine,
   Param,

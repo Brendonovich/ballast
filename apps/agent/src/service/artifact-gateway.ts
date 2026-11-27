@@ -24,10 +24,8 @@ import {
   type ArtifactParam,
   type ArtifactProject,
   type ArtifactTimer,
-  type ArtifactScope,
   type ArtifactSummary,
   type ArtifactUnit,
-  type ArtifactUrlConfirmation,
   type ArtifactUrlSummary,
   type ArtifactView,
   type CreateArtifactUrlResult,
@@ -78,7 +76,6 @@ export interface ArtifactGatewayService {
   readonly createUrl: (input: {
     readonly projectId: string;
     readonly artifact: string;
-    readonly scope: ArtifactScope;
     readonly transparent: boolean;
   }) => Effect.Effect<CreateArtifactUrlResult, AgentError>;
   readonly listUrls: (filter: {
@@ -86,11 +83,6 @@ export interface ArtifactGatewayService {
     readonly artifact?: string;
   }) => Effect.Effect<ReadonlyArray<ArtifactUrlSummary>, AgentError>;
   readonly revokeUrl: (id: string) => Effect.Effect<void, AgentError>;
-  readonly listConfirmations: (projectId?: string) => Effect.Effect<ReadonlyArray<ArtifactUrlConfirmation>>;
-  readonly approveConfirmation: (
-    id: string,
-  ) => Effect.Effect<{ readonly url: ArtifactUrlSummary; readonly copyUrl: string }, AgentError>;
-  readonly rejectConfirmation: (id: string) => Effect.Effect<void, AgentError>;
   readonly notifyArtifactChanged: (projectId: string, artifact: string) => Effect.Effect<void>;
 }
 
@@ -177,7 +169,7 @@ const artifactSummary = async (
     readonly description?: string;
     readonly source?: { readonly file: string; readonly line: number; readonly column: number };
   },
-  readUrl: string | undefined,
+  stableUrl: string | undefined,
 ): Promise<ArtifactSummary> => {
   const root = await artifactRoot(project, artifact.name);
   const fingerprint = await contentHash(join(project.root, artifact.entry));
@@ -188,7 +180,7 @@ const artifactSummary = async (
     ...(artifact.source === undefined ? {} : { source: artifact.source }),
     fingerprint,
     status: root === undefined ? "building" : "ready",
-    ...(readUrl === undefined ? {} : { readUrl }),
+    ...(stableUrl === undefined ? {} : { stableUrl }),
   };
 };
 
@@ -331,7 +323,6 @@ export const ArtifactGatewayLive = Layer.effect(
       record: {
         readonly id: string;
         readonly artifact: string;
-        readonly scope: ArtifactScope;
         readonly transparent: boolean;
       },
     ): string =>
@@ -362,8 +353,8 @@ export const ArtifactGatewayLive = Layer.effect(
           Effect.catch(() => Effect.succeed(undefined)),
         );
         if (detail === undefined) return [];
-        const readToken = yield* tokens
-          .readToken(project)
+        const stableToken = yield* tokens
+          .stableToken(project)
           .pipe(Effect.catch(() => Effect.succeed(undefined)));
         return yield* Effect.promise(() =>
           Promise.all(
@@ -371,7 +362,7 @@ export const ArtifactGatewayLive = Layer.effect(
               artifactSummary(
                 project,
                 artifact,
-                readToken === undefined ? undefined : artifactPageUrl(url, readToken, artifact.name),
+                stableToken === undefined ? undefined : artifactPageUrl(url, stableToken, artifact.name),
               ),
             ),
           ),
@@ -388,12 +379,11 @@ export const ArtifactGatewayLive = Layer.effect(
         if (declared === undefined) {
           return yield* Effect.fail(agentError("not-found", "No artifact " + artifact));
         }
-        const minted = yield* tokens.mintEmbed(project, artifact, "action");
+        const minted = yield* tokens.mintEmbed(project, artifact);
         return {
           url,
           pageUrl: artifactPageUrl(url, minted.token, artifact),
           token: minted.token,
-          scope: "action",
           expiresAt: minted.expiresAt,
         };
       });
@@ -422,15 +412,9 @@ export const ArtifactGatewayLive = Layer.effect(
         if (artifact === undefined) {
           return yield* Effect.fail(agentError("not-found", "No artifact " + input.artifact));
         }
-        const procedures = (detail.manifest.api?.procedures ?? [])
-          .filter((procedure) => procedure.kind === "action")
-          .map((procedure) => procedure.name);
         return yield* tokens.createUrl({
           project,
           artifact: input.artifact,
-          ...(artifact.title === undefined ? {} : { artifactTitle: artifact.title }),
-          procedures,
-          scope: input.scope,
           transparent: input.transparent,
           previewUrl: (record) => preview(record),
           copyUrl,
@@ -441,25 +425,6 @@ export const ArtifactGatewayLive = Layer.effect(
       tokens.listUrls(filter, preview, copyUrl);
 
     const revokeUrl = (id: string) => tokens.revokeUrl(id);
-    const listConfirmations = (projectId?: string) => tokens.listConfirmations(projectId);
-    const approveConfirmation: ArtifactGatewayService["approveConfirmation"] = (id) =>
-      Effect.gen(function* () {
-        const confirmation = yield* tokens.getConfirmation(id);
-        if (confirmation === undefined) {
-          return yield* Effect.fail(
-            agentError("not-found", "No artifact confirmation " + id),
-          );
-        }
-        const project = yield* requireProject(confirmation.projectId);
-        return yield* tokens.approveConfirmation(id, {
-          project,
-          artifact: confirmation.artifact,
-          transparent: confirmation.transparent,
-          previewUrl: (record) => preview(record),
-          copyUrl,
-        });
-      });
-    const rejectConfirmation = (id: string) => tokens.rejectConfirmation(id);
 
     const push = (socket: WebSocket, message: unknown): void => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
@@ -488,7 +453,7 @@ export const ArtifactGatewayLive = Layer.effect(
     const handleMetadata = (
       tag: string,
       payload: unknown,
-      grant: { readonly projectId: string; readonly scopes: ReadonlyArray<ArtifactScope> },
+      grant: { readonly projectId: string },
       socket: WebSocket,
       id: string | number,
     ): Effect.Effect<void, ArtifactError> =>
@@ -645,9 +610,6 @@ export const ArtifactGatewayLive = Layer.effect(
             return;
           }
           case "SetParam": {
-            if (!grant.scopes.includes("action")) {
-              return yield* Effect.fail(error("forbidden", "This token is read-only"));
-            }
             if (!isRecord(payload) || typeof payload["key"] !== "string") {
               return yield* Effect.fail(error("invalid", "SetParam needs a key"));
             }
@@ -663,9 +625,6 @@ export const ArtifactGatewayLive = Layer.effect(
             return;
           }
           case "CancelTimer": {
-            if (!grant.scopes.includes("action")) {
-              return yield* Effect.fail(error("forbidden", "This token is read-only"));
-            }
             if (!isRecord(payload) || typeof payload["name"] !== "string" || typeof payload["key"] !== "string") {
               return yield* Effect.fail(error("invalid", "CancelTimer needs name and key"));
             }
@@ -729,7 +688,6 @@ export const ArtifactGatewayLive = Layer.effect(
       grant: {
         readonly projectId: string;
         readonly artifact?: string;
-        readonly scopes: ReadonlyArray<ArtifactScope>;
         readonly tokenHash: string;
       },
       socket: WebSocket,
@@ -753,9 +711,6 @@ export const ArtifactGatewayLive = Layer.effect(
           return yield* Effect.fail(
             error("not-found", "No project API procedure " + message.tag),
           );
-        }
-        if (procedure.kind === "action" && !grant.scopes.includes("action")) {
-          return yield* Effect.fail(error("forbidden", "This token is read-only"));
         }
         const port = yield* runtime.artifactPort(grant.projectId);
         if (port === undefined) {
@@ -782,7 +737,7 @@ export const ArtifactGatewayLive = Layer.effect(
       });
 
     const handleRequest = (
-      grant: { readonly projectId: string; readonly artifact?: string; readonly scopes: ReadonlyArray<ArtifactScope>; readonly tokenHash: string },
+      grant: { readonly projectId: string; readonly artifact?: string; readonly tokenHash: string },
       socket: WebSocket,
       message: {
         readonly _tag: "Request";
@@ -818,7 +773,6 @@ export const ArtifactGatewayLive = Layer.effect(
       grant: {
         readonly projectId: string;
         readonly artifact?: string;
-        readonly scopes: ReadonlyArray<ArtifactScope>;
         readonly tokenHash: string;
         readonly expiresAt?: number;
       },
@@ -930,7 +884,7 @@ export const ArtifactGatewayLive = Layer.effect(
           response.end("invalid or expired artifact token");
           return;
         }
-        // View/action tokens are bound to one artifact; the stable read token
+        // View tokens are bound to one artifact; the stable project token
         // covers every artifact in its project.
         if (grant.artifact !== undefined && grant.artifact !== artifactName) {
           response.writeHead(403, { "content-type": "text/plain" });
@@ -1059,9 +1013,6 @@ export const ArtifactGatewayLive = Layer.effect(
       createUrl,
       listUrls,
       revokeUrl,
-      listConfirmations,
-      approveConfirmation,
-      rejectConfirmation,
       notifyArtifactChanged: (projectId, artifact) =>
         Effect.gen(function* () {
           const project = yield* projects.get(projectId);

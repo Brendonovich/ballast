@@ -29,7 +29,7 @@ describe("shares API", () => {
     Effect.gen(function* () {
       const repos = makeMemoryRepos();
       const api = makeSharesApi({ store: makeMemoryStore(), repos });
-      const created = yield* api.createShare({ ownerUserId: "user_a", ownerMachineId: "m_a", name: "Demo" });
+      const created = yield* api.createShare({ ownerUserId: "user_a", name: "Demo" });
       const shareCode = formatShareCode(created.shareCode);
       expect(shareCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
       expect((yield* api.findShareByCode(shareCode.toLowerCase()))?.id).toBe(created.id);
@@ -39,9 +39,8 @@ describe("shares API", () => {
       expect(missing?.status).toBe(409);
 
       repos.commit(created.repo, v1, [], yield* share({ "ballast.ts": "v1", "src/a.ts": "a", "src/b.ts": "b" }));
-      yield* api.subscribe({ shareId: created.id, machineId: "m_b" });
       const first = yield* api.recordDeploy({ id: created.id, sha: v1, message: "First" });
-      expect(first).toMatchObject({ recorded: true, subscribers: ["m_b"] });
+      expect(first).toMatchObject({ recorded: true });
       expect((yield* api.recordDeploy({ id: created.id, sha: v1, message: null })).recorded).toBe(false);
 
       const orphan = "c".repeat(40);
@@ -66,7 +65,7 @@ describe("shares API", () => {
     Effect.gen(function* () {
       const repos = makeMemoryRepos();
       const api = makeSharesApi({ store: makeMemoryStore(), repos });
-      const created = yield* api.createShare({ ownerUserId: "u", ownerMachineId: null, name: "Demo" });
+      const created = yield* api.createShare({ ownerUserId: "u", name: "Demo" });
       const sha = "d".repeat(40);
       const files = yield* share({ "ballast.ts": "honest" });
       repos.commit(created.repo, sha, [], { ...files, "ballast.ts": encoder.encode("tampered") });
@@ -79,7 +78,7 @@ describe("shares API", () => {
   it.effect("answers 503 when repo storage is off", () =>
     Effect.gen(function* () {
       const api = makeSharesApi({ store: makeMemoryStore(), repos: undefined });
-      const error = failure(yield* Effect.exit(api.createShare({ ownerUserId: "u", ownerMachineId: null, name: "x" })));
+      const error = failure(yield* Effect.exit(api.createShare({ ownerUserId: "u", name: "x" })));
       expect(error).toMatchObject({ status: 503, tag: "upstream_error" });
     }),
   );

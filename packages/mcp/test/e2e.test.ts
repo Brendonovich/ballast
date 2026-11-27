@@ -167,9 +167,13 @@ describe("real MCP stdio client against a real Ballast service", () => {
         if (!Array.isArray(initFiles)) throw new Error("init files are not an array");
         expect(initFiles).toContain("tsconfig.json");
 
-        const check = yield* call(client, tools, "ballast_check", { project: "E2E Project" });
+        const check = yield* call(client, tools, "ballast_check", {
+          project: "E2E Project",
+          detail: "full",
+        });
         const checkData = recordOf(check.structuredContent);
         expect(checkData?.["ok"]).toBe(true);
+        expect(checkData?.["detail"]).toBe("full");
         const units = checkData?.["units"];
         expect(Array.isArray(units)).toBe(true);
         if (!Array.isArray(units)) throw new Error("check units are not an array");
@@ -188,6 +192,23 @@ describe("real MCP stdio client against a real Ballast service", () => {
         expect(sourceFiles.length).toBeGreaterThan(0);
         expect(sourceFiles.every((file) => file === "ballast.ts")).toBe(true);
         expect(checkData?.["diagnostics"]).toEqual([]);
+
+        // The folder name resolves too, and compact is the default shape.
+        const compact = yield* call(client, tools, "ballast_check", { project: "project" });
+        const compactData = recordOf(compact.structuredContent);
+        expect(compactData?.["ok"]).toBe(true);
+        expect(compactData?.["detail"]).toBe("compact");
+        expect(compactData?.["manifest"]).toBeUndefined();
+        expect(compactData?.["appliedManifest"]).toBeUndefined();
+        expect(compactData?.["availableConnections"]).toBeUndefined();
+        expect(compactData?.["units"]).toBeUndefined();
+        expect(recordOf(compactData?.["snapshot"])?.["serviceStatus"]).toBe("stopped");
+        expect(textOf(compact)).toContain("service status at check: stopped");
+        expect(textOf(compact)).not.toContain("units:");
+
+        // An absolute project root also resolves.
+        const byRoot = yield* call(client, tools, "ballast_check", { project: projectDir });
+        expect(recordOf(byRoot.structuredContent)?.["ok"]).toBe(true);
 
         const requirementDir = join(root, "requirements");
         yield* call(client, tools, "ballast_project_init", {
@@ -227,6 +248,14 @@ describe("real MCP stdio client against a real Ballast service", () => {
         expect(requirementApplyData?.["state"]).toBe("waiting_for_user");
         expect(requirementApplyData?.["reason"]).toBe("connections");
         expect(textOf(requirementApply)).toContain("fake/main");
+        // A waiting outcome includes the compact check that explains it, but
+        // never the full check payload.
+        const applyCheck = recordOf(requirementApplyData?.["check"]);
+        expect(applyCheck?.["detail"]).toBe("compact");
+        expect(applyCheck?.["manifest"]).toBeUndefined();
+        expect(applyCheck?.["appliedManifest"]).toBeUndefined();
+        expect(recordOf(applyCheck?.["snapshot"])?.["serviceStatus"]).toBeDefined();
+        expect(recordOf(requirementApplyData?.["project"])?.["issues"]).toBeUndefined();
 
         yield* Effect.promise(() =>
           writeFile(

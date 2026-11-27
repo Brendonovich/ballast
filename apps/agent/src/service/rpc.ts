@@ -14,6 +14,8 @@ import {
   type ProjectSummary,
   type HealthStatus,
   type CloudStatus,
+  type CodingAgent,
+  type ProjectOpener,
 } from "@ballast/agent-protocol";
 import { AgentRpcs } from "@ballast/agent-protocol";
 import { AGENT_NAME } from "./config.ts";
@@ -25,7 +27,14 @@ import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ProjectRuntime } from "./project-runtime.ts";
 import { ProjectShares } from "./shares.ts";
+import { ShareServers } from "./share-servers.ts";
 import { ensureProjectTypes, scaffoldProject } from "./scaffold.ts";
+import {
+  ensureMcpLauncher,
+  projectAgentSetup,
+  writeProjectAgentConfigs,
+} from "./agent-configs.ts";
+import { listProjectOpeners, openProject } from "./project-openers.ts";
 import { EventHistory } from "./event-history.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
 
@@ -50,6 +59,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
     const history = yield* EventHistory;
     const hub = yield* ServiceHub;
     const shares = yield* ProjectShares;
+    const shareServers = yield* ShareServers;
 
     const info = Effect.gen(function* () {
       const all = yield* projects.projects;
@@ -177,6 +187,12 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
         return project;
       });
 
+    /** Refreshed on every call, so configs written now start this service's build. */
+    const mcpLauncher = ensureMcpLauncher({
+      stateDir: options.stateDir,
+      dataDir: options.dataDir,
+    });
+
     const toConnectionSummary = (value: ConnectionSummary): ConnectionSummary => value;
 
     return {
@@ -233,6 +249,53 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
           return yield* projectDetail(project);
         }),
 
+      GetProjectAgentSetup: ({ projectId }: { readonly projectId: string }) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(projectId);
+          const launcher = yield* mcpLauncher;
+          return yield* projectAgentSetup({ projectId: project.id, root: project.root, launcher });
+        }),
+
+      WriteProjectAgentConfigs: (request: {
+        readonly projectId: string;
+        readonly agents: ReadonlyArray<CodingAgent>;
+      }) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(request.projectId);
+          const launcher = yield* mcpLauncher;
+          return yield* writeProjectAgentConfigs({
+            projectId: project.id,
+            root: project.root,
+            launcher,
+            agents: request.agents,
+          });
+        }),
+
+      ListProjectOpeners: ({ projectId }: { readonly projectId: string }) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(projectId);
+          const launcher = yield* mcpLauncher;
+          const [openers, setup] = yield* Effect.all([
+            listProjectOpeners,
+            projectAgentSetup({ projectId: project.id, root: project.root, launcher }),
+          ]);
+          return {
+            projectId: project.id,
+            openers,
+            configuredAgents: setup.agents.filter((agent) => agent.configured).map((agent) => agent.agent),
+          };
+        }),
+
+      OpenProject: (request: {
+        readonly projectId: string;
+        readonly opener: ProjectOpener;
+        readonly agent?: CodingAgent;
+      }) =>
+        Effect.gen(function* () {
+          const project = yield* requireProject(request.projectId);
+          yield* openProject({ root: project.root, opener: request.opener, agent: request.agent });
+        }),
+
       AddProject: (request: { readonly path: string; readonly name?: string }) =>
         Effect.gen(function* () {
           const project = yield* projects.add({
@@ -255,12 +318,17 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
           yield* publishHealth;
         }),
 
-      ShareProject: (request: { readonly projectId: string; readonly message?: string }) =>
-        shares.share(request.projectId, request.message),
+      ShareProject: (request: { readonly projectId: string; readonly message?: string; readonly server?: string }) =>
+        shares.share(request.projectId, request.message, request.server),
       DeployProject: (request: { readonly projectId: string; readonly message?: string }) =>
         shares.deploy(request.projectId, request.message),
+      GetShareServers: () => shareServers.status,
+      BeginShareSignIn: (request: { readonly server?: string }) => shareServers.beginSignIn(request.server),
+      SignOutShareServer: ({ server }: { readonly server: string }) => shareServers.signOut(server),
+      SetDefaultShareServer: (request: { readonly server?: string }) => shareServers.setDefault(request.server),
       SubscribeProject: (request: {
         readonly shareCode: string;
+        readonly server?: string;
         readonly directory?: string;
         readonly name?: string;
       }) =>
@@ -409,7 +477,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
       CreateArtifactUrl: (request: {
         readonly projectId: string;
         readonly artifact: string;
-        readonly scope: "read" | "action";
         readonly transparent: boolean;
       }) => artifacts.createUrl(request),
 
@@ -421,19 +488,6 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
 
       RevokeArtifactUrl: ({ id }: { readonly id: string }) =>
         artifacts.revokeUrl(id),
-
-      ListArtifactUrlConfirmations: (request: {
-        readonly projectId?: string;
-      }) =>
-        Effect.map(artifacts.listConfirmations(request.projectId), (confirmations) => ({
-          confirmations,
-        })),
-
-      ApproveArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
-        artifacts.approveConfirmation(confirmationId),
-
-      RejectArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
-        artifacts.rejectConfirmation(confirmationId),
 
       StreamLogs: (request: {
         readonly projectId?: string;

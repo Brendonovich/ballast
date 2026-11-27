@@ -202,7 +202,58 @@ export const shareManifestHash = (manifest: ShareManifest): Effect.Effect<string
     crypto.subtle.digest("SHA-256", new TextEncoder().encode(encodeShareManifest(manifest))),
   ).pipe(Effect.map(hex));
 
-// ---- HTTP API (machine-authenticated, `/api/shares/*`) ----
+// ---- Share server sign-in (decision 0014) ----
+
+/**
+ * A share server authenticates people, not machines: the server is an
+ * OpenID Connect client of an issuer (Anomaly for the hosted cloud) and
+ * hands the agent its own session token. The agent only knows the server's
+ * URL and these paths, so any server that speaks them can be used.
+ *
+ * 1. The agent opens `GET {server}${SHARE_AUTH_LOGIN_PATH}` in a browser with
+ *    a loopback `redirect_uri`, a `state` and an S256 `code_challenge`.
+ * 2. The server runs the OIDC code flow and redirects the browser to
+ *    `redirect_uri?code=…&state=…` (or `?error=…&state=…`).
+ * 3. The agent posts the code and its verifier to
+ *    `${SHARE_AUTH_TOKEN_PATH}` and gets a bearer token for `/api/shares/*`.
+ */
+export const SHARE_AUTH_LOGIN_PATH = "/api/shares/auth/login";
+export const SHARE_AUTH_CALLBACK_PATH = "/api/shares/auth/callback";
+export const SHARE_AUTH_TOKEN_PATH = "/api/shares/auth/token";
+export const SHARE_AUTH_ME_PATH = "/api/shares/auth/me";
+export const SHARE_AUTH_LOGOUT_PATH = "/api/shares/auth/logout";
+
+/** The person a share-server session belongs to. `id` is the server's, stable across renames. */
+export const ShareUser = Schema.Struct({
+  id: Schema.String,
+  /** The identity provider's issuer, e.g. `https://account.anoma.ly`. */
+  issuer: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  username: Schema.NullOr(Schema.String),
+});
+export type ShareUser = typeof ShareUser.Type;
+
+export const ShareAuthTokenRequest = Schema.Struct({
+  code: Schema.String,
+  codeVerifier: Schema.String,
+  /** Shown in the server's session list; defaults to "Ballast". */
+  deviceName: Schema.optionalKey(Schema.String),
+});
+export type ShareAuthTokenRequest = typeof ShareAuthTokenRequest.Type;
+
+export const ShareAuthTokenResponse = Schema.Struct({
+  /** Bearer token for `/api/shares/*`; revoked by `${SHARE_AUTH_LOGOUT_PATH}`. */
+  token: Schema.String,
+  user: ShareUser,
+});
+export type ShareAuthTokenResponse = typeof ShareAuthTokenResponse.Type;
+
+export const ShareAuthMeResponse = Schema.Struct({
+  user: ShareUser,
+});
+export type ShareAuthMeResponse = typeof ShareAuthMeResponse.Type;
+
+// ---- HTTP API (`/api/shares/*`: publishing is signed in, reading takes a share code) ----
 
 export const ShareInfo = Schema.Struct({
   shareId: Schema.String,
@@ -211,7 +262,7 @@ export const ShareInfo = Schema.Struct({
   currentSha: Schema.NullOr(Schema.String),
   message: Schema.NullOr(Schema.String),
   deployedAt: Schema.NullOr(Schema.Number),
-  /** True when the calling machine's user owns the share. */
+  /** True when the signed-in caller owns the share; always false for share-code reads. */
   owner: Schema.Boolean,
 });
 export type ShareInfo = typeof ShareInfo.Type;
@@ -223,7 +274,7 @@ export type CreateShareRequest = typeof CreateShareRequest.Type;
 
 export const CreateShareResponse = Schema.Struct({
   share: ShareInfo,
-  /** Unlisted capability: anyone with a paired machine and this code can subscribe. */
+  /** Unlisted read capability: anyone with this code (or its share link) can subscribe. */
   shareCode: Schema.String,
 });
 export type CreateShareResponse = typeof CreateShareResponse.Type;
@@ -247,41 +298,22 @@ export type FinalizeDeployRequest = typeof FinalizeDeployRequest.Type;
 export const FinalizeDeployResponse = Schema.Struct({
   share: ShareInfo,
   manifestHash: Schema.String,
-  /** Subscribed machines that were sent a `share_update`. */
-  notified: Schema.Number,
 });
 export type FinalizeDeployResponse = typeof FinalizeDeployResponse.Type;
 
-export const SubscribeRequest = Schema.Struct({
-  shareCode: Schema.String,
-});
-export type SubscribeRequest = typeof SubscribeRequest.Type;
+/**
+ * Reading a share needs only its share code (decision 0014): subscribers do
+ * not sign in. `GET ${shareCodePath(code)}` answers `SharedProjectResponse`;
+ * `GET ${shareCodePath(code)}/diff?from=&to=` answers `ShareDiffResponse`.
+ */
+export const SHARE_CODE_PATH_PREFIX = "/api/shares/code/";
+export const shareCodePath = (shareCode: string): string =>
+  SHARE_CODE_PATH_PREFIX + encodeURIComponent(shareCode.toUpperCase().replace(/[\s-]/g, ""));
 
-export const SubscribeResponse = Schema.Struct({
+export const SharedProjectResponse = Schema.Struct({
   share: ShareInfo,
 });
-export type SubscribeResponse = typeof SubscribeResponse.Type;
-
-export const ShareIdRequest = Schema.Struct({
-  shareId: Schema.String,
-});
-export type ShareIdRequest = typeof ShareIdRequest.Type;
-
-export const ReportInstalledRequest = Schema.Struct({
-  shareId: Schema.String,
-  sha: GitSha,
-});
-export type ReportInstalledRequest = typeof ReportInstalledRequest.Type;
-
-export const ListShareSubscriptionsResponse = Schema.Struct({
-  subscriptions: Schema.Array(
-    Schema.Struct({
-      share: ShareInfo,
-      installedSha: Schema.NullOr(Schema.String),
-    }),
-  ),
-});
-export type ListShareSubscriptionsResponse = typeof ListShareSubscriptionsResponse.Type;
+export type SharedProjectResponse = typeof SharedProjectResponse.Type;
 
 export const ShareDiffFile = Schema.Struct({
   path: Schema.String,
@@ -294,7 +326,7 @@ export const ShareDiffFile = Schema.Struct({
 export type ShareDiffFile = typeof ShareDiffFile.Type;
 
 /**
- * `GET /api/shares/:id/diff?from=<sha>&to=<sha>`. `from`
+ * `GET /api/shares/code/:code/diff?from=<sha>&to=<sha>`. `from`
  * omitted means a full snapshot; `to` omitted means the current deploy.
  */
 export const ShareDiffResponse = Schema.Struct({

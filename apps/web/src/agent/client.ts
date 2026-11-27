@@ -1,4 +1,10 @@
-import { AGENT_RPC_PATH, AgentRpcs, MockAgentLayer } from "@ballast/agent-protocol";
+import {
+  AGENT_RPC_PATH,
+  AgentRpcs,
+  MockAgentLayer,
+  makeMockAgentLayer,
+} from "@ballast/agent-protocol";
+import { testOnboarding } from "../lib/onboarding.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
@@ -28,7 +34,9 @@ export class AgentClientService extends Context.Service<
 
 const MockClientLive: Layer.Layer<AgentClientService> = Layer.effect(
   AgentClientService,
-  RpcTest.makeClient(AgentRpcs).pipe(Effect.provide(MockAgentLayer)),
+  RpcTest.makeClient(AgentRpcs).pipe(
+    Effect.provide(testOnboarding ? makeMockAgentLayer({ fresh: true }) : MockAgentLayer),
+  ),
 );
 
 const websocketClientLive = (rpcUrl: string): Layer.Layer<AgentClientService> => {

@@ -138,7 +138,6 @@ export type ManifestArtifactUnit = typeof ManifestArtifactUnit.Type;
 
 export const ManifestApiProcedure = Schema.Struct({
   name: Schema.String,
-  kind: Schema.Literals(["query", "action", "stream"]),
   stream: Schema.Boolean,
   payloadSchema: Schema.optionalKey(Schema.Unknown),
   successSchema: Schema.optionalKey(Schema.Unknown),

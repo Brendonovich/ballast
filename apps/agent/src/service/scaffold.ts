@@ -277,14 +277,37 @@ const artifactsTsconfig = (path: Path.Path, typesDir: string): string =>
     exclude: ["../node_modules", "../dist", "../.ballast"],
   });
 
-const agents = (name: string): string =>
+/** Instructions for coding agents started in the project folder. */
+export const agentsMarkdown = (name: string): string =>
   [
     `# ${name}`,
     "",
-    "This is a Ballast project bundle. `ballast.ts` default-exports one Effect.",
+    "This is a Ballast project. `ballast.ts` default-exports one Effect; Ballast",
+    "plans it, asks the user for consent and runs it. The running Ballast service",
+    "watches this folder.",
     "",
-    "Use the Ballast MCP server's `ballast_guide` tool for the script API,",
-    "project layout, parameters, connections, topics, timers and workflows.",
+    "## Work through the Ballast tools",
+    "",
+    "Use the `ballast` MCP server's tools for every change, not guesses or shell",
+    "commands. If they are not available, ask the user to configure the agent in",
+    "Ballast (project menu → Configure coding agent) instead of working without them.",
+    "",
+    "1. `ballast_guide`: read it before writing or changing code, and again when an",
+    "   API error is unclear. It is the authoring contract (imports, params,",
+    "   connections, topics, timers, artifacts).",
+    "2. `ballast_catalog`: look up integrations, event topics and requests (with",
+    "   their schemas and scopes) instead of inventing names or payloads.",
+    "3. `ballast_check`: run after every edit. Fix every diagnostic it reports;",
+    "   a clean `tsc` alone is not enough.",
+    "4. `ballast_apply`: reload a checked project. Starting it the first time,",
+    "   consent and connection bindings are the user's; when it reports",
+    "   `waiting_for_user`, tell the user exactly what to do in Ballast.",
+    "5. `ballast_status`, `ballast_logs` and `ballast_events`: confirm the",
+    "   project does what was asked, and debug it from its real output.",
+    "",
+    "Do not use `Effect.sleep` for anything that must survive a restart (declare a",
+    "`Ballast.Timer`), and keep I/O out of init: it only declares what the",
+    "project needs.",
     "",
   ].join("\n");
 
@@ -359,7 +382,7 @@ export const scaffoldProject = (input: {
           artifactsTsconfig(path, input.typesDir),
         );
       }
-      yield* fs.writeFileString(path.join(root, "AGENTS.md"), agents(name));
+      yield* fs.writeFileString(path.join(root, "AGENTS.md"), agentsMarkdown(name));
     }).pipe(
       Effect.mapError((cause) =>
         agentError("internal", "Could not create the project: " + cause.message),

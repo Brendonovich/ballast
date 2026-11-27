@@ -12,10 +12,10 @@ const enabled = (value: string | undefined): boolean =>
 
 /**
  * `alchemy dev` is local by default: local state and workerd, so tests and the
- * e2e suite never need a Cloudflare account. `pnpm dev:remote` sets
- * BALLAST_CLOUD_REMOTE_DEV=1; that selects the Cloudflare state store and
- * pins the stack to live providers, which gives the Worker a public workers.dev
- * URL for OAuth redirects and EventSub webhooks. Deploys are always live.
+ * e2e suite never need a Cloudflare account. `pnpm dev` sets
+ * BALLAST_CLOUD_REMOTE_DEV=1, which wraps the stack in `Alchemy.remote()` with
+ * the Cloudflare state store: real resources and a public workers.dev URL for
+ * OAuth redirects and EventSub webhooks. Deploys are always live.
  */
 const isDev = enabled(process.env.ALCHEMY_DEV);
 const remoteDev = isDev && enabled(process.env.BALLAST_CLOUD_REMOTE_DEV);
@@ -61,9 +61,7 @@ export default Alchemy.Stack(
           }),
         ),
       );
-      const worker = yield* BallastCloudWorker.pipe(
-        Effect.provide(BallastCloudWorkerLayer),
-      );
+      const worker = yield* BallastCloudWorker.pipe(Effect.provide(BallastCloudWorkerLayer));
       return { url: worker.url };
     });
 

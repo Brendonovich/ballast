@@ -1,5 +1,5 @@
 import { app, dialog, shell } from "electron";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   AppInfo,
@@ -9,6 +9,7 @@ import type {
   UpdateState,
 } from "../bridge.ts";
 import { resolveConfig } from "./config.ts";
+import { applyTestOnboarding } from "./test-onboarding.ts";
 import { registerBridgeIpc } from "./ipc.ts";
 import { runLifecycleDemo, type DemoAction } from "./lifecycle-demo.ts";
 import { createLogger } from "./logger.ts";
@@ -34,6 +35,9 @@ const background = process.argv.includes("--background");
 const autostart = process.env["BALLAST_AUTOSTART"] !== "0";
 const quitAfterRaw = readFlag("--ballast-quit-after-ms=");
 const quitAfterMs = quitAfterRaw === undefined ? undefined : Number(quitAfterRaw);
+
+// Before anything reads the Ballast directories, including the userData override below.
+const testOnboarding = applyTestOnboarding();
 
 const userDataOverride = process.env.BALLAST_USER_DATA_DIR;
 if (userDataOverride !== undefined && userDataOverride.length > 0) {
@@ -84,6 +88,10 @@ async function start(): Promise<void> {
     userDataDir: config.userDataDir,
     stateDir: config.stateDir,
   });
+  if (testOnboarding !== undefined) {
+    logger.info("test onboarding: fresh install", { root: testOnboarding.root });
+    console.log(`BALLAST_TEST_ONBOARDING: fresh install in ${testOnboarding.root}`);
+  }
 
   const restoredWindows = await readWindowSession(config.userDataDir);
   const permissions = createPermissionController(process.platform);
@@ -262,10 +270,38 @@ async function start(): Promise<void> {
     // The window is not the service: Ballast stays in the tray and the
     // detached background service keeps running (0003 §2).
   });
-  app.on("before-quit", () => {
+  // A test-onboarding run owns its temporary service: stop it and remove the
+  // directory on quit, so nothing is left running against a deleted folder.
+  let testCleanup: "pending" | "running" | "done" = testOnboarding?.created === true ? "pending" : "done";
+  app.on("before-quit", (event) => {
+    if (testCleanup === "running") {
+      event.preventDefault();
+      return;
+    }
+    if (testCleanup === "pending" && testOnboarding !== undefined) {
+      event.preventDefault();
+      testCleanup = "running";
+      windowsController.beforeQuit();
+      logger.info("test onboarding: stopping the temporary service", { root: testOnboarding.root });
+      void launcher
+        .stop()
+        .catch(() => undefined)
+        .then(() => rm(testOnboarding.root, { recursive: true, force: true }))
+        .catch(() => undefined)
+        .finally(() => {
+          testCleanup = "done";
+          app.quit();
+        });
+      return;
+    }
+    if (testOnboarding?.created === true) return;
     windowsController.beforeQuit();
     logger.info("desktop quitting; background service is not stopped");
   });
+  if (testOnboarding?.created === true) {
+    // `pnpm dev` stops Electron with a signal; clean up the same way as Quit.
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => app.quit());
+  }
 
   const initialStatus = await refreshStatus();
 

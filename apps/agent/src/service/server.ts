@@ -43,8 +43,10 @@ import { Lifecycle, LifecycleLive } from "./lifecycle.ts";
 import { ProjectManager, ProjectManagerLive } from "./projects.ts";
 import { ProjectRuntime, ProjectRuntimeLive } from "./project-runtime.ts";
 import { ProjectSharesLive } from "./shares.ts";
+import { ShareServers, ShareServersLive } from "./share-servers.ts";
 import { AgentRpcsLive } from "./rpc.ts";
 import { ensureProjectTypes } from "./scaffold.ts";
+import { ensureMcpLauncher } from "./agent-configs.ts";
 import {
   EventLog,
   EventLogLive,
@@ -168,8 +170,13 @@ const makeLayers = (
     Layer.provideMerge(tokens),
     Layer.provideMerge(projects),
   );
+  const shareServers = ShareServersLive({
+    dataDir: options.dataDir,
+    shareServer: options.shareServer,
+    cloudUrl: options.cloudUrl,
+  }).pipe(Layer.provideMerge(projects));
   const shares = ProjectSharesLive({ dataDir: options.dataDir }).pipe(
-    Layer.provideMerge(projects),
+    Layer.provideMerge(shareServers),
   );
   const handlers = AgentRpcsLive({
     stateDir: options.stateDir,
@@ -243,12 +250,21 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
       const lifecycle = yield* Lifecycle;
       const router = yield* HttpRouter.HttpRouter;
       const eventRouter = yield* EventRouter;
+      const shareServers = yield* ShareServers;
+      yield* shareServers.setCallbackBase(url);
 
       // Create/repoint <dataDir>/types/current before any project is planned,
       // including projects that outlived an app update.
       yield* ensureProjectTypes({ dataDir: options.dataDir, version }).pipe(
         Effect.tapError((error) =>
           Effect.logWarning("Could not prepare project types: " + error.message),
+        ),
+        Effect.ignore,
+      );
+      // Agent configs start the MCP server through this launcher; point it at this build.
+      yield* ensureMcpLauncher({ stateDir: options.stateDir, dataDir: options.dataDir }).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("Could not write the MCP launcher: " + error.message),
         ),
         Effect.ignore,
       );
@@ -297,6 +313,7 @@ export const runServe = (options: ServeOptions): Effect.Effect<number, Error> =>
         version,
         pid: process.pid,
         health,
+        shareSignIn: shareServers.completeSignIn,
       }, lifecycle);
 
       const protocol = yield* RpcServer.makeProtocolWebsocket({ path: "/rpc" });

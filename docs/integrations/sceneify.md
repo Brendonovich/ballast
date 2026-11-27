@@ -105,7 +105,7 @@ export default Effect.gen(function* () {
           source: Sceneify.Input.declare(Sceneify.BrowserSource, {
             name: "Alert Overlay",
             settings: {
-              url: overlay.url, // stable, read-only, transparent page URL
+              url: overlay.url, // stable, transparent page URL
               width: 1920,
               height: 1080,
               css: "html, body { background: transparent; }",
@@ -134,9 +134,8 @@ export default Effect.gen(function* () {
   the artifact shell uses for a transparent page. Without `transparent: true`
   the page is not an overlay; use a normal dashboard URL or declare the
   artifact transparent.
-- The URL is the artifact's stable, read-only page URL. It survives service
-  restarts and cannot call action procedures; action URLs remain an explicit,
-  confirmed capability.
+- The URL is the artifact's stable page URL. It survives service restarts and
+  can call every procedure in the project API.
 - No request is made in init. The browser source is created when the declared
   scene is synced in a handler or `Ballast.run`.
 - A declaration that needs the handle cannot live at module scope. Build it in
@@ -148,10 +147,10 @@ export default Effect.gen(function* () {
 The artifact URL is injected by the planning/runtime bundle as
 `globalThis.__BALLAST_ARTIFACT_HOST__`. When a stable host exists (the Ballast
 service with the default `BALLAST_ARTIFACT_PORT=47831`), `overlay.url` is the
-stable read-only URL, for example:
+stable URL, for example:
 
 ```text
-http://127.0.0.1:47831/a/r1.<project>.<hmac>/alerts/index.html?background=transparent
+http://127.0.0.1:47831/a/a1.<project>.<hmac>/alerts/index.html?background=transparent
 ```
 
 `ballast plan` alone has no artifact gateway, and `BALLAST_ARTIFACT_PORT=0`

@@ -5,10 +5,9 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
-import type {
-  ArtifactUrlConfirmation,
-  ArtifactUrlSummary,
-} from "./artifacts.ts";
+import type { CodingAgent, ProjectAgentSetup, ProjectOpenerInfo } from "./agents.ts";
+import { CODING_AGENTS, CODING_AGENT_CONFIG_FILES } from "./agents.ts";
+import type { ArtifactUrlSummary } from "./artifacts.ts";
 import type { CloudStatus } from "./cloud.ts";
 import { cloudUnlinked } from "./cloud.ts";
 import type { ConnectionSummary } from "./connections.ts";
@@ -49,6 +48,7 @@ import { scriptView } from "./scripts.ts";
 import type { HealthStatus, ServiceInfo } from "./service.ts";
 import { AGENT_API_VERSION } from "./service.ts";
 import type { ServiceEvent, ServiceSnapshot } from "./events.ts";
+import type { ShareServersStatus } from "./shares.ts";
 import { AgentRpcs } from "./rpc.ts";
 
 /**
@@ -93,10 +93,9 @@ interface MockState {
   readonly nextProjectSeq: number;
   readonly artifactUrls: ReadonlyMap<string, ArtifactUrlSummary>;
   readonly artifactUrlOrder: ReadonlyArray<string>;
-  readonly artifactConfirmations: ReadonlyMap<string, ArtifactUrlConfirmation>;
-  readonly artifactConfirmationOrder: ReadonlyArray<string>;
   readonly nextArtifactUrlSeq: number;
-  readonly nextArtifactConfirmationSeq: number;
+  /** Agents whose project config has the Ballast MCP server, by project id. */
+  readonly agentConfigs: ReadonlyMap<string, ReadonlyArray<CodingAgent>>;
 }
 
 interface MockStoreService {
@@ -1065,7 +1064,6 @@ const mainArtifactUrl: ArtifactUrlSummary = {
   id: "artifact_url_1",
   projectId: mainProject.id,
   artifact: "dashboard",
-  scope: "read",
   transparent: false,
   createdAt: base + 10 * MINUTE,
   lastUsedAt: base + 20 * MINUTE,
@@ -1104,6 +1102,7 @@ const initialState = (): MockState => ({
     [failedProject.id, failedProject],
   ]),
   projectOrder: [mainProject.id, altProject.id, failedProject.id],
+  agentConfigs: new Map(),
   scripts: initialScripts(),
   scriptOrder: [
     scriptKey(mainProject.id, "scripts/redeem-to-scene.ts"),
@@ -1123,10 +1122,7 @@ const initialState = (): MockState => ({
   nextProjectSeq: 3,
   artifactUrls: new Map([[mainArtifactUrl.id, mainArtifactUrl]]),
   artifactUrlOrder: [mainArtifactUrl.id],
-  artifactConfirmations: new Map(),
-  artifactConfirmationOrder: [],
   nextArtifactUrlSeq: 2,
-  nextArtifactConfirmationSeq: 1,
 });
 
 const healthOf = (state: MockState): HealthStatus => {
@@ -1300,10 +1296,35 @@ const projectManifestOf = (
         })(),
       ),
       procedures: [
-        { name: "Snapshot", kind: "query", stream: false },
-        { name: "ResetCounters", kind: "action", stream: false },
+        { name: "Snapshot", stream: false },
+        { name: "ResetCounters", stream: false },
       ],
     },
+  };
+};
+
+const MOCK_OPENERS: ReadonlyArray<ProjectOpenerInfo> = [
+  { opener: "opencode-desktop", name: "OpenCode", kind: "agent", runsAgents: false, agent: "opencode" },
+  { opener: "ghostty", name: "Ghostty", kind: "terminal", runsAgents: true },
+  { opener: "terminal", name: "Terminal", kind: "terminal", runsAgents: true },
+  { opener: "vscode", name: "VS Code", kind: "editor", runsAgents: false },
+  { opener: "files", name: "Finder", kind: "files", runsAgents: false },
+];
+
+const mockAgentSetup = (state: MockState, project: ProjectSummary): ProjectAgentSetup => {
+  const configured = state.agentConfigs.get(project.id) ?? [];
+  return {
+    projectId: project.id,
+    root: project.root,
+    launcher: {
+      command: "/Users/streamer/.local/share/ballast/bin/ballast-mcp",
+      args: [],
+    },
+    agents: CODING_AGENTS.map((agent) => ({
+      agent,
+      file: CODING_AGENT_CONFIG_FILES[agent],
+      configured: configured.includes(agent),
+    })),
   };
 };
 
@@ -1365,16 +1386,45 @@ const validateConnection = (connection: ConnectionSummary): string | undefined =
   return undefined;
 };
 
-export const MockAgentStoreLive = Layer.effect(
-  MockStore,
-  Effect.gen(function* () {
-    const state = yield* Ref.make(initialState());
-    const changes = yield* PubSub.unbounded<ServiceEvent>();
-    const logEntries = yield* PubSub.unbounded<LogEntry>();
-    const eventRecords = yield* PubSub.unbounded<EventRecord>();
-    return MockStore.of({ state, changes, logEntries, eventRecords });
-  }),
-);
+export interface MockAgentOptions {
+  /**
+   * A first-run machine: no projects, connections, consents, logs or events
+   * and no cloud link (`BALLAST_TEST_ONBOARDING` in the web dev server).
+   */
+  readonly fresh?: boolean;
+}
+
+/** `initialState` with nothing a new install would not have yet. */
+const freshState = (): MockState => ({
+  ...initialState(),
+  projects: new Map(),
+  projectOrder: [],
+  scripts: new Map(),
+  scriptOrder: [],
+  connections: new Map(),
+  connectionOrder: [],
+  consents: new Map(),
+  consentOrder: [],
+  cloud: cloudUnlinked(),
+  logs: [],
+  events: [],
+  artifactUrls: new Map(),
+  artifactUrlOrder: [],
+});
+
+export const makeMockAgentStoreLive = (options: MockAgentOptions = {}) =>
+  Layer.effect(
+    MockStore,
+    Effect.gen(function* () {
+      const state = yield* Ref.make(options.fresh === true ? freshState() : initialState());
+      const changes = yield* PubSub.unbounded<ServiceEvent>();
+      const logEntries = yield* PubSub.unbounded<LogEntry>();
+      const eventRecords = yield* PubSub.unbounded<EventRecord>();
+      return MockStore.of({ state, changes, logEntries, eventRecords });
+    }),
+  );
+
+export const MockAgentStoreLive = makeMockAgentStoreLive();
 
 const handlers = Effect.gen(function* () {
   const store = yield* MockStore;
@@ -1386,6 +1436,18 @@ const handlers = Effect.gen(function* () {
       return project === undefined ? [] : [project];
     });
 
+  const mockShareServer = "https://cloud.ballast.stream";
+  const shareServers = yield* Ref.make<ShareServersStatus>({
+    defaultServer: mockShareServer,
+    servers: [{ url: mockShareServer, default: true, projects: 0 }],
+  });
+  const requireShareSignIn = (server: string) =>
+    Effect.flatMap(Ref.get(shareServers), (status) =>
+      status.servers.some((entry) => entry.url === server && entry.user !== undefined)
+        ? Effect.void
+        : fail(agentError("unauthorized", "Sign in to " + server + " to share projects")),
+    );
+
   const mockDeploy = (projectId: string, create: boolean) =>
     Effect.gen(function* () {
       const state = yield* Ref.get(store.state);
@@ -1395,10 +1457,13 @@ const handlers = Effect.gen(function* () {
         return yield* fail(agentError("invalid", "A subscribed project is read-only and cannot be shared"));
       if (share === undefined && !create)
         return yield* fail(agentError("invalid", "Share the project first"));
+      const server = share?.server ?? mockShareServer;
+      yield* requireShareSignIn(server);
       const now = Date.now();
       const sha = (state.nextProjectSeq * 7919 + now).toString(16).padStart(40, "0").slice(-40);
       const shared = {
         _tag: "shared" as const,
+        server,
         shareId: share?.shareId ?? "shr_mock_" + projectId,
         shareCode: share?.shareCode ?? "MOCK-SHAR-E" + projectId.length,
         sha,
@@ -1415,9 +1480,9 @@ const handlers = Effect.gen(function* () {
         shareCode: shared.shareCode,
         sha,
         deployed: true,
+        server,
         files: 1,
         bytes: 0,
-        notified: 0,
       };
     });
 
@@ -1595,12 +1660,64 @@ const handlers = Effect.gen(function* () {
     DeployProject: (request: { readonly projectId: string; readonly message?: string }) =>
       mockDeploy(request.projectId, false),
 
+    GetShareServers: () => Ref.get(shareServers),
+
+    BeginShareSignIn: (request: { readonly server?: string }) =>
+      Effect.gen(function* () {
+        const server = request.server ?? mockShareServer;
+        const status = yield* Ref.updateAndGet(shareServers, (current) => ({
+          ...current,
+          servers: [
+            ...current.servers.filter((entry) => entry.url !== server),
+            {
+              url: server,
+              default: server === current.defaultServer,
+              projects: 0,
+              user: { id: "usr_mock", issuer: "https://account.anoma.ly", name: "Streamer", username: "streamer" },
+              signedInAt: Date.now(),
+            },
+          ],
+        }));
+        yield* publish(store, [{ _tag: "share-servers", status, signIn: { server, ok: true } }]);
+        return { server, url: server + "/api/shares/auth/login", expiresAt: Date.now() + 10 * MINUTE };
+      }),
+
+    SignOutShareServer: ({ server }: { readonly server: string }) =>
+      Effect.gen(function* () {
+        const status = yield* Ref.updateAndGet(shareServers, (current) => ({
+          ...current,
+          servers: current.servers.map((entry) => {
+            if (entry.url !== server) return entry;
+            const { user: _user, signedInAt: _at, ...rest } = entry;
+            return rest;
+          }),
+        }));
+        yield* publish(store, [{ _tag: "share-servers", status }]);
+        return status;
+      }),
+
+    SetDefaultShareServer: (request: { readonly server?: string }) =>
+      Effect.gen(function* () {
+        const server = request.server ?? mockShareServer;
+        const status = yield* Ref.updateAndGet(shareServers, (current) => ({
+          defaultServer: server,
+          servers: [
+            ...current.servers.filter((entry) => entry.url !== server).map((entry) => ({ ...entry, default: false })),
+            { ...(current.servers.find((entry) => entry.url === server) ?? { url: server, projects: 0 }), default: true },
+          ],
+        }));
+        yield* publish(store, [{ _tag: "share-servers", status }]);
+        return status;
+      }),
+
     SubscribeProject: (request: {
       readonly shareCode: string;
+      readonly server?: string;
       readonly directory?: string;
       readonly name?: string;
     }) =>
       Effect.gen(function* () {
+        const server = request.server ?? mockShareServer;
         const state = yield* Ref.get(store.state);
         const now = Date.now();
         const id = `proj_${state.nextProjectSeq}`;
@@ -1618,7 +1735,9 @@ const handlers = Effect.gen(function* () {
           issues: [],
           share: {
             _tag: "subscribed",
+            server,
             shareId: "shr_mock_" + request.shareCode.replaceAll("-", "").toLowerCase(),
+            shareCode: request.shareCode,
             installedSha: "0".repeat(40),
             installedAt: now,
           },
@@ -1672,7 +1791,9 @@ const handlers = Effect.gen(function* () {
           ...project,
           share: {
             _tag: "subscribed",
+            server: share.server,
             shareId: share.shareId,
+            shareCode: share.shareCode,
             installedSha: share.available.sha,
             installedAt: Date.now(),
           },
@@ -1879,6 +2000,40 @@ const handlers = Effect.gen(function* () {
         };
       }),
 
+    GetProjectAgentSetup: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.map(requireProject(state, projectId), (project) => mockAgentSetup(state, project)),
+      ),
+
+    WriteProjectAgentConfigs: (request: {
+      readonly projectId: string;
+      readonly agents: ReadonlyArray<CodingAgent>;
+    }) =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(store.state);
+        const project = yield* requireProject(state, request.projectId);
+        const current = state.agentConfigs.get(project.id) ?? [];
+        const agentConfigs = new Map(state.agentConfigs);
+        agentConfigs.set(project.id, [...new Set([...current, ...request.agents])]);
+        const next = { ...state, agentConfigs };
+        yield* Ref.set(store.state, next);
+        return mockAgentSetup(next, project);
+      }),
+
+    ListProjectOpeners: ({ projectId }: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.map(requireProject(state, projectId), (project) => ({
+          projectId: project.id,
+          openers: MOCK_OPENERS,
+          configuredAgents: state.agentConfigs.get(project.id) ?? [],
+        })),
+      ),
+
+    OpenProject: (request: { readonly projectId: string }) =>
+      Effect.flatMap(Ref.get(store.state), (state) =>
+        Effect.asVoid(requireProject(state, request.projectId)),
+      ),
+
     CheckProject: ({ projectId }: { readonly projectId: string }) =>
       Effect.flatMap(Ref.get(store.state), (state) =>
         Effect.gen(function* () {
@@ -2036,7 +2191,7 @@ const handlers = Effect.gen(function* () {
                 ...withSource(mainSourceOf("dashboard")),
                 fingerprint: "mock-dashboard-v1",
                 status: "ready" as const,
-                readUrl:
+                stableUrl:
                   "http://127.0.0.1:49490/a/mock-read-token/dashboard/index.html",
               },
               {
@@ -2071,7 +2226,6 @@ const handlers = Effect.gen(function* () {
             url: "",
             pageUrl: "mock-artifact.html?token=" + encodeURIComponent(token),
             token,
-            scope: "action" as const,
             expiresAt: Date.now() + mockArtifactTtl(),
           };
         }),
@@ -2086,7 +2240,6 @@ const handlers = Effect.gen(function* () {
     CreateArtifactUrl: (request: {
       readonly projectId: string;
       readonly artifact: string;
-      readonly scope: "read" | "action";
       readonly transparent: boolean;
     }) =>
       Effect.gen(function* () {
@@ -2095,34 +2248,11 @@ const handlers = Effect.gen(function* () {
         if (request.artifact !== "dashboard") {
           return yield* fail(agentError("not-found", "No artifact " + request.artifact));
         }
-        if (request.scope === "action") {
-          const id = "artifact_confirmation_" + state.nextArtifactConfirmationSeq;
-          const confirmation: ArtifactUrlConfirmation = {
-            id,
-            projectId: project.id,
-            projectName: project.name,
-            artifact: request.artifact,
-            artifactTitle: "Stream dashboard",
-            scope: "action",
-            transparent: request.transparent,
-            createdAt: Date.now(),
-            summary: "Allows ResetCounters and other action procedures",
-            procedures: ["ResetCounters"],
-          };
-          yield* Ref.set(store.state, {
-            ...state,
-            artifactConfirmations: new Map(state.artifactConfirmations).set(id, confirmation),
-            artifactConfirmationOrder: [...state.artifactConfirmationOrder, id],
-            nextArtifactConfirmationSeq: state.nextArtifactConfirmationSeq + 1,
-          });
-          return { _tag: "confirmation-required" as const, confirmation };
-        }
         const id = "artifact_url_" + state.nextArtifactUrlSeq;
         const url: ArtifactUrlSummary = {
           id,
           projectId: project.id,
           artifact: request.artifact,
-          scope: "read",
           transparent: request.transparent,
           createdAt: Date.now(),
           urlPreview:
@@ -2137,7 +2267,6 @@ const handlers = Effect.gen(function* () {
           nextArtifactUrlSeq: state.nextArtifactUrlSeq + 1,
         });
         return {
-          _tag: "created" as const,
           url,
           copyUrl:
             "http://127.0.0.1:49490/a/mock-read-token/dashboard/index.html" +
@@ -2171,84 +2300,6 @@ const handlers = Effect.gen(function* () {
               [...state.artifactUrls].filter(([candidate]) => candidate !== id),
             ),
             artifactUrlOrder: state.artifactUrlOrder.filter((candidate) => candidate !== id),
-          });
-        }),
-      ),
-
-    ListArtifactUrlConfirmations: (request: { readonly projectId?: string }) =>
-      Effect.map(Ref.get(store.state), (state) => ({
-        confirmations: state.artifactConfirmationOrder.flatMap((id) => {
-          const confirmation = state.artifactConfirmations.get(id);
-          if (confirmation === undefined) return [];
-          if (
-            request.projectId !== undefined &&
-            confirmation.projectId !== request.projectId
-          ) {
-            return [];
-          }
-          return [confirmation];
-        }),
-      })),
-
-    ApproveArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
-      Effect.flatMap(Ref.get(store.state), (state) =>
-        Effect.gen(function* () {
-          const confirmation = state.artifactConfirmations.get(confirmationId);
-          if (confirmation === undefined) {
-            return yield* fail(
-              agentError("not-found", "No artifact confirmation " + confirmationId),
-            );
-          }
-          const id = "artifact_url_" + state.nextArtifactUrlSeq;
-          const url: ArtifactUrlSummary = {
-            id,
-            projectId: confirmation.projectId,
-            artifact: confirmation.artifact,
-            scope: "action",
-            transparent: confirmation.transparent,
-            createdAt: Date.now(),
-            urlPreview:
-              "http://127.0.0.1:49490/a/••••/dashboard/index.html",
-            tokenFingerprint: "mock-" + id,
-            url: "http://127.0.0.1:49490/a/mock-action-token/dashboard/index.html",
-          };
-          yield* Ref.set(store.state, {
-            ...state,
-            artifactUrls: new Map(state.artifactUrls).set(id, url),
-            artifactUrlOrder: [...state.artifactUrlOrder, id],
-            artifactConfirmations: new Map(
-              [...state.artifactConfirmations].filter(([candidate]) => candidate !== confirmationId),
-            ),
-            artifactConfirmationOrder: state.artifactConfirmationOrder.filter(
-              (candidate) => candidate !== confirmationId,
-            ),
-            nextArtifactUrlSeq: state.nextArtifactUrlSeq + 1,
-          });
-          return {
-            url,
-            copyUrl:
-              "http://127.0.0.1:49490/a/mock-action-token/index.html" +
-              (confirmation.transparent ? "?background=transparent" : ""),
-          };
-        }),
-      ),
-
-    RejectArtifactUrl: ({ confirmationId }: { readonly confirmationId: string }) =>
-      Effect.flatMap(Ref.get(store.state), (state) =>
-        Effect.gen(function* () {
-          if (!state.artifactConfirmations.has(confirmationId)) {
-            return yield* fail(
-              agentError("not-found", "No artifact confirmation " + confirmationId),
-            );
-          }
-          yield* Ref.set(store.state, {
-            ...state,
-            artifactConfirmations: new Map(
-              [...state.artifactConfirmations].filter(([candidate]) => candidate !== confirmationId),
-            ),
-            artifactConfirmationOrder: state.artifactConfirmationOrder.filter(
-              (candidate) => candidate !== confirmationId,
-            ),
           });
         }),
       ),
@@ -2721,4 +2772,7 @@ const handlers = Effect.gen(function* () {
 });
 export const MockAgentRpcs = AgentRpcs.toLayer(handlers);
 
-export const MockAgentLayer = MockAgentRpcs.pipe(Layer.provide(MockAgentStoreLive));
+export const makeMockAgentLayer = (options: MockAgentOptions = {}) =>
+  MockAgentRpcs.pipe(Layer.provide(makeMockAgentStoreLive(options)));
+
+export const MockAgentLayer = makeMockAgentLayer();

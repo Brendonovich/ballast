@@ -18,12 +18,15 @@ import type {
 
 import {
   applyProject,
+  checkData,
   checkText,
+  dedupeIssues,
   declarationUnits,
+  projectSummaryView,
   requirementLine,
   requirementViews,
 } from "./adapter.ts";
-import type { ProjectAdapter, ProjectState } from "./adapter.ts";
+import type { ApplyOutcome, ProjectAdapter, ProjectState } from "./adapter.ts";
 import { formatCatalog, selectCatalog } from "./catalog.ts";
 import type { CatalogFilter } from "./catalog.ts";
 import { formatUnknown, ToolError, toolError } from "./errors.ts";
@@ -321,14 +324,17 @@ export const formatStatus = (
     ]),
   ].filter((scope) => !attributedScopes.has(scope));
   const state = statusState(project, detail);
+  const issues = dedupeIssues(project.issues);
   const lines: Array<string> = [
     "project " +
       project.id +
       " (" +
       project.name +
-      ") · " +
+      ") · state " +
       state.state +
       (state.reason === undefined ? "" : " (" + state.reason + ")") +
+      " · service status " +
+      project.status +
       " · " +
       (project.enabled ? "enabled" : "disabled") +
       (project.entry === undefined ? "" : " · entry " + project.entry),
@@ -338,7 +344,7 @@ export const formatStatus = (
       " · applied " +
       (detail.appliedAt === undefined ? "never" : new Date(detail.appliedAt).toISOString()),
   ];
-  for (const issue of project.issues) {
+  for (const issue of issues) {
     lines.push(
       issue.severity +
         ": " +
@@ -426,7 +432,9 @@ export const formatStatus = (
   return result(lines.join("\n"), {
     state: state.state,
     ...(state.reason === undefined ? {} : { reason: state.reason }),
-    project,
+    /** Raw service status; `state` is the derived vocabulary above. */
+    serviceStatus: project.status,
+    project: { ...project, issues },
     units: detail.units,
     requirements,
     artifacts,
@@ -439,7 +447,45 @@ export const formatStatus = (
       ...new Set([...attributedScopes, ...extraScopes]),
     ],
     ...(detail.pendingConsent === undefined ? {} : { pendingConsent: detail.pendingConsent }),
-    issues: project.issues,
+    issues,
+  });
+};
+
+/**
+ * ballast_apply stays small: state, message and a minimal project summary on
+ * success. A failed or waiting outcome also includes the compact check that
+ * explains what still needs a user action.
+ */
+export const applyOutput = (outcome: ApplyOutcome): ToolOutput => {
+  const lines = [
+    "apply: " + outcome.state + (outcome.reason === undefined ? "" : " (" + outcome.reason + ")"),
+    outcome.message,
+  ];
+  const project = outcome.project === undefined ? undefined : projectSummaryView(outcome.project);
+  if (outcome.state === "running") {
+    if (project !== undefined) {
+      lines.push("project " + project.id + " (" + project.name + ") · status " + project.status);
+    }
+    return result(lines.join("\n"), {
+      state: outcome.state,
+      message: outcome.message,
+      ...(project === undefined ? {} : { project }),
+    });
+  }
+  if (outcome.check !== undefined) {
+    lines.push(
+      "",
+      checkText(outcome.check, undefined, { detail: "compact", next: false }),
+    );
+  }
+  return result(lines.join("\n"), {
+    state: outcome.state,
+    ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+    message: outcome.message,
+    ...(project === undefined ? {} : { project }),
+    ...(outcome.check === undefined
+      ? {}
+      : { check: checkData(outcome.check, undefined, "compact") }),
   });
 };
 
@@ -487,7 +533,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_project_init",
     description:
-      "Create and register a Ballast project through the running service: ballast.ts, package.json (ballast.entry), tsconfig.json and a short AGENTS.md pointing at ballast_guide. Set artifact: true to copy the Solid artifact template (src/api.ts and artifacts/dashboard/main.tsx). The service refuses a non-empty folder. This does not start the project; the first Start is a user action in the Ballast app. Use ballast_check next.",
+      "Create and register a Ballast project through the running service: ballast.ts, package.json (ballast.entry), tsconfig.json and an AGENTS.md telling coding agents to work through the Ballast tools (guide, catalog, check after every edit, apply, status/logs/events). Set artifact: true to copy the Solid artifact template (src/api.ts and artifacts/dashboard/main.tsx). The service refuses a non-empty folder. This does not start the project; the first Start is a user action in the Ballast app. Use ballast_check next.",
     parameters: Schema.Struct({
       name: Schema.String,
       dir: Schema.optionalKey(Schema.String),
@@ -517,15 +563,17 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
   defineTool({
     name: "ballast_check",
     description:
-      "Typecheck, bundle and plan a registered Ballast project WITHOUT applying or starting it. Returns worker and artifact diagnostics (file, line, column, code, message), planned units and sources, artifact/API/store declarations, artifact build status, the diff from the applied manifest, and whether changes are artifact-only (hot reload, worker stays) or restart the worker. Also reports requiresConsent, missing scopes, and every connection requirement (bound/proposed/unbound/missing). Use after every edit. On a failed build the previously running version is untouched.",
+      "Typecheck, bundle and plan a registered Ballast project WITHOUT applying or starting it. Returns deduplicated worker and artifact diagnostics (file, line, column, code, message; artifact errors caused by a worker error are marked as cascading), artifact/API/store declarations, artifact build status, the diff from the applied manifest, and whether changes are artifact-only (hot reload, worker stays) or restart the worker. Also reports requiresConsent, missing scopes, and every connection requirement (bound/proposed/unbound/missing). detail defaults to compact; pass detail: \"full\" for manifests, unit rows and the complete connection inventory. Use after every edit. On a failed build the previously running version is untouched.",
     parameters: Schema.Struct({
       project: Schema.String,
+      detail: Schema.optionalKey(Schema.Literals(["compact", "full"])),
     }),
     run: (input) =>
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
         const check = yield* context.adapter.checkProject(project.id);
         const listing = yield* loadArtifacts(context.adapter, project.id);
+        const detail = input.detail ?? "compact";
         const declarations = declarationUnits(
           check.manifest ?? check.appliedManifest,
           listing.artifacts,
@@ -544,15 +592,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
             check.changes.every((change) => change.kind === "artifact"),
           requiresWorkerRestart: check.changes.some((change) => change.kind !== "artifact"),
         };
-        return result(checkText(check, extras), {
-          ...check,
-          requirementDetails: requirementViews(
-            check.requirements,
-            check.availableConnections,
-            check.manifest ?? check.appliedManifest,
-          ),
-          ...extras,
-        });
+        return result(checkText(check, extras, { detail }), checkData(check, extras, detail));
       }),
   }),
   defineTool({
@@ -565,18 +605,13 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
     run: (input) =>
       Effect.gen(function* () {
         const project = yield* context.adapter.resolveProject(input.project);
-        const outcome = yield* applyProject(context.adapter, project);
-        const lines = ["apply: " + outcome.state + (outcome.reason === undefined ? "" : " (" + outcome.reason + ")"), outcome.message];
-        if (outcome.check !== undefined) {
-          lines.push("", checkText(outcome.check));
-        }
-        return result(lines.join("\n"), outcome);
+        return applyOutput(yield* applyProject(context.adapter, project));
       }),
   }),
   defineTool({
     name: "ballast_share",
     description:
-      "Share a Ballast project through the user's Ballast cloud, or deploy a new version of an already-shared one. The first call creates the share and returns its share code; anyone with a paired Ballast and the code can subscribe to a read-only copy. Every deploy notifies subscribed machines, whose users choose when to apply it (consent still applies on their machines). Deploys the files on disk exactly (excluding .ballast, node_modules, dist, .git and .env files), so run ballast_check first. Requires a cloud-paired machine; subscribed projects cannot be shared.",
+      "Share a Ballast project through a share server (the user's default, normally the Ballast cloud), or deploy a new version of an already-shared one. The first call creates the share and returns its share code; anyone with the share link (or code) can subscribe to a read-only copy without signing in. Subscribers see each deploy as an available update and choose when to apply it (consent still applies on their machines). Deploys the files on disk exactly (excluding .ballast, node_modules, dist, .git and .env files), so run ballast_check first. Publishing needs the user signed in to the share server (Settings → Sharing → Sign in with Anomaly, or `ballast shares login`); if this fails with unauthorized, ask them to sign in, do not retry. Subscribed projects cannot be shared.",
     parameters: Schema.Struct({
       project: Schema.String,
       message: Schema.optionalKey(Schema.String),
@@ -587,7 +622,7 @@ const tools = (context: ToolContext): ReadonlyArray<RegisteredTool> => [
         const deployed = yield* context.adapter.shareProject(project.id, input.message);
         const text = [
           deployed.deployed
-            ? "deployed " + deployed.sha.slice(0, 12) + " (" + deployed.files + " files, " + deployed.bytes + " bytes); " + deployed.notified + " subscribed machine(s) notified"
+            ? "deployed " + deployed.sha.slice(0, 12) + " to " + deployed.server + " (" + deployed.files + " files, " + deployed.bytes + " bytes)"
             : "no changes since " + deployed.sha.slice(0, 12) + "; nothing deployed",
           "share code: " + deployed.shareCode,
         ].join("\n");

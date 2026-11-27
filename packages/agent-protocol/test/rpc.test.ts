@@ -106,7 +106,7 @@ describe("@ballast/agent-protocol RPC group", () => {
     }),
   );
 
-  it.effect("mints independent action view tokens and renews one in place", () =>
+  it.effect("mints independent artifact view tokens and renews one in place", () =>
     Effect.gen(function* () {
       const agent = yield* client;
 
@@ -118,7 +118,6 @@ describe("@ballast/agent-protocol RPC group", () => {
         projectId: main,
         artifact: "dashboard",
       });
-      expect(first.scope).toBe("action");
       expect(first.token).not.toBe(second.token);
 
       const renewed = yield* agent.RenewArtifactView({ token: first.token });

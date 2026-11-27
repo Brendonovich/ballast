@@ -263,6 +263,8 @@ test("real service: connection instances, project bindings, workers, logs, sourc
   });
 
   try {
+    // The service starts with no projects; skip first-run onboarding (onboarding.spec.ts covers it).
+    await page.addInitScript(() => localStorage.setItem("ballast.onboardingDismissed", "1"));
     await page.goto(`${info.url}/?token=${encodeURIComponent(info.token)}`);
     await page.evaluate(() => localStorage.setItem("ballast.theme", "dark"));
     await page.reload();
@@ -382,18 +384,12 @@ test("real service: connection instances, project bindings, workers, logs, sourc
         await page.getByTestId("artifact-urls").click();
         await page.getByTestId("artifact-url-create").click();
         await expect(page.getByTestId("artifact-url-copy-value")).toContainText("/a/");
-        const readCopy = await page.getByTestId("artifact-url-copy-value").textContent();
-        expect(readCopy).toContain("http://127.0.0.1:");
-        await page.getByTestId("artifact-url-scope").selectOption("action");
+        const firstCopy = await page.getByTestId("artifact-url-copy-value").textContent();
+        expect(firstCopy).toContain("http://127.0.0.1:");
         await page.getByTestId("artifact-url-create").click();
-        await expect(page.getByTestId("artifact-url-confirmation")).toBeVisible();
-        await page
-          .getByTestId("artifact-url-confirmation")
-          .getByRole("button", { name: "Approve" })
-          .click();
         await expect(page.getByTestId("artifact-url-copy-value")).toContainText("/a/");
         await expect(page.getByTestId("artifact-url-copy-value")).not.toHaveText(
-          readCopy ?? "",
+          firstCopy ?? "",
         );
         await expect(page.getByTestId("artifact-url-row")).toHaveCount(2);
         await page.getByTestId("artifact-url-row").first().getByTestId("artifact-url-revoke").click();

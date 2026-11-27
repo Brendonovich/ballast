@@ -1,4 +1,3 @@
-import { action } from "@ballast/artifact/protocol";
 import { Rpc } from "effect/rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
@@ -11,6 +10,6 @@ export type DashboardSnapshot = Schema.Schema.Type<typeof DashboardSnapshot>;
 
 export const DashboardApi = RpcGroup.make(
   Rpc.make("Snapshot", { success: DashboardSnapshot }),
-  action(Rpc.make("ResetCounters", { success: Schema.Number })),
+  Rpc.make("ResetCounters", { success: Schema.Number }),
   Rpc.make("Events", { stream: true, success: DashboardSnapshot }),
 );

@@ -1,8 +1,9 @@
 import type {
   ApplyProjectUpdateResult,
   DeployProjectResult,
+  ShareServersStatus,
+  ShareSignIn,
   ArtifactSummary,
-  ArtifactUrlConfirmation,
   ArtifactUrlSummary,
   ArtifactView,
   CloudPairingSession,
@@ -29,7 +30,12 @@ import type {
   ServiceInfo,
   ServiceSnapshot,
   TimerSummary,
+  CodingAgent,
+  ProjectAgentSetup,
+  ProjectOpener,
+  ProjectOpeners,
 } from "@ballast/agent-protocol";
+import { agentError, parseShareInput } from "@ballast/agent-protocol";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { createSignal } from "solid-js";
@@ -104,7 +110,6 @@ export interface AgentStore {
   readonly createArtifactUrl: (request: {
     readonly projectId: string;
     readonly artifact: string;
-    readonly scope: "read" | "action";
     readonly transparent: boolean;
   }) => Promise<CreateArtifactUrlResult | undefined>;
   readonly listArtifactUrls: (
@@ -112,13 +117,6 @@ export interface AgentStore {
     artifact: string,
   ) => Promise<ReadonlyArray<ArtifactUrlSummary> | undefined>;
   readonly revokeArtifactUrl: (id: string) => Promise<boolean>;
-  readonly listArtifactUrlConfirmations: (
-    projectId: string,
-  ) => Promise<ReadonlyArray<ArtifactUrlConfirmation> | undefined>;
-  readonly approveArtifactUrl: (
-    confirmationId: string,
-  ) => Promise<{ readonly url: ArtifactUrlSummary; readonly copyUrl: string } | undefined>;
-  readonly rejectArtifactUrl: (confirmationId: string) => Promise<boolean>;
   readonly cloudAccounts: Accessor<ReadonlyArray<CloudTwitchAccount>>;
   readonly loadCloudAccounts: () => Promise<void>;
   readonly connections: () => ReadonlyArray<ConnectionSummary>;
@@ -147,10 +145,22 @@ export interface AgentStore {
   readonly restartProject: (projectId: string) => Promise<ProjectDetail | undefined>;
   /** Share (first time) or deploy the project's files to subscribers. */
   readonly shareProject: (projectId: string) => Promise<DeployProjectResult | undefined>;
+  /** `input` is a share link (`{server}/s/{code}`) or a bare share code. */
   readonly subscribeProject: (
-    shareCode: string,
+    input: string,
     directory?: string,
   ) => Promise<ProjectDetail | undefined>;
+  readonly getProjectAgentSetup: (projectId: string) => Promise<ProjectAgentSetup | undefined>;
+  readonly listProjectOpeners: (projectId: string) => Promise<ProjectOpeners | undefined>;
+  readonly openProject: (
+    projectId: string,
+    opener: ProjectOpener,
+    agent?: CodingAgent,
+  ) => Promise<boolean>;
+  readonly writeProjectAgentConfigs: (
+    projectId: string,
+    agents: ReadonlyArray<CodingAgent>,
+  ) => Promise<ProjectAgentSetup | undefined>;
   readonly applyProjectUpdate: (projectId: string) => Promise<ApplyProjectUpdateResult | undefined>;
   readonly setProjectParam: (
     projectId: string,
@@ -228,6 +238,19 @@ export interface AgentStore {
   ) => Promise<CloudPairingSession | undefined>;
   readonly pairCloud: (code: string, machineName: string) => Promise<CloudStatus | undefined>;
   readonly unpairCloud: () => Promise<CloudStatus | undefined>;
+  /** Share servers and who is signed in to each (decision 0014). */
+  readonly shareServers: Accessor<ShareServersStatus | undefined>;
+  /** How the latest browser sign-in ended, per server. */
+  readonly shareSignInResult: Accessor<
+    { readonly server: string; readonly ok: boolean; readonly error?: string } | undefined
+  >;
+  readonly loadShareServers: () => Promise<void>;
+  /** The URL to open in a browser; the service hears back on its loopback callback. */
+  readonly beginShareSignIn: (server?: string) => Promise<ShareSignIn | undefined>;
+  readonly signOutShareServer: (server: string) => Promise<void>;
+  readonly setDefaultShareServer: (server?: string) => Promise<boolean>;
+  /** True when this machine has a session with the given (or the default) share server. */
+  readonly signedInToShareServer: (server: string | undefined) => boolean;
   readonly reportShellPermission: (
     permission: "accessibility",
     status: PermissionStatus,
@@ -272,6 +295,12 @@ export const createAgentStore = (
   const [snapshot, setSnapshot] = createSignal<ServiceSnapshot>();
   const [integrations, setIntegrations] = createSignal<ReadonlyArray<ConnectionIntegration>>([]);
   const [cloudAccounts, setCloudAccounts] = createSignal<ReadonlyArray<CloudTwitchAccount>>([]);
+  const [shareServers, setShareServers] = createSignal<ShareServersStatus>();
+  const [shareSignInResult, setShareSignInResult] = createSignal<{
+    readonly server: string;
+    readonly ok: boolean;
+    readonly error?: string;
+  }>();
   const [artifactsByProject, setArtifactsByProject] = createSignal<
     Readonly<Record<string, ReadonlyArray<ArtifactSummary>>>
   >({});
@@ -502,6 +531,7 @@ export const createAgentStore = (
     switch (event._tag) {
       case "snapshot": {
         setSnapshot(event.snapshot);
+        void loadShareServers();
         setWatchStatus("live");
         for (const entry of event.snapshot.projects) bumpRevision(entry.id);
         readyNow();
@@ -555,9 +585,7 @@ export const createAgentStore = (
         }));
         return;
       }
-      case "artifact-url":
-      case "artifact-url-confirmation":
-      case "artifact-url-confirmation-resolved": {
+      case "artifact-url": {
         setArtifactUrlRevision((current) => current + 1);
         return;
       }
@@ -567,6 +595,11 @@ export const createAgentStore = (
       }
       case "cloud": {
         setCloud(event.cloud);
+        return;
+      }
+      case "share-servers": {
+        setShareServers(event.status);
+        if (event.signIn !== undefined) setShareSignInResult(event.signIn);
         return;
       }
       case "health": {
@@ -717,7 +750,6 @@ export const createAgentStore = (
   const createArtifactUrl = async (request: {
     readonly projectId: string;
     readonly artifact: string;
-    readonly scope: "read" | "action";
     readonly transparent: boolean;
   }): Promise<CreateArtifactUrlResult | undefined> => {
     const outcome = await execute(
@@ -746,40 +778,46 @@ export const createAgentStore = (
     return outcome.ok;
   };
 
-  const listArtifactUrlConfirmations = async (
-    projectId: string,
-  ): Promise<ReadonlyArray<ArtifactUrlConfirmation> | undefined> => {
-    const outcome = await execute(
-      `artifacts:${projectId}:url:confirmations`,
-      runtime.client.ListArtifactUrlConfirmations({ projectId }),
-    );
-    return outcome.ok ? outcome.value.confirmations : undefined;
-  };
-
-  const approveArtifactUrl = async (
-    confirmationId: string,
-  ): Promise<{ readonly url: ArtifactUrlSummary; readonly copyUrl: string } | undefined> => {
-    const outcome = await execute(
-      `artifacts:url:${confirmationId}:approve`,
-      runtime.client.ApproveArtifactUrl({ confirmationId }),
-    );
-    return outcome.ok ? outcome.value : undefined;
-  };
-
-  const rejectArtifactUrl = async (confirmationId: string): Promise<boolean> => {
-    const outcome = await execute(
-      `artifacts:url:${confirmationId}:reject`,
-      runtime.client.RejectArtifactUrl({ confirmationId }),
-    );
-    return outcome.ok;
-  };
-
   const loadCloudAccounts = async (): Promise<void> => {
     const outcome = await execute(
       "cloud:accounts",
       runtime.client.ListCloudAccounts(),
     );
     if (outcome.ok) setCloudAccounts(outcome.value.accounts);
+  };
+
+  const loadShareServers = async (): Promise<void> => {
+    const outcome = await execute("shares:servers", runtime.client.GetShareServers());
+    if (outcome.ok) setShareServers(outcome.value);
+  };
+
+  const beginShareSignIn = async (server?: string): Promise<ShareSignIn | undefined> => {
+    setShareSignInResult(undefined);
+    const outcome = await execute(
+      "shares:sign-in",
+      runtime.client.BeginShareSignIn(server === undefined ? {} : { server }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const signOutShareServer = async (server: string): Promise<void> => {
+    const outcome = await execute(`shares:sign-out:${server}`, runtime.client.SignOutShareServer({ server }));
+    if (outcome.ok) setShareServers(outcome.value);
+  };
+
+  const setDefaultShareServer = async (server?: string): Promise<boolean> => {
+    const outcome = await execute(
+      "shares:default",
+      runtime.client.SetDefaultShareServer(server === undefined || server.trim() === "" ? {} : { server: server.trim() }),
+    );
+    if (outcome.ok) setShareServers(outcome.value);
+    return outcome.ok;
+  };
+
+  const signedInToShareServer = (server: string | undefined): boolean => {
+    const status = shareServers();
+    const url = server ?? status?.defaultServer;
+    return url !== undefined && status?.servers.some((entry) => entry.url === url && entry.user !== undefined) === true;
   };
 
   const loadIntegrations = async (): Promise<void> => {
@@ -832,6 +870,7 @@ export const createAgentStore = (
     setSnapshot(next);
     setWatchStatus("live");
     readyNow();
+    void loadShareServers();
     return true;
   };
 
@@ -972,13 +1011,63 @@ export const createAgentStore = (
   ): Promise<ProjectDetail | undefined> => {
     const outcome = await execute(
       "project:subscribe",
-      runtime.client.SubscribeProject({
-        shareCode: shareCode.trim(),
-        ...(directory === undefined || directory.trim() === "" ? {} : { directory: directory.trim() }),
+      Effect.gen(function* () {
+        const parsed = parseShareInput(shareCode);
+        if (parsed === undefined) {
+          return yield* Effect.fail(agentError("invalid", "Enter a share link or share code."));
+        }
+        return yield* runtime.client.SubscribeProject({
+          shareCode: parsed.shareCode,
+          ...(parsed.server === undefined ? {} : { server: parsed.server }),
+          ...(directory === undefined || directory.trim() === "" ? {} : { directory: directory.trim() }),
+        });
       }),
     );
     if (!outcome.ok) return undefined;
     applyProjectDetail(outcome.value);
+    return outcome.value;
+  };
+
+  const getProjectAgentSetup = async (
+    projectId: string,
+  ): Promise<ProjectAgentSetup | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:agents`,
+      runtime.client.GetProjectAgentSetup({ projectId }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const listProjectOpeners = async (projectId: string): Promise<ProjectOpeners | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:openers`,
+      runtime.client.ListProjectOpeners({ projectId }),
+    );
+    return outcome.ok ? outcome.value : undefined;
+  };
+
+  const openProject = async (
+    projectId: string,
+    opener: ProjectOpener,
+    agent?: CodingAgent,
+  ): Promise<boolean> => {
+    const outcome = await execute(
+      `project:${projectId}:open`,
+      runtime.client.OpenProject({ projectId, opener, ...(agent === undefined ? {} : { agent }) }),
+    );
+    return outcome.ok;
+  };
+
+  const writeProjectAgentConfigs = async (
+    projectId: string,
+    agents: ReadonlyArray<CodingAgent>,
+  ): Promise<ProjectAgentSetup | undefined> => {
+    const outcome = await execute(
+      `project:${projectId}:agents:write`,
+      runtime.client.WriteProjectAgentConfigs({ projectId, agents }),
+    );
+    if (!outcome.ok) return undefined;
+    bumpFileRevision(projectId);
     return outcome.value;
   };
 
@@ -1302,11 +1391,15 @@ export const createAgentStore = (
     createArtifactUrl,
     listArtifactUrls,
     revokeArtifactUrl,
-    listArtifactUrlConfirmations,
-    approveArtifactUrl,
-    rejectArtifactUrl,
     cloudAccounts,
     loadCloudAccounts,
+    shareServers,
+    shareSignInResult,
+    loadShareServers,
+    beginShareSignIn,
+    signOutShareServer,
+    setDefaultShareServer,
+    signedInToShareServer,
     connections,
     connection,
     cloud,
@@ -1327,6 +1420,10 @@ export const createAgentStore = (
     restartProject,
     shareProject,
     subscribeProject,
+    getProjectAgentSetup,
+    listProjectOpeners,
+    openProject,
+    writeProjectAgentConfigs,
     applyProjectUpdate,
     setProjectParam,
     approveProjectConsent,

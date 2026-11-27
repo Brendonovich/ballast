@@ -27,6 +27,8 @@ import type { ProjectSection } from "../lib/routes.ts";
 import type { IconProps } from "../ui/icons.tsx";
 import { Button, Spinner, StatusDot, cx } from "../ui/primitives.tsx";
 import { NewProjectDialog } from "../screens/ProjectsScreen.tsx";
+import { AgentSetupDialog } from "../screens/project/AgentSetup.tsx";
+import { ONBOARDING_PATH } from "../lib/onboarding.ts";
 import { ProjectSwitcher } from "./ProjectSwitcher.tsx";
 import { TopBarCenterContext, TopBarEndContext, TopBarSlotContext } from "./top-bar-slot.tsx";
 
@@ -86,6 +88,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   const [centerSlot, setCenterSlot] = createSignal<HTMLElement>();
   const [endSlot, setEndSlot] = createSignal<HTMLElement>();
   const [creating, setCreating] = createSignal(false);
+  const [connectingAgent, setConnectingAgent] = createSignal(false);
 
   onMount(() => {
     store.start();
@@ -277,7 +280,19 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
       <Show
         when={projectWindow()}
         fallback={
-          <>
+          <Show
+            when={location.pathname !== ONBOARDING_PATH}
+            fallback={
+              // Onboarding takes the whole home window; it has its own Skip.
+              <div class="flex min-w-0 flex-1 flex-col">
+                <Show when={inset}>
+                  <div class="titlebar-drag h-[28px] shrink-0" aria-hidden="true" />
+                </Show>
+                {reconnectBanner()}
+                <main class="min-h-0 flex-1 overflow-y-auto">{content()}</main>
+              </div>
+            }
+          >
             <aside class="flex w-[204px] shrink-0 flex-col border-r border-edge bg-rail">
               <div
                 class={cx("flex items-baseline gap-2", inset ? "titlebar-drag h-14 items-end pb-3" : "px-4 pb-4 pt-5")}
@@ -345,7 +360,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
                 </div>
               </main>
             </div>
-          </>
+          </Show>
         }
       >
         <div class="flex min-w-0 flex-1 flex-col">
@@ -392,6 +407,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
                   projectId={projectId() ?? ""}
                   onAllProjects={() => openHome("projects")}
                   onNewProject={() => setCreating(true)}
+                  onConnectAgent={() => setConnectingAgent(true)}
                 />
                 <Show when={store.project(projectId() ?? "")}>
                   {(project) => <ProjectStatusButton project={project()} onSelect={openIssue} />}
@@ -450,6 +466,16 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
             </TopBarSlotContext.Provider>
           </main>
         </div>
+      </Show>
+
+      <Show when={connectingAgent() ? store.project(projectId() ?? "") : undefined}>
+        {(project) => (
+          <AgentSetupDialog
+            projectId={project().id}
+            projectName={project().name}
+            onClose={() => setConnectingAgent(false)}
+          />
+        )}
       </Show>
 
       <Show when={creating()}>

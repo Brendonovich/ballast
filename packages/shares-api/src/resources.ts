@@ -8,7 +8,7 @@ const migrationsDir = decodeURIComponent(new URL("../migrations", import.meta.ur
 const databaseName = process.env.BALLAST_SHARES_D1_NAME;
 
 /**
- * The shares API's D1 database (shares and subscriptions).
+ * The shares API's D1 database (shares and their current deploys).
  * Migrations resolve next to this package, so any stack can include it.
  */
 export const SharesDatabase = Cloudflare.D1.Database("SharesDatabase", {

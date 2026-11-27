@@ -21,10 +21,10 @@ Sample Ballast scripts:
   and driven from an OBS event.
 - `obs-alert-overlay/` — a transparent alert artifact plus a declared OBS
   scene whose browser source loads it with `overlay.url` (the artifact's
-  read-only overlay URL).
+  stable overlay URL).
 - `sceneify-stream/` — a multi-file stream project: a four-scene declared
   layout, Twitch alerts as temporary scene items, mod chat commands and durable
   timers. See its README.
 - `stream-dashboard/` — a Solid artifact project: fake chat history queried
-  and watched over Effect RPC, counters in `Ballast.Store`, and an action to
-  reset them.
+  and watched over Effect RPC, counters in `Ballast.Store`, and a reset
+  procedure.

@@ -1,27 +1,6 @@
-import * as Context from "effect/Context";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
-import type * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import * as Schema from "effect/Schema";
-
-/**
- * Shared key with @ballast/core's Api.action annotation. The gateway can read
- * either module's key because Context identity is the string key.
- */
-export const ArtifactAction = Context.Service<boolean>("Ballast/Api/Action");
-
-/** Mark a project API procedure as an action without importing Node core. */
-export const action = <
-  Tag extends string,
-  Payload extends Schema.Top,
-  Success extends Schema.Top,
-  Error extends Schema.Top,
-  Middleware extends RpcMiddleware.AnyService,
-  Requires,
->(
-  rpc: Rpc.Rpc<Tag, Payload, Success, Error, Middleware, Requires>,
-): Rpc.Rpc<Tag, Payload, Success, Error, Middleware, Requires> =>
-  rpc.annotate(ArtifactAction, true);
 
 export const ParamValue = Schema.Union([
   Schema.String,
@@ -168,11 +147,11 @@ export const ArtifactMetadata = RpcGroup.make(
   Rpc.make("SetParam", {
     payload: { key: Schema.String, value: ParamValue },
     success: Schema.Void,
-  }).annotate(ArtifactAction, true),
+  }),
   Rpc.make("CancelTimer", {
     payload: { name: Schema.String, key: Schema.String },
     success: Schema.Boolean,
-  }).annotate(ArtifactAction, true),
+  }),
 );
 
 export type ArtifactMetadataRpcs = RpcGroup.Rpcs<typeof ArtifactMetadata>;

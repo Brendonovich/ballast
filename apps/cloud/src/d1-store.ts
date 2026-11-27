@@ -8,6 +8,10 @@ import {
   CloudStore,
   HookVerificationConfig,
   MachineRow,
+  ShareAuthCodeRow,
+  ShareSessionRow,
+  ShareSignInRow,
+  ShareUserRow,
   type CloudStoreService,
   type OAuthStateRow,
   type PairingCodeRow,
@@ -484,6 +488,103 @@ export const makeD1CloudStore = (raw: D1Raw): CloudStoreService => {
 
     touchMachine: (id, now) =>
       run("UPDATE machines SET last_seen_at = ? WHERE id = ?", now, id).pipe(Effect.asVoid),
+
+    insertShareSignIn: (row) =>
+      run(
+        "INSERT INTO share_sign_ins (state, payload, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        row.state,
+        row.payload,
+        row.createdAt,
+        row.expiresAt,
+      ).pipe(Effect.asVoid),
+
+    takeShareSignIn: (state, now) =>
+      findOne(
+        first(
+          "DELETE FROM share_sign_ins WHERE state = ? AND expires_at > ? RETURNING state, payload, created_at AS createdAt, expires_at AS expiresAt",
+          state,
+          now,
+        ),
+        (row) => decode(ShareSignInRow, row),
+      ),
+
+    upsertShareUser: (row) =>
+      first(
+        "INSERT INTO share_users (id, issuer, subject, name, username, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(issuer, subject) DO UPDATE SET name = excluded.name, username = excluded.username, updated_at = excluded.updated_at " +
+          "RETURNING id, issuer, subject, name, username, created_at AS createdAt, updated_at AS updatedAt",
+        row.id,
+        row.issuer,
+        row.subject,
+        row.name,
+        row.username,
+        row.createdAt,
+        row.updatedAt,
+      ).pipe(Effect.map((stored) => (stored === null ? row : decode(ShareUserRow, stored)))),
+
+    findShareUser: (id) =>
+      findOne(
+        first(
+          "SELECT id, issuer, subject, name, username, created_at AS createdAt, updated_at AS updatedAt FROM share_users WHERE id = ?",
+          id,
+        ),
+        (row) => decode(ShareUserRow, row),
+      ),
+
+    insertShareAuthCode: (row) =>
+      run(
+        "INSERT INTO share_auth_codes (code_hash, user_id, code_challenge, redirect_uri, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        row.codeHash,
+        row.userId,
+        row.codeChallenge,
+        row.redirectUri,
+        row.createdAt,
+        row.expiresAt,
+      ).pipe(Effect.asVoid),
+
+    takeShareAuthCode: (codeHash, now) =>
+      findOne(
+        first(
+          "DELETE FROM share_auth_codes WHERE code_hash = ? AND expires_at > ? RETURNING code_hash AS codeHash, user_id AS userId, code_challenge AS codeChallenge, redirect_uri AS redirectUri, created_at AS createdAt, expires_at AS expiresAt",
+          codeHash,
+          now,
+        ),
+        (row) => decode(ShareAuthCodeRow, row),
+      ),
+
+    insertShareSession: (row) =>
+      run(
+        "INSERT INTO share_sessions (id, user_id, token_hash, device_name, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)",
+        row.id,
+        row.userId,
+        row.tokenHash,
+        row.deviceName,
+        row.createdAt,
+        row.lastUsedAt,
+      ).pipe(Effect.asVoid),
+
+    findShareSessionByTokenHash: (tokenHash) =>
+      findOne(
+        first(
+          "SELECT id, user_id AS userId, token_hash AS tokenHash, device_name AS deviceName, created_at AS createdAt, last_used_at AS lastUsedAt FROM share_sessions WHERE token_hash = ?",
+          tokenHash,
+        ),
+        (row) => decode(ShareSessionRow, row),
+      ),
+
+    touchShareSession: (id, now) =>
+      run("UPDATE share_sessions SET last_used_at = ? WHERE id = ?", now, id).pipe(Effect.asVoid),
+
+    deleteShareSession: (id) => run("DELETE FROM share_sessions WHERE id = ?", id).pipe(Effect.asVoid),
+
+    pruneShareAuth: (now, staleBefore) =>
+      Effect.promise(() =>
+        raw.batch([
+          raw.prepare("DELETE FROM share_sign_ins WHERE expires_at <= ?").bind(now),
+          raw.prepare("DELETE FROM share_auth_codes WHERE expires_at <= ?").bind(now),
+          raw.prepare("DELETE FROM share_sessions WHERE last_used_at < ?").bind(staleBefore),
+        ]),
+      ).pipe(Effect.asVoid),
 
     listSubscriptions: (accountId) =>
       all(

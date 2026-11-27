@@ -129,7 +129,6 @@ export const startCloud = async (options: {
     ...process.env,
     HOME: home,
     BALLAST_DEV_PORT: String(port),
-    BALLAST_PUBLIC_ORIGIN: url,
     TWITCH_CLIENT_ID: "e2e-client",
     TWITCH_CLIENT_SECRET: "e2e-secret",
     BALLAST_TOKEN_KEY: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",

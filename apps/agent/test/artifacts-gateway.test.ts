@@ -16,7 +16,6 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const bin = fileURLToPath(new URL("../src/bin.ts", import.meta.url));
 
 const apiSource = [
-  'import * as Ballast from "@ballast/core";',
   'import { Rpc } from "effect/rpc";',
   'import * as RpcGroup from "effect/rpc/RpcGroup";',
   'import * as Schema from "effect/Schema";',
@@ -25,12 +24,10 @@ const apiSource = [
   '  Rpc.make("Snapshot", {',
   "    success: Schema.Struct({ count: Schema.Number, url: Schema.optional(Schema.String) }),",
   "  }),",
-  "  Ballast.Api.action(",
-  '    Rpc.make("Increment", {',
-  "      payload: { by: Schema.Number },",
-  "      success: Schema.Number,",
-  "    }),",
-  "  ),",
+  '  Rpc.make("Increment", {',
+  "    payload: { by: Schema.Number },",
+  "    success: Schema.Number,",
+  "  }),",
   '  Rpc.make("Counts", {',
   "    stream: true,",
   "    success: Schema.Struct({ count: Schema.Number }),",
@@ -258,15 +255,15 @@ const freePort = (): Effect.Effect<number> =>
       }),
   );
 
-const readTokenFromUrl = (url: string): string => {
+const tokenFromUrl = (url: string): string => {
   const match = /\/a\/([^/]+)\//.exec(url);
-  if (match === null || match[1] === undefined) throw new Error("read URL has no token");
+  if (match === null || match[1] === undefined) throw new Error("artifact URL has no token");
   return match[1];
 };
 
 describe("artifact gateway", () => {
   it.live(
-    "serves artifacts, enforces scopes and forwards metadata + project API",
+    "serves artifacts and forwards metadata + project API",
     () =>
       Effect.gen(function* () {
         const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-artifacts-")));
@@ -304,7 +301,6 @@ describe("artifact gateway", () => {
         const view = yield* call(root, (client) =>
           client.GetArtifactView({ projectId: added.summary.id, artifact: "dashboard" }),
         );
-        expect(view.scope).toBe("action");
         const page = yield* Effect.promise(() => fetch(view.pageUrl));
         expect(page.status).toBe(200);
         const csp = page.headers.get("content-security-policy") ?? "";
@@ -345,17 +341,15 @@ describe("artifact gateway", () => {
         );
         expect(serviceTokenRejected).toBe(true);
 
-        const readUrl = yield* call(root, (client) =>
+        const createdUrl = yield* call(root, (client) =>
           client.CreateArtifactUrl({
             projectId: added.summary.id,
             artifact: "dashboard",
-            scope: "read",
             transparent: false,
           }),
         );
-        if (readUrl._tag !== "created") throw new Error("expected a read URL");
-        const readToken = tokenFromCopyUrl(readUrl.copyUrl);
-        const metadataSocket = yield* openSocket(view.url, readToken, "/metadata");
+        const stableToken = tokenFromCopyUrl(createdUrl.copyUrl);
+        const metadataSocket = yield* openSocket(view.url, stableToken, "/metadata");
         yield* Effect.addFinalizer(() => Effect.sync(() => metadataSocket.close()));
         metadataSocket.send(JSON.stringify({ _tag: "Request", id: 1, tag: "Params", payload: {}, headers: [] }));
         const paramsMessage = yield* waitForMessage(metadataSocket, (value) =>
@@ -364,50 +358,15 @@ describe("artifact gateway", () => {
         expect(isRecord(paramsMessage)).toBe(true);
 
         metadataSocket.send(JSON.stringify({ _tag: "Request", id: 10, tag: "SetParam", payload: { key: "greeting", value: "hi" }, headers: [] }));
-        const readSetParam = yield* waitForMessage(metadataSocket, (value) =>
+        const setParam = yield* waitForMessage(metadataSocket, (value) =>
           isRecord(value) && value["requestId"] === 10 && value["_tag"] === "Exit",
         );
-        if (!isRecord(readSetParam) || !isRecord(readSetParam["exit"])) {
-          throw new Error("bad read SetParam response");
+        if (!isRecord(setParam) || !isRecord(setParam["exit"])) {
+          throw new Error("bad SetParam response");
         }
-        expect(readSetParam["exit"]["_tag"]).toBe("Failure");
-
-        const readSocket = yield* openSocket(view.url, readToken);
-        yield* Effect.addFinalizer(() => Effect.sync(() => readSocket.close()));
-        readSocket.send(JSON.stringify({ _tag: "Request", id: 2, tag: "Increment", payload: { by: 1 }, headers: [] }));
-        const forbidden = yield* waitForMessage(readSocket, (value) =>
-          isRecord(value) && value["requestId"] === 2 && value["_tag"] === "Exit",
-        );
-        if (!isRecord(forbidden) || !isRecord(forbidden["exit"])) throw new Error("bad forbidden response");
-        expect(forbidden["exit"]["_tag"]).toBe("Failure");
-
-        const actionRequest = yield* call(root, (client) =>
-          client.CreateArtifactUrl({
-            projectId: added.summary.id,
-            artifact: "dashboard",
-            scope: "action",
-            transparent: false,
-          }),
-        );
-        if (actionRequest._tag !== "confirmation-required") {
-          throw new Error("expected action confirmation");
-        }
-        const approved = yield* call(root, (client) =>
-          client.ApproveArtifactUrl({ confirmationId: actionRequest.confirmation.id }),
-        );
-        const actionToken = tokenFromCopyUrl(approved.copyUrl);
-        const actionMetadataSocket = yield* openSocket(view.url, actionToken, "/metadata");
-        yield* Effect.addFinalizer(() => Effect.sync(() => actionMetadataSocket.close()));
-        actionMetadataSocket.send(JSON.stringify({ _tag: "Request", id: 11, tag: "SetParam", payload: { key: "greeting", value: "hi" }, headers: [] }));
-        const actionSetParam = yield* waitForMessage(actionMetadataSocket, (value) =>
-          isRecord(value) && value["requestId"] === 11 && value["_tag"] === "Exit",
-        );
-        if (!isRecord(actionSetParam) || !isRecord(actionSetParam["exit"])) {
-          throw new Error("bad action SetParam response");
-        }
-        expect(actionSetParam["exit"]["_tag"]).toBe("Success");
-        actionMetadataSocket.send(JSON.stringify({ _tag: "Request", id: 12, tag: "Params", payload: null, headers: [] }));
-        const updatedParams = yield* waitForMessage(actionMetadataSocket, (value) =>
+        expect(setParam["exit"]["_tag"]).toBe("Success");
+        metadataSocket.send(JSON.stringify({ _tag: "Request", id: 12, tag: "Params", payload: null, headers: [] }));
+        const updatedParams = yield* waitForMessage(metadataSocket, (value) =>
           isRecord(value) && value["requestId"] === 12 && value["_tag"] === "Exit",
         );
         if (!isRecord(updatedParams) || !isRecord(updatedParams["exit"])) {
@@ -420,34 +379,34 @@ describe("artifact gateway", () => {
         );
         expect(isRecord(greetingParam) ? greetingParam["value"] : undefined).toBe("hi");
 
-        const actionSocket = yield* openSocket(view.url, actionToken);
-        yield* Effect.addFinalizer(() => Effect.sync(() => actionSocket.close()));
+        const apiSocket = yield* openSocket(view.url, stableToken);
+        yield* Effect.addFinalizer(() => Effect.sync(() => apiSocket.close()));
 
-        actionSocket.send(JSON.stringify({ _tag: "Request", id: 3, tag: "Increment", payload: { by: 2 }, headers: [] }));
-        const incremented = yield* waitForMessage(actionSocket, (value) =>
+        apiSocket.send(JSON.stringify({ _tag: "Request", id: 3, tag: "Increment", payload: { by: 2 }, headers: [] }));
+        const incremented = yield* waitForMessage(apiSocket, (value) =>
           isRecord(value) && value["requestId"] === 3 && value["_tag"] === "Exit",
         );
-        if (!isRecord(incremented) || !isRecord(incremented["exit"])) throw new Error("bad action response");
+        if (!isRecord(incremented) || !isRecord(incremented["exit"])) throw new Error("bad Increment response");
         expect(incremented["exit"]["_tag"]).toBe("Success");
 
-        actionSocket.send(JSON.stringify({ _tag: "Request", id: 4, tag: "Snapshot", payload: null, headers: [] }));
-        const snapshot = yield* waitForMessage(actionSocket, (value) =>
+        apiSocket.send(JSON.stringify({ _tag: "Request", id: 4, tag: "Snapshot", payload: null, headers: [] }));
+        const snapshot = yield* waitForMessage(apiSocket, (value) =>
           isRecord(value) && value["requestId"] === 4 && value["_tag"] === "Exit",
         );
         if (!isRecord(snapshot) || !isRecord(snapshot["exit"])) throw new Error("bad snapshot response");
         expect(snapshot["exit"]["_tag"]).toBe("Success");
         expect(isRecord(snapshot["exit"]["value"]) ? snapshot["exit"]["value"]["count"] : undefined).toBe(2);
 
-        actionSocket.send(JSON.stringify({ _tag: "Request", id: 5, tag: "Counts", payload: null, headers: [] }));
+        apiSocket.send(JSON.stringify({ _tag: "Request", id: 5, tag: "Counts", payload: null, headers: [] }));
         const chunks: Array<unknown> = [];
         while (chunks.length < 3) {
-          const message = yield* waitForMessage(actionSocket, (value) =>
+          const message = yield* waitForMessage(apiSocket, (value) =>
             isRecord(value) && value["requestId"] === 5 && value["_tag"] === "Chunk",
           );
           if (isRecord(message) && Array.isArray(message["values"])) chunks.push(...message["values"]);
         }
         expect(chunks.length).toBeGreaterThanOrEqual(3);
-        yield* waitForMessage(actionSocket, (value) =>
+        yield* waitForMessage(apiSocket, (value) =>
           isRecord(value) && value["requestId"] === 5 && value["_tag"] === "Exit",
         );
 
@@ -469,7 +428,7 @@ describe("artifact gateway", () => {
             return value["generation"];
           });
 
-        const generationBefore = yield* projectGeneration(actionToken);
+        const generationBefore = yield* projectGeneration(stableToken);
         yield* Effect.promise(() =>
           writeFile(
             join(project, "artifacts", "dashboard", "main.ts"),
@@ -485,7 +444,7 @@ describe("artifact gateway", () => {
             return text.includes("dashboard-v2") ? text : undefined;
           }),
         );
-        const generationAfter = yield* projectGeneration(actionToken);
+        const generationAfter = yield* projectGeneration(stableToken);
         expect(generationAfter).toBe(generationBefore);
 
         // The counter survives a service restart.
@@ -500,7 +459,7 @@ describe("artifact gateway", () => {
         const restartedView = yield* call(root, (client) =>
           client.GetArtifactView({ projectId: added.summary.id, artifact: "dashboard" }),
         );
-        const restartedSocket = yield* openSocket(restartedView.url, actionToken);
+        const restartedSocket = yield* openSocket(restartedView.url, stableToken);
         yield* Effect.addFinalizer(() => Effect.sync(() => restartedSocket.close()));
         restartedSocket.send(JSON.stringify({ _tag: "Request", id: 6, tag: "Snapshot", payload: null, headers: [] }));
         const persisted = yield* waitForMessage(restartedSocket, (value) =>
@@ -513,11 +472,11 @@ describe("artifact gateway", () => {
         ).toBe(2);
 
         // Revocation is immediate for new connections.
-        yield* call(root, (client) => client.RevokeArtifactUrl({ id: readUrl.url.id }));
+        yield* call(root, (client) => client.RevokeArtifactUrl({ id: createdUrl.url.id }));
         const revoked = yield* Effect.promise(
           () =>
             new Promise<boolean>((resolve) => {
-              const socket = new WebSocket(view.url + "/rpc?token=" + readToken);
+              const socket = new WebSocket(view.url + "/rpc?token=" + stableToken);
               socket.once("unexpected-response", (_request, response) => {
                 resolve(response.statusCode === 401);
                 socket.terminate();
@@ -572,7 +531,6 @@ describe("artifact gateway", () => {
         const second = yield* call(root, (client) =>
           client.GetArtifactView({ projectId: added.summary.id, artifact: "dashboard" }),
         );
-        expect(first.scope).toBe("action");
         expect(first.token).not.toBe(second.token);
         const [firstPage, secondPage] = yield* Effect.promise(() =>
           Promise.all([fetch(first.pageUrl), fetch(second.pageUrl)]),
@@ -632,7 +590,7 @@ describe("artifact gateway", () => {
     120_000,
   );
   it.live(
-    "serves a stable read URL that init can see and that survives restarts",
+    "serves a stable URL that init can see and that survives restarts",
     () =>
       Effect.gen(function* () {
         const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-artifacts-stable-")));
@@ -662,20 +620,20 @@ describe("artifact gateway", () => {
         const artifacts = yield* call(root, (client) =>
           client.ListArtifacts({ projectId }),
         );
-        const readUrl = artifacts.artifacts[0]?.readUrl;
-        if (readUrl === undefined) throw new Error("artifact had no stable read URL");
-        expect(readUrl.startsWith("http://127.0.0.1:" + String(port) + "/a/")).toBe(true);
-        expect(readUrl).toContain("/dashboard/index.html");
-        expect(readUrl).not.toContain("••••");
+        const stableUrl = artifacts.artifacts[0]?.stableUrl;
+        if (stableUrl === undefined) throw new Error("artifact had no stable URL");
+        expect(stableUrl.startsWith("http://127.0.0.1:" + String(port) + "/a/")).toBe(true);
+        expect(stableUrl).toContain("/dashboard/index.html");
+        expect(stableUrl).not.toContain("••••");
 
-        const page = yield* Effect.promise(() => fetch(readUrl));
+        const page = yield* Effect.promise(() => fetch(stableUrl));
         expect(page.status).toBe(200);
         expect(yield* Effect.promise(() => page.text())).toContain('id="root"');
-        const script = yield* Effect.promise(() => fetch(new URL("main.js", readUrl)));
+        const script = yield* Effect.promise(() => fetch(new URL("main.js", stableUrl)));
         expect(script.status).toBe(200);
 
-        const readToken = readTokenFromUrl(readUrl);
-        const socket = yield* openSocket("http://127.0.0.1:" + String(port), readToken);
+        const stableToken = tokenFromUrl(stableUrl);
+        const socket = yield* openSocket("http://127.0.0.1:" + String(port), stableToken);
         yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
         socket.send(JSON.stringify({ _tag: "Request", id: 21, tag: "Snapshot", payload: null, headers: [] }));
         const snapshot = yield* waitForMessage(socket, (value) =>
@@ -686,21 +644,21 @@ describe("artifact gateway", () => {
         const value = snapshot["exit"]["value"];
         if (!isRecord(value)) throw new Error("bad snapshot value");
         // Init and the service agree on the same stable URL.
-        expect(value["url"]).toBe(readUrl);
+        expect(value["url"]).toBe(stableUrl);
         expect(value["count"]).toBe(0);
 
-        // A read token never grants action procedures.
+        // The stable token can call every procedure in the project API.
         socket.send(JSON.stringify({ _tag: "Request", id: 22, tag: "Increment", payload: { by: 1 }, headers: [] }));
-        const forbidden = yield* waitForMessage(socket, (message) =>
+        const incremented = yield* waitForMessage(socket, (message) =>
           isRecord(message) && message["requestId"] === 22 && message["_tag"] === "Exit",
         );
-        if (!isRecord(forbidden) || !isRecord(forbidden["exit"])) throw new Error("bad forbidden response");
-        expect(forbidden["exit"]["_tag"]).toBe("Failure");
+        if (!isRecord(incremented) || !isRecord(incremented["exit"])) throw new Error("bad Increment response");
+        expect(incremented["exit"]["_tag"]).toBe("Success");
 
-        // A token that addresses another artifact in the same project is fine
-        // for a read capability, but a tampered token is not.
-        const tampered = readToken.slice(0, -2) + (readToken.endsWith("00") ? "11" : "00");
-        const tamperedPage = yield* Effect.promise(() => fetch(readUrl.replace(readToken, tampered)));
+        // A token that addresses another artifact in the same project is fine,
+        // but a tampered token is not.
+        const tampered = stableToken.slice(0, -2) + (stableToken.endsWith("00") ? "11" : "00");
+        const tamperedPage = yield* Effect.promise(() => fetch(stableUrl.replace(stableToken, tampered)));
         expect(tamperedPage.status).toBe(401);
 
         // Restart on the same port: the copied URL and the init URL stay valid.
@@ -715,10 +673,10 @@ describe("artifact gateway", () => {
         const restartedArtifacts = yield* call(root, (client) =>
           client.ListArtifacts({ projectId }),
         );
-        expect(restartedArtifacts.artifacts[0]?.readUrl).toBe(readUrl);
-        const restartedPage = yield* Effect.promise(() => fetch(readUrl));
+        expect(restartedArtifacts.artifacts[0]?.stableUrl).toBe(stableUrl);
+        const restartedPage = yield* Effect.promise(() => fetch(stableUrl));
         expect(restartedPage.status).toBe(200);
-        const restartedSocket = yield* openSocket("http://127.0.0.1:" + String(port), readToken);
+        const restartedSocket = yield* openSocket("http://127.0.0.1:" + String(port), stableToken);
         yield* Effect.addFinalizer(() => Effect.sync(() => restartedSocket.close()));
         restartedSocket.send(JSON.stringify({ _tag: "Request", id: 23, tag: "Snapshot", payload: null, headers: [] }));
         const after = yield* waitForMessage(restartedSocket, (message) =>
@@ -726,7 +684,7 @@ describe("artifact gateway", () => {
         );
         if (!isRecord(after) || !isRecord(after["exit"])) throw new Error("bad restarted snapshot");
         expect(after["exit"]["_tag"]).toBe("Success");
-        expect(isRecord(after["exit"]["value"]) ? after["exit"]["value"]["url"] : undefined).toBe(readUrl);
+        expect(isRecord(after["exit"]["value"]) ? after["exit"]["value"]["url"] : undefined).toBe(stableUrl);
       }),
     120_000,
   );

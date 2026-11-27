@@ -22,7 +22,7 @@ import type { StoredTwitchAccount, TwitchAppConfig } from "./config.ts";
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-const defaultOpenUrl = (
+export const defaultOpenUrl = (
   url: string,
 ): Effect.Effect<void, never, ChildProcessSpawner | Stdio.Stdio> =>
   Effect.gen(function* () {

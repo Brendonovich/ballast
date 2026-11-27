@@ -11,8 +11,8 @@ const readArtifactHost = (value: object): ArtifactHost | undefined => {
   const host = value.artifactHost;
   if (typeof host !== "object" || host === null) return undefined;
   if (!("origin" in host) || typeof host.origin !== "string") return undefined;
-  if (!("readToken" in host) || typeof host.readToken !== "string") return undefined;
-  return { origin: host.origin, readToken: host.readToken };
+  if (!("stableToken" in host) || typeof host.stableToken !== "string") return undefined;
+  return { origin: host.origin, stableToken: host.stableToken };
 };
 
 const readWorkerData = (): { readonly entry: string } & PlanOptions => {
