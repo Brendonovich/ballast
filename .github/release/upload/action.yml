@@ -29,3 +29,5 @@ runs:
         path: ${{ inputs.path }}
         retention-days: ${{ inputs.retention-days }}
         if-no-files-found: error
+        # node_modules/.bin in the agent service stage is part of the app.
+        include-hidden-files: true
