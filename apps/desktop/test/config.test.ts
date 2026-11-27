@@ -3,7 +3,7 @@ import { configFor } from "./support.ts";
 
 describe("desktop config", () => {
   it("resolves mac defaults under userData, XDG state and XDG data", () => {
-    const config = configFor("/tmp/ballast-config");
+    const config = configFor("/tmp/ballast-config", { platform: "darwin" });
     expect(config.appId).toBe("dev.ballast.agent");
     expect(config.stageRoot).toBe("/tmp/ballast-config/userData/service");
     expect(config.stateDir).toBe("/tmp/ballast-config/home/.local/state/ballast");
@@ -15,6 +15,7 @@ describe("desktop config", () => {
 
   it("honours env overrides and drops invalid ports/timeouts", () => {
     const config = configFor("/tmp/ballast-config", {
+      platform: "darwin",
       env: {
         BALLAST_APP_ID: "dev.ballast.agent.test",
         BALLAST_USER_DATA_DIR: "/tmp/ballast-user-data",
@@ -39,6 +40,7 @@ describe("desktop config", () => {
     expect(config.servicePort).toBe(51234);
 
     const invalid = configFor("/tmp/ballast-config", {
+      platform: "darwin",
       env: {
         BALLAST_SERVICE_PORT: "0",
         BALLAST_START_TIMEOUT_MS: "100",
