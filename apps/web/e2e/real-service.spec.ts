@@ -7,6 +7,14 @@ import { createAgentRuntime } from "../src/agent/client.ts";
 import { readRealServiceInfo } from "./real-service.ts";
 import { startMockObsServer } from "./mock-obs-server.ts";
 
+/** Running hides the status word, so the button is gone or shows only issues. */
+const expectRunning = async (page: Page, options: { readonly timeout: number }): Promise<void> => {
+  await expect(page.getByTestId("toggle-project")).toHaveText("Stop", options);
+  await expect(
+    page.locator('[data-testid="project-status"]:not([data-status="running"])'),
+  ).toHaveCount(0, options);
+};
+
 const projectSlug = (name: string): string =>
   name
     .trim()
@@ -317,7 +325,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
       await page.screenshot({ path: `screenshots/real-${theme}-06-consent.png` });
     }
     await page.getByTestId("approve-project-consent").click();
-    await expect(page.getByTestId("project-status")).toHaveText("Running", { timeout: 20_000 });
+    await expectRunning(page, { timeout: 20_000 });
     await expect(page.getByTestId("toggle-project")).toHaveText("Stop");
     await expect(requirement.getByText("Proposed · confirmed on Start")).toHaveCount(0);
     await expect(
@@ -549,9 +557,9 @@ test("real service: connection instances, project bindings, workers, logs, sourc
     await expect(page.getByTestId("project-status")).toHaveAttribute("data-issues", /[1-9]/, {
       timeout: 20_000,
     });
-    await expect(page.getByTestId("project-status")).toHaveText("Running");
+    await expect(page.getByTestId("project-status")).toHaveText(/^\d+ issues?$/);
     await expect(page.getByTestId("toggle-project")).toHaveText("Stop");
-    await expect(page.getByTestId("restart-project")).toBeVisible();
+    await expect(page.getByTestId("project-run-menu")).toBeVisible();
     await expect(page.getByText(/previous version/i)).toHaveCount(0);
     await expect(page.getByTestId("project-error")).toHaveCount(0);
     await page.getByTestId("project-status").click();
@@ -572,7 +580,7 @@ test("real service: connection instances, project bindings, workers, logs, sourc
 
     await writeBundle(info.projectsDir, mainName, projectBundle(mainName));
     await expect(page.getByTestId("source-marker")).toHaveCount(0, { timeout: 30_000 });
-    await expect(page.getByTestId("project-status")).toHaveText("Running", { timeout: 30_000 });
+    await expectRunning(page, { timeout: 30_000 });
 
     // Cancelling a timer and editing project-level params both round-trip.
     const timer = page.getByTestId("timer-row").filter({ hasText: "demo" });
@@ -644,7 +652,7 @@ test("real service: a topic tab lists the events a running project records", asy
   } else {
     await action.click();
   }
-  await expect(page.getByTestId("project-status")).toHaveText("Running", { timeout: 20_000 });
+  await expectRunning(page, { timeout: 20_000 });
 
   await tick.getByRole("button").first().click();
   const view = page.getByTestId("topic-events");

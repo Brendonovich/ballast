@@ -18,12 +18,14 @@
     "dev:remote": "node scripts/dev-remote.mjs",
     "dev:local": "pnpm alchemy dev",
     "demo": "node scripts/local-demo.mjs",
+    "shares:bridge": "pnpm --filter @ballast/shares-api bridge",
     "deploy": "pnpm alchemy deploy"
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "catalog:",
     "@ballast/cloud-protocol": "workspace:*",
     "@ballast/module-twitch": "workspace:*",
+    "@ballast/shares-api": "workspace:*",
     "@effect/platform-node": "catalog:",
     "alchemy": "catalog:",
     "effect": "catalog:"

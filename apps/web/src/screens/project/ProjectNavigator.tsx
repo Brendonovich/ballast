@@ -92,6 +92,8 @@ const Row = (props: {
   readonly title: string;
   readonly selected: boolean;
   readonly onOpen?: (() => void) | undefined;
+  /** A double click: keep what the single click opened as a preview. */
+  readonly onPin?: (() => void) | undefined;
   readonly source?: Declaration | undefined;
   readonly sourceTestId: string;
   readonly sourceDanger?: boolean;
@@ -135,6 +137,7 @@ const Row = (props: {
             aria-current={props.selected ? "page" : undefined}
             class="flex h-full min-w-0 flex-1 items-center gap-2 px-1.5 text-left"
             onClick={() => open()()}
+            onDblClick={() => props.onPin?.()}
           >
             {content()}
           </button>
@@ -161,6 +164,12 @@ const Row = (props: {
   );
 };
 
+/** Only topics open as tabs; other rows have nothing to pin. */
+const pinFor = (item: OutlineItem, pin: (key: string) => void): (() => void) | undefined => {
+  const open = item.open;
+  return open?.kind === "topic" ? () => pin(tabKey({ kind: "topic", name: open.name })) : undefined;
+};
+
 /**
  * The project's left sidebar: Files, then the Outline (artifacts first, then
  * everything else the project declares). Each collapses to its header; the
@@ -173,6 +182,8 @@ export const ProjectNavigator = (props: {
   /** The active tab's key, so its row reads as selected. */
   readonly activeTab: string | undefined;
   readonly onOpenFile: (path: string) => void;
+  /** Pin an open preview tab (a double click on its row). */
+  readonly onPinTab: (key: string) => void;
   readonly artifacts: ReadonlyArray<ArtifactSummary>;
   readonly onOpenArtifact: (artifact: ArtifactSummary) => void;
   readonly outline: ReadonlyArray<OutlineGroup>;
@@ -314,6 +325,7 @@ export const ProjectNavigator = (props: {
                       )}
                       style={{ "padding-left": `${6 + row.depth * 10}px` }}
                       onClick={() => props.onOpenFile(row.path)}
+                      onDblClick={() => props.onPinTab(tabKey({ kind: "file", path: row.path }))}
                     >
                       {row.label}
                     </button>
@@ -389,6 +401,7 @@ export const ProjectNavigator = (props: {
                             .join("\n")}
                           selected={props.activeTab === tabKey({ kind: "artifact", name: artifact.name })}
                           onOpen={() => props.onOpenArtifact(artifact)}
+                          onPin={() => props.onPinTab(tabKey({ kind: "artifact", name: artifact.name }))}
                           source={errorSource() ?? artifact.source}
                           sourceTestId={errorSource() === undefined ? "artifact-source" : "artifact-error-source"}
                           sourceDanger={errorSource() !== undefined}
@@ -423,6 +436,7 @@ export const ProjectNavigator = (props: {
                             props.activeTab === tabKey({ kind: "topic", name: item.open.name })
                           }
                           onOpen={item.open === undefined ? undefined : () => props.onOpenItem(item)}
+                          onPin={pinFor(item, props.onPinTab)}
                           source={item.source}
                           sourceTestId="outline-source"
                           onOpenSource={props.onOpenSource}

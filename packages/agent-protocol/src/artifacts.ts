@@ -21,6 +21,12 @@ export const ArtifactSummary = Schema.Struct({
   status: ArtifactStatus,
   /** Present when the last build failed. */
   error: Schema.optionalKey(Schema.String),
+  /**
+   * Stable, read-only URL for this artifact. Derived from the project secret
+   * and the fixed artifact origin, so it survives service restarts and is the
+   * same URL init sees from `Ballast.Artifact(...)`.
+   */
+  readUrl: Schema.optionalKey(Schema.String),
 });
 export type ArtifactSummary = typeof ArtifactSummary.Type;
 
@@ -82,6 +88,12 @@ export const ArtifactUrlSummary = Schema.Struct({
   urlPreview: Schema.String,
   /** Stable fingerprint for audits; never the token itself. */
   tokenFingerprint: Schema.String,
+  /**
+   * Full URL when the service still has (or persisted) its token. Persistent
+   * URLs are stored 0600 under project state so the user can copy them again
+   * after a restart; short-lived view tokens never appear here.
+   */
+  url: Schema.optionalKey(Schema.String),
 });
 export type ArtifactUrlSummary = typeof ArtifactUrlSummary.Type;
 

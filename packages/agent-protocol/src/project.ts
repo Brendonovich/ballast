@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { ParamValue } from "./common.ts";
 import { ConnectionSummary } from "./connections.ts";
+import { ProjectShare } from "./shares.ts";
 import {
   ConsentReason,
   ManifestConnection,
@@ -246,6 +247,8 @@ export const ProjectSummary = Schema.Struct({
   updatedAt: Schema.Number,
   /** Live and recorded problems. Empty when the project is healthy. */
   issues: Schema.Array(ProjectIssue),
+  /** Sharing state: shared from this machine, or a subscribed copy. */
+  share: Schema.optionalKey(ProjectShare),
 });
 export type ProjectSummary = typeof ProjectSummary.Type;
 

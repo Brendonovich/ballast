@@ -8,6 +8,12 @@ import {
   ListCloudAccountsResponse,
 } from "./cloud.ts";
 import {
+  ApplyProjectUpdateResult,
+  DeployProjectResult,
+  ShareProjectRequest,
+  SubscribeProjectRequest,
+} from "./shares.ts";
+import {
   ConfigureConnectionRequest,
   ConnectionAuth,
   ConnectionIdRequest,
@@ -249,6 +255,47 @@ export const RejectProjectConsent = Rpc.make("RejectProjectConsent", {
   error: AgentError,
 });
 
+/**
+ * Share this project (creating the share on first use) and deploy
+ * its current files. Fails for a subscribed project.
+ */
+export const ShareProject = Rpc.make("ShareProject", {
+  payload: ShareProjectRequest,
+  success: DeployProjectResult,
+  error: AgentError,
+});
+
+/** Deploy a new version of an already-shared project. */
+export const DeployProject = Rpc.make("DeployProject", {
+  payload: ShareProjectRequest,
+  success: DeployProjectResult,
+  error: AgentError,
+});
+
+/** Download a share by share code into a new, stopped, read-only project. */
+export const SubscribeProject = Rpc.make("SubscribeProject", {
+  payload: SubscribeProjectRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+/** Stop following the share; the files stay as an ordinary local project. */
+export const UnsubscribeProject = Rpc.make("UnsubscribeProject", {
+  payload: ProjectIdRequest,
+  success: ProjectDetail,
+  error: AgentError,
+});
+
+/**
+ * Apply the available update: download the changed files, verify them, swap
+ * them in, then restart a running project once. Overwrites local edits.
+ */
+export const ApplyProjectUpdate = Rpc.make("ApplyProjectUpdate", {
+  payload: ProjectIdRequest,
+  success: ApplyProjectUpdateResult,
+  error: AgentError,
+});
+
 /** Consent is per script and per plan, not global. */
 /** Durable timer instances; declarations live in `ScriptManifest.timers`. */
 export const ListTimers = Rpc.make("ListTimers", {
@@ -324,8 +371,8 @@ export const DisconnectConnection = Rpc.make("DisconnectConnection", {
 
 /**
  * Start a browser/device-code OAuth flow. The returned URL/code is shown by
- * the UI; the connection becomes `connected` through the normal event stream
- * when the flow completes.
+ * the UI. Local flows complete through the normal event stream; after a cloud
+ * browser flow, `ConnectConnection` refreshes and reconciles the account.
  */
 export const StartConnectionAuth = Rpc.make("StartConnectionAuth", {
   payload: StartConnectionAuthRequest,
@@ -492,6 +539,11 @@ export const AgentRpcs = RpcGroup.make(
   ListProjectConsents,
   ApproveProjectConsent,
   RejectProjectConsent,
+  ShareProject,
+  DeployProject,
+  SubscribeProject,
+  UnsubscribeProject,
+  ApplyProjectUpdate,
   ListTimers,
   CancelTimer,
   ListIntegrations,

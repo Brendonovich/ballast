@@ -9,6 +9,7 @@ import {
 } from "./artifacts.ts";
 import { ProjectConsentRequest, ProjectSummary, SourceLocation } from "./project.ts";
 import { TimerSummary } from "./timers.ts";
+import { ProjectUpdateAvailable } from "./shares.ts";
 
 /**
  * The complete state a UI needs to render its first frame. `WatchService`
@@ -68,6 +69,12 @@ export const ServiceEvent = Schema.Union([
   }),
   Schema.TaggedStruct("project-removed", {
     projectId: Schema.String,
+  }),
+  /** A subscribed project's share has a new deploy to apply. */
+  Schema.TaggedStruct("share-update-available", {
+    projectId: Schema.String,
+    shareId: Schema.String,
+    update: ProjectUpdateAvailable,
   }),
   Schema.TaggedStruct("connection", {
     connection: ConnectionSummary,

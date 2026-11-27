@@ -928,21 +928,35 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               }));
               continue;
             }
-            yield* updateRecord(record.id, (current) => ({
-              ...current,
-              cloudConnectionId: connection.id,
-              grantedScopes: connection.scopes,
-              needsReauth: connection.needsReauth === true,
-              account: {
-                id: connection.twitchUserId,
-                login: connection.login,
-                displayName: connection.displayName,
-              },
-              lastError:
-                connection.needsReauth === true
-                  ? "Twitch requires this account to be reconnected in the Ballast cloud"
-                  : undefined,
-            }));
+            yield* updateRecord(record.id, (current) => {
+              // A re-authorized account has different scopes. Its previous
+              // reconcile result no longer applies, so let the next pass
+              // recreate the subscriptions instead of keeping the cached key.
+              const scopesChanged =
+                current.grantedScopes.length !== connection.scopes.length ||
+                connection.scopes.some(
+                  (scope) => !current.grantedScopes.includes(scope),
+                );
+              const reauthorized = current.needsReauth && connection.needsReauth !== true;
+              return {
+                ...current,
+                ...(scopesChanged || reauthorized
+                  ? { ownerSpecs: new Map(), owners: new Set<string>() }
+                  : {}),
+                cloudConnectionId: connection.id,
+                grantedScopes: connection.scopes,
+                needsReauth: connection.needsReauth === true,
+                account: {
+                  id: connection.twitchUserId,
+                  login: connection.login,
+                  displayName: connection.displayName,
+                },
+                lastError:
+                  connection.needsReauth === true
+                    ? "Twitch requires this account to be reconnected in the Ballast cloud"
+                    : undefined,
+              };
+            });
             continue;
           }
           const stored = yield* provide(readStoredTwitchAccount(record.slot, options.dataDir)).pipe(
@@ -1913,6 +1927,18 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             );
           }
           if (listens.length === 0) {
+            // Manually connected with nothing bound: there is nothing to listen
+            // for yet; wait quietly for a script instead of reporting an error.
+            if (!input.running.some((entry) => usesConnection(input, entry, record))) {
+              return yield* updateRecord(record.id, (current) => ({
+                ...current,
+                driver: undefined,
+                status: "disconnected",
+                lastError: undefined,
+                nextRetryAt: undefined,
+                detailText: undefined,
+              }));
+            }
             return yield* Effect.fail(
               agentError(
                 "invalid",
@@ -2580,8 +2606,10 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
           const due: string[] = [];
           for (const record of current.values()) {
             if (record.driver !== undefined) {
-              next.delete(record.id);
-              if (record.nextRetryAt !== undefined) {
+              // Drivers with their own retry loop (OBS) publish nextRetryAt
+              // themselves; only clear the deadline this loop scheduled.
+              const ours = next.delete(record.id);
+              if (ours && record.nextRetryAt !== undefined) {
                 yield* updateRecord(record.id, (value) => ({
                   ...value,
                   nextRetryAt: undefined,
@@ -2594,6 +2622,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
               (record.manual || input.running.some((entry) => usesConnection(input, entry, record)));
             if (
               !active ||
+              record.integration === "http" ||
               record.needsReauth ||
               !requiredFieldsSet(record) ||
               (record.status !== "error" && record.status !== "disconnected")
@@ -2618,7 +2647,7 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
             yield* Ref.set(retries, next);
             continue;
           }
-          // Let this attempt pass the backoff gate; refailures are scheduled
+          // Let this attempt pass the backoff gate; failures are scheduled
           // again below with the next delay.
           for (const id of due) {
             next.set(id, { attempts: next.get(id)?.attempts ?? 0, nextAt: now });
@@ -2921,10 +2950,29 @@ export const ConnectionManagerLive = (options: ConnectionManagerOptions) =>
                 : "local-app"
               : requestedMode;
           if (mode === "cloud") {
+            const cloudUrl = cloudStatus.cloudUrl;
+            if (cloudStatus.state !== "linked" || cloudUrl === undefined) {
+              return {
+                _tag: "none",
+                message:
+                  "Pair this machine with the Ballast cloud before linking a Twitch account.",
+              };
+            }
+            const required = [
+              ...new Set([
+                ...record.grantedScopes,
+                ...scopesRequiredFor(record),
+                ...(input.scopes ?? []),
+              ]),
+            ];
+            const scopes = required.length === 0 ? ["user:read:email"] : required;
             return {
-              _tag: "none",
-              message:
-                "Cloud Twitch connections are authorized in the Ballast cloud. Link the account there, then pair this machine.",
+              _tag: "browser",
+              url:
+                cloudUrl.replace(/\/$/, "") +
+                "/oauth/twitch/start?scopes=" +
+                encodeURIComponent(scopes.join(",")),
+              expiresAt: Date.now() + 10 * 60_000,
             };
           }
           const stored = yield* provide(readStoredTwitchAccount(record.slot, options.dataDir)).pipe(

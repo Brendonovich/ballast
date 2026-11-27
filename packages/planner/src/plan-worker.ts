@@ -2,8 +2,18 @@ import { parentPort, workerData } from "node:worker_threads";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import type { ArtifactHost } from "@ballast/core";
 import { runPlanInfo } from "./plan.ts";
 import type { PlanOptions } from "./plan.ts";
+
+const readArtifactHost = (value: object): ArtifactHost | undefined => {
+  if (!("artifactHost" in value)) return undefined;
+  const host = value.artifactHost;
+  if (typeof host !== "object" || host === null) return undefined;
+  if (!("origin" in host) || typeof host.origin !== "string") return undefined;
+  if (!("readToken" in host) || typeof host.readToken !== "string") return undefined;
+  return { origin: host.origin, readToken: host.readToken };
+};
 
 const readWorkerData = (): { readonly entry: string } & PlanOptions => {
   if (typeof workerData !== "object" || workerData === null || !("entry" in workerData)) {
@@ -31,6 +41,7 @@ const readWorkerData = (): { readonly entry: string } & PlanOptions => {
     "projectEntry" in workerData && typeof workerData.projectEntry === "string"
       ? workerData.projectEntry
       : undefined;
+  const artifactHost = readArtifactHost(workerData);
   return {
     entry: value,
     ...(scriptId === undefined ? {} : { scriptId }),
@@ -38,6 +49,7 @@ const readWorkerData = (): { readonly entry: string } & PlanOptions => {
     ...(projectEntry === undefined ? {} : { projectEntry }),
     ...(resolveDir === undefined ? {} : { resolveDir }),
     ...(projectRoot === undefined ? {} : { projectRoot }),
+    ...(artifactHost === undefined ? {} : { artifactHost }),
   };
 };
 
@@ -56,6 +68,7 @@ const exit = await Effect.runPromiseExit(
     ...(data.projectEntry === undefined ? {} : { projectEntry: data.projectEntry }),
     ...(data.resolveDir === undefined ? {} : { resolveDir: data.resolveDir }),
     ...(data.projectRoot === undefined ? {} : { projectRoot: data.projectRoot }),
+    ...(data.artifactHost === undefined ? {} : { artifactHost: data.artifactHost }),
   }),
 );
 

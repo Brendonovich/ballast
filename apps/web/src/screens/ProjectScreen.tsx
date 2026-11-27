@@ -24,7 +24,6 @@ import { getDesktopBridge } from "../bridge.ts";
 import { useAccessibilityPermission } from "../permissions.ts";
 import { blockingRequirements, integrationName } from "../lib/format.ts";
 import {
-  actionLabel,
   canRestart,
   projectAction,
   sourceMarkers,
@@ -38,9 +37,9 @@ import {
   activeTab,
   closeTab,
   defaultTabs,
-  openTab,
   parseTabs,
-  tabKey,
+  pinTab,
+  previewTab,
   tabsStorageKey,
 } from "../lib/project-tabs.ts";
 import type { ProjectTab, TabsState } from "../lib/project-tabs.ts";
@@ -49,8 +48,6 @@ import {
   MaximizeIcon,
   MinimizeIcon,
   PanelRightIcon,
-  PlayIcon,
-  StopIcon,
 } from "../ui/icons.tsx";
 import {
   Button,
@@ -62,13 +59,15 @@ import {
   surface,
 } from "../ui/primitives.tsx";
 import { LogsPanel } from "./project/LogsPanel.tsx";
-import { TopBarActions } from "../layout/top-bar-slot.tsx";
+import { TopBarActions, TopBarCenter, TopBarEnd } from "../layout/top-bar-slot.tsx";
 import { ProjectSidebar } from "./project/ProjectSidebar.tsx";
 import { FileView } from "./project/FileView.tsx";
 import type { SourceJump } from "./project/FileView.tsx";
 import { ProjectNavigator } from "./project/ProjectNavigator.tsx";
 import { TabStrip } from "./project/TabStrip.tsx";
 import { TopicEventsView } from "./project/TopicEventsView.tsx";
+import { ShareBar } from "./project/ShareBar.tsx";
+import { RunButton } from "./project/RunButton.tsx";
 import { buildOutline } from "../lib/outline.ts";
 import type { OutlineItem } from "../lib/outline.ts";
 import {
@@ -79,8 +78,11 @@ import {
 } from "../lib/logs-layout.ts";
 import type { LogsLayout } from "../lib/logs-layout.ts";
 import { leftSidebarHidden } from "../state/left-sidebar.ts";
+import { projectMode, setProjectMode } from "../state/project-mode.ts";
+import type { ProjectMode } from "../lib/project-mode.ts";
 import { ConnectionDialog } from "./connections/ConnectionDialog.tsx";
-import { ArtifactPanel } from "./project/ArtifactPanel.tsx";
+import { ArtifactList } from "./project/ArtifactList.tsx";
+import { ArtifactActions, ArtifactPanel } from "./project/ArtifactPanel.tsx";
 
 const SIDEBAR_KEY = "ballast.projectSidebarCollapsed";
 /** The tab strip's height, which is all the tab area keeps while logs are maximized. */
@@ -186,6 +188,8 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   const [artifactFullscreen, setArtifactFullscreen] = createSignal(false);
   const [addingConnection, setAddingConnection] = createSignal<ProjectRequirement>();
   const [pendingBinding, setPendingBinding] = createSignal<PendingBinding>();
+  /** View mode's artifact selection; Develop's open tabs are left untouched. */
+  const [viewArtifact, setViewArtifact] = createSignal<string>();
   const permission = useAccessibilityPermission();
   let jumpToken = 0;
   let splitArea: HTMLDivElement | undefined;
@@ -213,7 +217,6 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     const tab = current();
     return tab?.kind === "topic" ? tab.name : undefined;
   });
-  /** Open artifact tabs stay mounted (hidden) so their pages keep state. */
   const artifactTabs = createMemo(
     () => tabs().tabs.flatMap((tab) => (tab.kind === "artifact" ? [tab.name] : [])),
     undefined,
@@ -221,6 +224,67 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
   );
   const artifactNamed = (name: string): ArtifactSummary | undefined =>
     artifacts().find((artifact) => artifact.name === name);
+  /** The mode is per project and shared with the shell's top bar. */
+  const mode = (): ProjectMode => projectMode(projectId());
+  const viewOnly = (): boolean => mode() === "view";
+  const selectMode = (next: ProjectMode): void => {
+    setProjectMode(projectId(), next);
+    setArtifactFullscreen(false);
+    if (next === "view") setMaximized(undefined);
+  };
+  /**
+   * The View mode's artifact: the row the user picked, else Develop's active
+   * artifact tab, else the first declared artifact. Develop's tabs are never
+   * rewritten by viewing.
+   */
+  const viewArtifactSummary = createMemo<ArtifactSummary | undefined>(() => {
+    const selected = viewArtifact();
+    if (selected !== undefined) {
+      const artifact = artifactNamed(selected);
+      if (artifact !== undefined) return artifact;
+    }
+    const tab = current();
+    if (tab?.kind === "artifact") {
+      const artifact = artifactNamed(tab.name);
+      if (artifact !== undefined) return artifact;
+    }
+    return artifacts()[0];
+  });
+  /** Develop's logs, files and topics mount the first time Develop is shown. */
+  const [developShown, setDevelopShown] = createSignal(!viewOnly());
+  createEffect(() => {
+    if (!viewOnly()) setDevelopShown(true);
+  });
+  /** View mode's artifacts that have been shown, kept mounted so they don't reload. */
+  const [viewed, setViewed] = createSignal<ReadonlyArray<string>>([]);
+  createEffect(() => {
+    const name = viewArtifactSummary()?.name;
+    if (!viewOnly() || name === undefined) return;
+    if (!untrack(viewed).includes(name)) setViewed((current) => [...current, name]);
+  });
+  /**
+   * Both modes share one page per artifact: anything open as a Develop tab or
+   * shown in View stays mounted. The order is append-only so that a page's
+   * iframe is never moved in the DOM, which would reload it.
+   */
+  const mountedArtifacts = createMemo<ReadonlyArray<string>>(
+    (previous) => {
+      const wanted = new Set([
+        ...artifactTabs(),
+        ...viewed().filter((name) => artifactNamed(name) !== undefined),
+      ]);
+      const kept = previous.filter((name) => wanted.has(name));
+      const added = [...wanted].filter((name) => !previous.includes(name));
+      return added.length === 0 && kept.length === previous.length ? previous : [...kept, ...added];
+    },
+    [],
+  );
+  /** The artifact the current mode shows, if any. */
+  const shownArtifact = createMemo<string | undefined>(() => {
+    if (viewOnly()) return viewArtifactSummary()?.name;
+    const tab = current();
+    return tab?.kind === "artifact" ? tab.name : undefined;
+  });
   const topicTitle = (name: string): string =>
     units().find((unit) => unit.kind === "topic" && unit.name === name)?.title ?? name;
 
@@ -372,9 +436,12 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     navigate("/projects");
   };
 
-  /** Show a tab, leaving full screen and maximized logs so it can be seen. */
+  /**
+   * Show a tab, leaving full screen and maximized logs so it can be seen.
+   * It opens as a preview; a double click (`keepTab`) pins it.
+   */
   const showTab = (tab: ProjectTab): void => {
-    setTabs(openTab(tabs(), tab));
+    setTabs(previewTab(tabs(), tab));
     if (tab.kind !== "artifact" || current()?.kind !== "artifact") setArtifactFullscreen(false);
     if (maximized() === "logs") setMaximized(undefined);
   };
@@ -395,6 +462,8 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     setTabs(activateTab(tabs(), key));
     setArtifactFullscreen(false);
   };
+
+  const keepTab = (key: string): void => setTabs(pinTab(tabs(), key));
 
   const dismissTab = (key: string): void => {
     setTabs(closeTab(tabs(), key));
@@ -704,49 +773,37 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
         <div class="flex h-full min-h-0 flex-col gap-2 overflow-hidden p-2" data-testid="project-workspace">
           {/* The top bar's switcher shows the name; keep a heading for assistive tech. */}
           <h1 class="sr-only">{project().name}</h1>
+          <TopBarCenter>
+            <ProjectModeToggle mode={mode()} onChange={selectMode} />
+          </TopBarCenter>
           <TopBarActions>
-            <Button
-              size="small"
-              variant="ghost"
-              data-testid="toggle-project-sidebar"
-              aria-expanded={!sidebarCollapsed()}
-              icon={<PanelRightIcon size={13} />}
-              onClick={toggleSidebar}
-            >
-              <span class="hidden lg:inline">Project</span>
-            </Button>
-            <Show when={canRestart(status())}>
-              <Button
-                size="small"
-                variant="ghost"
-                data-testid="restart-project"
-                loading={store.isPending(`project:${projectId()}:restart`)}
-                onClick={() => void restart()}
-              >
-                Restart
-              </Button>
-            </Show>
-            <Button
-              size="small"
-              variant={action() === "start" ? "primary" : "outline"}
-              data-testid="toggle-project"
-              data-action={action()}
+            <RunButton
+              action={action()}
+              canRestart={canRestart(status())}
               loading={
                 store.isPending(`project:${projectId()}:start`) ||
                 store.isPending(`project:${projectId()}:stop`)
               }
-              icon={
-                action() === "stop" ? (
-                  <StopIcon size={12} />
-                ) : action() === "start" ? (
-                  <PlayIcon size={12} />
-                ) : undefined
-              }
-              onClick={() => runAction()}
-            >
-              {actionLabel(action())}
-            </Button>
+              restarting={store.isPending(`project:${projectId()}:restart`)}
+              onAction={runAction}
+              onRestart={() => void restart()}
+            />
           </TopBarActions>
+          <TopBarEnd>
+            <button
+              type="button"
+              data-testid="toggle-project-sidebar"
+              aria-label={sidebarCollapsed() ? "Show project sidebar" : "Hide project sidebar"}
+              aria-expanded={!sidebarCollapsed()}
+              title={sidebarCollapsed() ? "Show project sidebar" : "Hide project sidebar"}
+              class="grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-body"
+              onClick={toggleSidebar}
+            >
+              <PanelRightIcon size={15} />
+            </button>
+          </TopBarEnd>
+
+          <ShareBar project={project()} />
 
           <Show when={pendingConsent()}>
             {(consent) => (
@@ -798,59 +855,92 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
           </Show>
 
           <div class="flex min-h-0 flex-1 gap-2">
-            <Show when={!artifactFullscreen() && !leftSidebarHidden()}>
-              <ProjectNavigator
-                projectId={projectId()}
-                files={files()}
-                filesError={filesError()}
-                activeTab={tabs().active}
-                onOpenFile={openFile}
-                artifacts={artifacts()}
-                onOpenArtifact={openArtifact}
-                outline={outline()}
-                onOpenItem={openItem}
-                onOpenSource={openSource}
-                reveal={reveal()}
-              />
+            <Show when={!artifactFullscreen() && !viewOnly()}>
+              <Show when={!leftSidebarHidden()}>
+                <ProjectNavigator
+                  projectId={projectId()}
+                  files={files()}
+                  filesError={filesError()}
+                  activeTab={tabs().active}
+                  onOpenFile={openFile}
+                  onPinTab={keepTab}
+                  artifacts={artifacts()}
+                  onOpenArtifact={openArtifact}
+                  outline={outline()}
+                  onOpenItem={openItem}
+                  onOpenSource={openSource}
+                  reveal={reveal()}
+                />
+              </Show>
             </Show>
 
             <div ref={splitArea} class="flex min-h-0 min-w-0 flex-1 flex-col">
               <section
                 data-testid="tab-area"
+                data-mode={mode()}
                 class={cx("flex min-h-0 flex-col overflow-hidden", surface)}
-                style={tabsStyle()}
+                style={viewOnly() ? { flex: "1 1 0%" } : tabsStyle()}
               >
-                <Show when={!artifactFullscreen()}>
-                  <TabStrip
-                    tabs={tabs().tabs}
-                    active={tabs().active}
-                    label={tabLabel}
-                    title={tabTitle}
-                    danger={(tab) => tab.kind === "artifact" && artifactNamed(tab.name)?.status === "error"}
-                    onActivate={selectTab}
-                    onClose={dismissTab}
-                    end={
-                      <IconButton
-                        label={maximized() === "tabs" ? "Restore tabs" : "Maximize tabs"}
-                        size="small"
-                        testId="tabs-maximize"
-                        onClick={() => toggleMaximize("tabs")}
+                <Show
+                  when={viewOnly()}
+                  fallback={
+                    <Show when={!artifactFullscreen()}>
+                      <TabStrip
+                        tabs={tabs().tabs}
+                        active={tabs().active}
+                        preview={tabs().preview}
+                        label={tabLabel}
+                        title={tabTitle}
+                        danger={(tab) => tab.kind === "artifact" && artifactNamed(tab.name)?.status === "error"}
+                        onActivate={selectTab}
+                        onPin={keepTab}
+                        onClose={dismissTab}
+                        end={
+                          <IconButton
+                            label={maximized() === "tabs" ? "Restore tabs" : "Maximize tabs"}
+                            size="small"
+                            testId="tabs-maximize"
+                            onClick={() => toggleMaximize("tabs")}
+                          >
+                            <Show when={maximized() === "tabs"} fallback={<MaximizeIcon size={12} />}>
+                              <MinimizeIcon size={12} />
+                            </Show>
+                          </IconButton>
+                        }
+                      />
+                    </Show>
+                  }
+                >
+                  <Show when={viewArtifactSummary()}>
+                    {(artifact) => (
+                      <div
+                        data-testid="view-mode-bar"
+                        class="flex h-8 shrink-0 items-center gap-2 border-b border-edge pl-1 pr-3"
                       >
-                        <Show when={maximized() === "tabs"} fallback={<MaximizeIcon size={12} />}>
-                          <MinimizeIcon size={12} />
-                        </Show>
-                      </IconButton>
-                    }
-                  />
+                        <ArtifactList
+                          artifacts={artifacts()}
+                          active={artifact().name}
+                          onSelect={(next) => setViewArtifact(next.name)}
+                        />
+                        <ArtifactActions
+                          projectId={projectId()}
+                          artifact={artifact()}
+                          fullscreen={artifactFullscreen()}
+                          onToggleFullscreen={() => setArtifactFullscreen((value) => !value)}
+                          onPopOut={() => popOutArtifact(artifact())}
+                        />
+                      </div>
+                    )}
+                  </Show>
                 </Show>
                 <div class="relative min-h-0 flex-1">
-                  <For each={artifactTabs()}>
+                  <For each={mountedArtifacts()}>
                     {(name) => (
                       <div
-                        data-testid="artifact-tab-panel"
+                        data-testid="artifact-pane"
                         data-artifact={name}
                         class="absolute inset-0"
-                        classList={{ hidden: tabs().active !== tabKey({ kind: "artifact", name }) }}
+                        classList={{ hidden: shownArtifact() !== name }}
                       >
                         <Show
                           when={artifactNamed(name)}
@@ -865,18 +955,19 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                               projectId={projectId()}
                               artifact={artifact()}
                               fullscreen={artifactFullscreen()}
+                              bare={viewOnly()}
                               onToggleFullscreen={() => setArtifactFullscreen((value) => !value)}
                               onPopOut={() => popOutArtifact(artifact())}
-                              onOpenSource={openSource}
+                              onOpenSource={viewOnly() ? undefined : openSource}
                             />
                           )}
                         </Show>
                       </div>
                     )}
                   </For>
-                  <Show when={activeFile()} keyed>
+                  <Show when={developShown() ? activeFile() : undefined} keyed>
                     {(path) => (
-                      <div class="absolute inset-0">
+                      <div class="absolute inset-0" classList={{ hidden: viewOnly() }}>
                         <FileView
                           projectId={projectId()}
                           path={path}
@@ -887,14 +978,14 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                       </div>
                     )}
                   </Show>
-                  <Show when={activeTopic()} keyed>
+                  <Show when={developShown() ? activeTopic() : undefined} keyed>
                     {(name) => (
-                      <div class="absolute inset-0">
+                      <div class="absolute inset-0" classList={{ hidden: viewOnly() }}>
                         <TopicEventsView projectId={projectId()} name={name} title={topicTitle(name)} />
                       </div>
                     )}
                   </Show>
-                  <Show when={tabsReady && current() === undefined}>
+                  <Show when={!viewOnly() && tabsReady && current() === undefined}>
                     <div data-testid="tabs-empty" class="grid h-full place-items-center px-6 text-center">
                       <div>
                         <p class="text-[12px] font-medium text-body">No open tabs</p>
@@ -904,26 +995,38 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                       </div>
                     </div>
                   </Show>
+                  <Show when={viewOnly() && viewArtifactSummary() === undefined}>
+                    <div class="grid h-full place-items-center px-6 text-center">
+                      <div>
+                        <p class="text-[12px] font-medium text-body">No artifacts</p>
+                        <p class="mt-1 text-[11px] text-faint">
+                          Nothing to view yet. Switch to Develop to work on this project.
+                        </p>
+                      </div>
+                    </div>
+                  </Show>
                 </div>
               </section>
-              <Show when={!artifactFullscreen()}>
-                <Show
-                  when={maximized() === undefined && !logsCollapsed()}
-                  fallback={<div class="h-2 shrink-0" />}
-                >
-                  <div
-                    role="separator"
-                    aria-orientation="horizontal"
-                    aria-label="Resize tabs and logs"
-                    data-testid="project-splitter"
-                    class="group flex h-2 shrink-0 cursor-row-resize touch-none items-center justify-center"
-                    onPointerDown={beginResize}
-                    onDblClick={resetSplit}
+              <Show when={developShown() && !artifactFullscreen()}>
+                <Show when={!viewOnly()}>
+                  <Show
+                    when={maximized() === undefined && !logsCollapsed()}
+                    fallback={<div class="h-2 shrink-0" />}
                   >
-                    <span class="h-px w-10 rounded bg-transparent transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
-                  </div>
+                    <div
+                      role="separator"
+                      aria-orientation="horizontal"
+                      aria-label="Resize tabs and logs"
+                      data-testid="project-splitter"
+                      class="group flex h-2 shrink-0 cursor-row-resize touch-none items-center justify-center"
+                      onPointerDown={beginResize}
+                      onDblClick={resetSplit}
+                    >
+                      <span class="h-px w-10 rounded bg-transparent transition-colors group-hover:bg-[var(--v2-border-border-strong)]" />
+                    </div>
+                  </Show>
                 </Show>
-                <div class="min-h-0" style={logsStyle()}>
+                <div class="min-h-0" classList={{ hidden: viewOnly() }} style={logsStyle()}>
                   <LogsPanel
                     projectId={projectId()}
                     units={units()}
@@ -943,6 +1046,7 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
                 <ProjectSidebar
                   detail={value()}
                   timers={timers()}
+                  viewOnly={viewOnly()}
                   onRefreshTimers={() => void refreshTimers()}
                   onCollapse={toggleSidebar}
                   onBind={bindRequirement}
@@ -991,6 +1095,46 @@ export const ProjectScreen = (props: { readonly projectId: string }): JSX.Elemen
     </>
   );
 };
+
+const modeOptions: ReadonlyArray<{ readonly mode: ProjectMode; readonly label: string }> = [
+  { mode: "view", label: "View" },
+  { mode: "develop", label: "Develop" },
+];
+
+/** The top bar's View / Develop switch, styled as a small segmented control. */
+const ProjectModeToggle = (props: {
+  readonly mode: ProjectMode;
+  readonly onChange: (mode: ProjectMode) => void;
+}): JSX.Element => (
+  <div
+    role="group"
+    aria-label="Project mode"
+    data-testid="project-mode"
+    class="flex h-7 items-center gap-0.5 rounded-md bg-[var(--v2-background-bg-layer-02)] p-0.5"
+  >
+    <For each={modeOptions}>
+      {(option) => {
+        const selected = (): boolean => props.mode === option.mode;
+        return (
+          <button
+            type="button"
+            data-testid={`project-mode-${option.mode}`}
+            aria-pressed={selected()}
+            class={cx(
+              "h-6 rounded px-2 text-[12px] transition-colors",
+              selected()
+                ? "bg-canvas text-strong shadow-[var(--v2-elevation-button-neutral)]"
+                : "text-muted hover:text-body",
+            )}
+            onClick={() => props.onChange(option.mode)}
+          >
+            {option.label}
+          </button>
+        );
+      }}
+    </For>
+  </div>
+);
 
 interface PendingBinding {
   readonly requirement: ProjectRequirement;

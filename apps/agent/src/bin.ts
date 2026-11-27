@@ -76,6 +76,9 @@ const usage = `Usage:
   ballast mcp [--state-dir <dir>] [--data-dir <dir>] [--url <url> --token <token>]
   ballast status
   ballast projects list|get <id>|add <path> [--name <name>]|remove <id>
+  ballast projects share <id> [--message <text>]|deploy <id> [--message <text>]
+  ballast projects subscribe <share-code> [--dir <dir>] [--name <name>]
+      |update <id>|unsubscribe <id>
   ballast connections list|get <id>|configure <id> key=value...
       |connect <id>|disconnect <id>|auth <id>
   ballast cloud status|begin|pair <code>|unpair [--machine-name <name>]
@@ -764,6 +767,59 @@ const projectsCommand = (args: ReadonlyArray<string>): Effect.Effect<void, Error
               : client.PlanProject({ projectId: id }),
       );
       yield* printJson(detail);
+      return;
+    }
+    if (sub === "share" || sub === "deploy") {
+      const id = positional(rest, ["--message"])[0];
+      if (id === undefined) throw new Error(`projects ${sub} requires an id`);
+      const message = flagValue(rest, "--message");
+      const request = { projectId: id, ...(message === undefined ? {} : { message }) };
+      const result = yield* service((client) =>
+        sub === "share" ? client.ShareProject(request) : client.DeployProject(request),
+      );
+      console.log(
+        result.deployed
+          ? `deployed ${result.sha.slice(0, 12)} (${result.files} files, ${result.bytes} bytes); ${result.notified} subscribed machine(s) notified`
+          : `no changes since ${result.sha.slice(0, 12)}; nothing deployed`,
+      );
+      console.log(`share code: ${result.shareCode}  (anyone with a paired Ballast can subscribe with it)`);
+      yield* printJson(result);
+      return;
+    }
+    if (sub === "subscribe") {
+      const shareCode = positional(rest, ["--dir", "--name"])[0];
+      if (shareCode === undefined) throw new Error("projects subscribe requires a share code");
+      const directory = flagValue(rest, "--dir");
+      const name = flagValue(rest, "--name");
+      const detail = yield* service((client) =>
+        client.SubscribeProject({
+          shareCode,
+          ...(directory === undefined ? {} : { directory }),
+          ...(name === undefined ? {} : { name }),
+        }),
+      );
+      console.log(
+        `subscribed as ${detail.summary.id} at ${detail.summary.root} (read-only; stopped until you start it)`,
+      );
+      yield* printJson(detail);
+      return;
+    }
+    if (sub === "update") {
+      const id = positional(rest, [])[0];
+      if (id === undefined) throw new Error("projects update requires an id");
+      const result = yield* service((client) => client.ApplyProjectUpdate({ projectId: id }));
+      if (result.overwritten.length > 0)
+        console.warn(`warning: overwrote local changes to ${result.overwritten.join(", ")}`);
+      console.log(
+        `updated ${result.fromSha.slice(0, 12)} -> ${result.toSha.slice(0, 12)}: ${result.changed.length} changed, ${result.deleted.length} deleted, ${result.bytes} bytes${result.restarted ? ", restarted once" : ""}`,
+      );
+      yield* printJson(result);
+      return;
+    }
+    if (sub === "unsubscribe") {
+      const id = positional(rest, [])[0];
+      if (id === undefined) throw new Error("projects unsubscribe requires an id");
+      yield* printJson(yield* service((client) => client.UnsubscribeProject({ projectId: id })));
       return;
     }
     throw new Error(`Unknown projects command "${sub}"`);

@@ -18,6 +18,9 @@ const callRequest = fileURLToPath(
   new URL("./fixtures/call-request.ts", import.meta.url),
 );
 const untitled = fileURLToPath(new URL("./fixtures/tick-echo.ts", import.meta.url));
+const artifactUrl = fileURLToPath(
+  new URL("./fixtures/artifact-url.ts", import.meta.url),
+);
 const takeover = fileURLToPath(new URL("../../../examples/redeem-takeover.ts", import.meta.url));
 const project = fileURLToPath(new URL("./fixtures/project/ballast.ts", import.meta.url));
 const duplicateProject = fileURLToPath(
@@ -62,6 +65,35 @@ describe("plan", () => {
         stores: [],
         databases: [],
       });
+    }),
+  );
+
+  it.effect("injects the artifact host into the handle URL getter", () =>
+    Effect.gen(function* () {
+      const withoutHost = yield* plan(artifactUrl);
+      expect(withoutHost.params).toEqual([
+        {
+          key: "overlayUrl",
+          type: "string",
+          default: expect.stringContaining("unresolved"),
+        },
+      ]);
+      expect(withoutHost.unresolved).toEqual([
+        expect.objectContaining({ path: "artifact:overlay" }),
+      ]);
+
+      const withHost = yield* plan(artifactUrl, {
+        artifactHost: { origin: "http://127.0.0.1:47831", readToken: "r1.overlay.test" },
+      });
+      expect(withHost.params).toEqual([
+        {
+          key: "overlayUrl",
+          type: "string",
+          default:
+            "http://127.0.0.1:47831/a/r1.overlay.test/overlay/index.html?background=transparent",
+        },
+      ]);
+      expect(withHost.unresolved).toEqual([]);
     }),
   );
 

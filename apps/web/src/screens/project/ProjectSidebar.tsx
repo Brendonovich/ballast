@@ -246,6 +246,8 @@ const Section = (props: {
 export const ProjectSidebar = (props: {
   readonly detail: ProjectDetail;
   readonly timers: ReadonlyArray<TimerSummary>;
+  /** View mode: parameters only, and the pane cannot be collapsed. */
+  readonly viewOnly?: boolean;
   readonly onRefreshTimers: () => void;
   readonly onCollapse: () => void;
   readonly onBind: (
@@ -346,120 +348,122 @@ export const ProjectSidebar = (props: {
           </Show>
         </Section>
 
-        <Section title="Connections">
-          <Show
-            when={requirements().length > 0}
-            fallback={<p class="py-2 text-[11px] text-faint">No connection requirements.</p>}
-          >
-            <For each={requirements()}>
-              {(requirement) => (
-                <div
-                  data-testid="project-requirement"
-                  data-integration={requirement.integration}
-                  data-slot={requirement.slot}
-                  data-bound-instance={
-                    requirement.boundInstanceId ?? requirement.proposedInstanceId ?? ""
-                  }
-                  class="border-b border-edge py-2 last:border-b-0"
-                >
-                  <div class="flex items-baseline justify-between gap-2 text-[12px]">
-                    <span class="min-w-0 truncate text-body">
-                      {integrationName(requirement.integration)}
-                    </span>
-                    <span class="font-mono text-[10px] text-faint">{requirement.slot}</span>
+        <Show when={props.viewOnly !== true}>
+          <Section title="Connections">
+            <Show
+              when={requirements().length > 0}
+              fallback={<p class="py-2 text-[11px] text-faint">No connection requirements.</p>}
+            >
+              <For each={requirements()}>
+                {(requirement) => (
+                  <div
+                    data-testid="project-requirement"
+                    data-integration={requirement.integration}
+                    data-slot={requirement.slot}
+                    data-bound-instance={
+                      requirement.boundInstanceId ?? requirement.proposedInstanceId ?? ""
+                    }
+                    class="border-b border-edge py-2 last:border-b-0"
+                  >
+                    <div class="flex items-baseline justify-between gap-2 text-[12px]">
+                      <span class="min-w-0 truncate text-body">
+                        {integrationName(requirement.integration)}
+                      </span>
+                      <span class="font-mono text-[10px] text-faint">{requirement.slot}</span>
+                    </div>
+                    <div class="mt-1 flex items-center gap-1">
+                      <SelectInput
+                        data-testid="project-connection-picker"
+                        aria-label={`Connection for ${requirement.integration} ${requirement.slot}`}
+                        value={currentValue(requirement)}
+                        class="h-6 text-[11px]"
+                        onChange={(event) => void choose(requirement, event.currentTarget.value)}
+                      >
+                        <option value="">Choose connection…</option>
+                        <For each={instances(requirement)}>
+                          {(instance) => (
+                            <option value={instance.id} selected={instance.id === currentValue(requirement)}>
+                              {instance.label}
+                            </option>
+                          )}
+                        </For>
+                        <Show when={missingInstance(requirement)}>
+                          {(id) => <option value={id()}>Missing instance</option>}
+                        </Show>
+                      </SelectInput>
+                      <Button
+                        size="small"
+                        variant="ghost"
+                        class="shrink-0"
+                        data-testid="project-connection-add"
+                        onClick={() => props.onAddConnection(requirement)}
+                      >
+                        Add connection…
+                      </Button>
+                    </div>
+                    <Show when={hint(requirement)}>
+                      {(value) => (
+                        <p
+                          class={value().error ? "mt-0.5 text-[10px] text-warning" : "mt-0.5 text-[10px] text-faint"}
+                        >
+                          {value().text}
+                        </p>
+                      )}
+                    </Show>
                   </div>
-                  <div class="mt-1 flex items-center gap-1">
-                    <SelectInput
-                      data-testid="project-connection-picker"
-                      aria-label={`Connection for ${requirement.integration} ${requirement.slot}`}
-                      value={currentValue(requirement)}
-                      class="h-6 text-[11px]"
-                      onChange={(event) => void choose(requirement, event.currentTarget.value)}
-                    >
-                      <option value="">Choose connection…</option>
-                      <For each={instances(requirement)}>
-                        {(instance) => (
-                          <option value={instance.id} selected={instance.id === currentValue(requirement)}>
-                            {instance.label}
-                          </option>
-                        )}
-                      </For>
-                      <Show when={missingInstance(requirement)}>
-                        {(id) => <option value={id()}>Missing instance</option>}
-                      </Show>
-                    </SelectInput>
+                )}
+              </For>
+            </Show>
+          </Section>
+
+          <Section
+            title="Timers"
+            action={
+              <IconButton
+                label="Refresh timers"
+                size="small"
+                testId="refresh-timers"
+                onClick={props.onRefreshTimers}
+              >
+                <RefreshIcon size={11} />
+              </IconButton>
+            }
+          >
+            <Show
+              when={props.timers.length > 0}
+              fallback={<p class="py-2 text-[11px] text-faint">No pending timers.</p>}
+            >
+              <For each={props.timers}>
+                {(timer) => (
+                  <div
+                    data-testid="timer-row"
+                    data-timer={timer.timer}
+                    class="flex items-center gap-2 border-b border-edge py-1.5 last:border-b-0"
+                  >
+                    <div class="min-w-0 flex-1">
+                      <p class="truncate text-[12px] text-body">{timer.title ?? timer.timer}</p>
+                      <p class="truncate font-mono text-[10px] text-faint">
+                        {timer.key} · {formatRelative(timer.dueAt)}
+                      </p>
+                    </div>
                     <Button
                       size="small"
                       variant="ghost"
-                      class="shrink-0"
-                      data-testid="project-connection-add"
-                      onClick={() => props.onAddConnection(requirement)}
+                      data-testid="timer-cancel"
+                      loading={store.isPending(
+                        `project:${projectId()}:timer:${timer.timer}:${timer.key}:cancel`,
+                      )}
+                      icon={<TrashIcon size={11} />}
+                      onClick={() => void cancel(timer)}
                     >
-                      Add connection…
+                      Cancel
                     </Button>
                   </div>
-                  <Show when={hint(requirement)}>
-                    {(value) => (
-                      <p
-                        class={value().error ? "mt-0.5 text-[10px] text-warning" : "mt-0.5 text-[10px] text-faint"}
-                      >
-                        {value().text}
-                      </p>
-                    )}
-                  </Show>
-                </div>
-              )}
-            </For>
-          </Show>
-        </Section>
-
-        <Section
-          title="Timers"
-          action={
-            <IconButton
-              label="Refresh timers"
-              size="small"
-              testId="refresh-timers"
-              onClick={props.onRefreshTimers}
-            >
-              <RefreshIcon size={11} />
-            </IconButton>
-          }
-        >
-          <Show
-            when={props.timers.length > 0}
-            fallback={<p class="py-2 text-[11px] text-faint">No pending timers.</p>}
-          >
-            <For each={props.timers}>
-              {(timer) => (
-                <div
-                  data-testid="timer-row"
-                  data-timer={timer.timer}
-                  class="flex items-center gap-2 border-b border-edge py-1.5 last:border-b-0"
-                >
-                  <div class="min-w-0 flex-1">
-                    <p class="truncate text-[12px] text-body">{timer.title ?? timer.timer}</p>
-                    <p class="truncate font-mono text-[10px] text-faint">
-                      {timer.key} · {formatRelative(timer.dueAt)}
-                    </p>
-                  </div>
-                  <Button
-                    size="small"
-                    variant="ghost"
-                    data-testid="timer-cancel"
-                    loading={store.isPending(
-                      `project:${projectId()}:timer:${timer.timer}:${timer.key}:cancel`,
-                    )}
-                    icon={<TrashIcon size={11} />}
-                    onClick={() => void cancel(timer)}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              )}
-            </For>
-          </Show>
-        </Section>
+                )}
+              </For>
+            </Show>
+          </Section>
+        </Show>
       </div>
     </aside>
   );

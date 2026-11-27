@@ -47,9 +47,12 @@ Client topics: `WebSocket.Message`, `WebSocket.Open`, `WebSocket.Close`, and
   broadcasting is `server.broadcast` plus the `broadcastText` /
   `broadcastBinary` / `broadcastJson` helpers.
 
-Connection settings are just the client URL or the server port. The script's
-server path is part of the listen capability, so the agent binds the path from
-the manifest and binds `127.0.0.1` by default.
+Connection settings are just the client URL or the server port. A server's
+declared port and path are part of the listen capability and win: one
+connection can serve several server slots on different ports, and each slot
+gets its own listener. The connection's port setting is the fallback for a
+script that declares no port (`WebSocket.Server(slot)`, scope
+`ws:listen:*`). The agent binds `127.0.0.1` by default.
 
 ## Driver
 

@@ -42,6 +42,7 @@ import { registerHttpRoutes } from "./http.ts";
 import { Lifecycle, LifecycleLive } from "./lifecycle.ts";
 import { ProjectManager, ProjectManagerLive } from "./projects.ts";
 import { ProjectRuntime, ProjectRuntimeLive } from "./project-runtime.ts";
+import { ProjectSharesLive } from "./shares.ts";
 import { AgentRpcsLive } from "./rpc.ts";
 import { ensureProjectTypes } from "./scaffold.ts";
 import {
@@ -167,13 +168,20 @@ const makeLayers = (
     Layer.provideMerge(tokens),
     Layer.provideMerge(projects),
   );
+  const shares = ProjectSharesLive({ dataDir: options.dataDir }).pipe(
+    Layer.provideMerge(projects),
+  );
   const handlers = AgentRpcsLive({
     stateDir: options.stateDir,
     dataDir: options.dataDir,
     startedAt,
     version,
     cloudUrl: options.cloudUrl,
-  }).pipe(Layer.provideMerge(gateway), Layer.provideMerge(projects));
+  }).pipe(
+    Layer.provideMerge(gateway),
+    Layer.provideMerge(shares),
+    Layer.provideMerge(projects),
+  );
   const server = NodeHttpServer.layer(() => createServer(), {
     host: "127.0.0.1",
     port: options.port,

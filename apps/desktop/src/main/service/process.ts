@@ -26,15 +26,25 @@ export async function spawnServiceProcess(config: DesktopConfig, stage: Stage): 
     BALLAST_LOG_DIR: config.logDir,
   };
   if (config.servicePort !== undefined) env["BALLAST_SERVICE_PORT"] = String(config.servicePort);
+  if (config.uiUrl !== undefined) env["BALLAST_SERVICE_VERSION"] = stage.version;
 
   try {
-    const child = spawn(config.execPath, ["--no-warnings=ExperimentalWarning", stage.entry, "serve"], {
-      cwd: stage.directory,
-      env,
-      detached: true,
-      stdio: ["ignore", stdout, stderr],
-      windowsHide: true,
-    });
+    const child = spawn(
+      config.execPath,
+      [
+        "--no-warnings=ExperimentalWarning",
+        stage.entry,
+        "serve",
+        ...(config.uiUrl === undefined ? [] : ["--dev"]),
+      ],
+      {
+        cwd: stage.directory,
+        env,
+        detached: true,
+        stdio: ["ignore", stdout, stderr],
+        windowsHide: true,
+      },
+    );
     child.unref();
     return { pid: child.pid };
   } finally {

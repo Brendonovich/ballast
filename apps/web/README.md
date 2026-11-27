@@ -67,8 +67,9 @@ The app follows a VS Code-like window model.
 - **Project** (`/projects/:id`) — a full-height workspace with no page scroll. Units are grouped
   by kind (topics, timers, workflows, params, runs) with status, last activity and a
   `file:line` source link. The header shows running / stopped / needs consent /
-  “Running previous version” and Start, Stop and Restart based on whether a worker is live, so a
-  failed reload offers Stop/Restart instead of Start. The consent banner carries the summary,
+  “Running previous version” and Start or Stop based on whether a worker is live (Restart is in
+  Stop's dropdown), so a failed reload offers Stop/Restart instead of Start. Share/Deploy is in
+  the project name's menu, and the far-right button shows or hides the project sidebar. The consent banner carries the summary,
   Reject and Approve. A failed reload keeps the old worker and shows the message once, with the
   declaration as a source link.
   The center is a **Source** pane over a **Logs** pane with a draggable splitter
@@ -169,7 +170,8 @@ The web app uses **no legacy script RPC**. `ListScripts`, `GetScript`, `GetScrip
 ## Development and build
 
 ```sh
-pnpm --filter @ballast/web dev          # mock UI at http://localhost:5173
+pnpm dev                              # desktop + Vite HMR against the real service
+pnpm --filter @ballast/web dev          # standalone mock UI at http://localhost:5173
 pnpm --filter @ballast/web typecheck
 pnpm --filter @ballast/web test         # Vitest: store, transport, formatting
 pnpm --filter @ballast/web test:e2e     # builds dist, then Playwright (mock + real service)

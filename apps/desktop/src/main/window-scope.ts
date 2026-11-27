@@ -1,7 +1,7 @@
 import type { BrowserWindowConstructorOptions } from "electron";
 
 /** Height of the web top bar; the macOS traffic lights are centred in it. */
-export const TITLE_BAR_HEIGHT = 40;
+export const TITLE_BAR_HEIGHT = 34;
 
 /**
  * On macOS the web top bar is the title bar: the native one is hidden and the
@@ -13,6 +13,19 @@ export const titleBarOptions = (
   platform === "darwin"
     ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 14, y: 13 } }
     : {};
+
+/** Vite serves the UI; the real agent still serves data over its authenticated WebSocket. */
+export const devWindowUrl = (
+  base: string,
+  connection: { readonly url: string; readonly token: string },
+  hash: string,
+): string => {
+  const target = new URL(base);
+  target.searchParams.set("service", connection.url);
+  target.searchParams.set("token", connection.token);
+  if (hash !== "") target.hash = hash;
+  return target.toString();
+};
 
 export interface ScopedWindow {
   readonly id: number;

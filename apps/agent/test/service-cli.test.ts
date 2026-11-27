@@ -42,6 +42,9 @@ const isolated = (root: string): NodeJS.ProcessEnv => {
     XDG_STATE_HOME: join(root, "xdg-state"),
     XDG_DATA_HOME: join(root, "xdg-data"),
     BALLAST_PROJECTS_DIR: join(root, "projects"),
+    // B is started with flags and inherits this base env: never compete for
+    // the fixed artifact port inside a test.
+    BALLAST_ARTIFACT_PORT: "0",
   };
 };
 
@@ -50,6 +53,7 @@ const withState = (base: NodeJS.ProcessEnv, stateDir: string, dataDir: string, l
   BALLAST_STATE_DIR: stateDir,
   BALLAST_DATA_DIR: dataDir,
   BALLAST_LOG_DIR: logDir,
+  BALLAST_ARTIFACT_PORT: "0",
 });
 
 const running = (env: Environment) =>

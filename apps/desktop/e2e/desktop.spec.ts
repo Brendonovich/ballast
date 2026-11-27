@@ -299,6 +299,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     BALLAST_USER_DATA_DIR: userDataDir,
     BALLAST_STATE_DIR: stateDir,
     BALLAST_DATA_DIR: dataDir,
+    BALLAST_ARTIFACT_PORT: "0",
     BALLAST_LOG_DIR: logDir,
     BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
     BALLAST_START_TIMEOUT_MS: "30000",
@@ -527,7 +528,7 @@ test("real service + Electron UI survives quitting the window", async ({}, testI
     } else {
       expect(await region("top-bar")).not.toBe("drag");
     }
-    expect((await page.getByTestId("top-bar").boundingBox())?.height).toBe(40);
+    expect((await page.getByTestId("top-bar").boundingBox())?.height).toBe(34);
     await page.getByTestId("project-switcher").click();
     await expect(page.getByTestId("project-switcher-menu")).toBeVisible();
     await expect(page.getByTestId("project-switcher-row")).toHaveCount(3);
@@ -761,6 +762,7 @@ test("recovers from the bundled fallback once the service starts", async () => {
     BALLAST_USER_DATA_DIR: path.join(root, "userData"),
     BALLAST_STATE_DIR: path.join(root, "state"),
     BALLAST_DATA_DIR: path.join(root, "data"),
+    BALLAST_ARTIFACT_PORT: "0",
     BALLAST_LOG_DIR: path.join(root, "logs"),
     BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
     BALLAST_AUTOSTART: "0",
@@ -823,6 +825,7 @@ test("waits for the initial service before loading the window", async () => {
     BALLAST_USER_DATA_DIR: path.join(root, "userData"),
     BALLAST_STATE_DIR: path.join(root, "state"),
     BALLAST_DATA_DIR: path.join(root, "data"),
+    BALLAST_ARTIFACT_PORT: "0",
     BALLAST_LOG_DIR: path.join(root, "logs"),
     BALLAST_SERVICE_BUILD_DIR: path.join(agentRoot, "dist-service"),
   };

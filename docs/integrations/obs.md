@@ -54,8 +54,11 @@ Init only declares. Request clients acquired through `OBS.Connection` die with
 
 ## Declarative scenes
 
-Declared scenes, inputs and filters live in `@ballast/module-sceneify`, which
-builds on this module's client. See [sceneify.md](./sceneify.md).
+Declared scenes, inputs, filters and browser sources live in
+`@ballast/module-sceneify`, which builds on this module's client. An artifact
+handle's `url` is a plain string, so a `Sceneify.BrowserSource` can load a
+transparent artifact overlay with `settings: { url: overlay.url, ... }`.
+See [sceneify.md](./sceneify.md).
 
 ## Protocol generation
 

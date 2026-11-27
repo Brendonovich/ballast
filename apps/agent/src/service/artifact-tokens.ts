@@ -15,6 +15,12 @@ import {
   type ArtifactUrlSummary,
   type CreateArtifactUrlResult,
 } from "@ballast/agent-protocol";
+import {
+  artifactReadToken,
+  ensureArtifactSecret,
+  parseArtifactReadToken,
+  verifyArtifactReadToken,
+} from "../artifact-url.ts";
 import { readJson, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
@@ -40,6 +46,11 @@ interface StoredArtifactUrl {
   readonly revokedAt?: number;
   readonly tokenHash: string;
   readonly tokenFingerprint: string;
+  /**
+   * Persistent URLs keep their token so the user can copy the URL again after
+   * a restart (0600 project state). Short-lived view tokens stay in memory.
+   */
+  readonly token?: string;
 }
 
 interface StoredFile {
@@ -49,12 +60,15 @@ interface StoredFile {
 
 export interface ArtifactGrant {
   readonly projectId: string;
-  readonly artifact: string;
+  /** Bound for view/action tokens; a stable read token addresses any artifact. */
+  readonly artifact?: string;
   readonly scopes: ReadonlyArray<ArtifactScope>;
   readonly transparent: boolean;
   readonly tokenHash: string;
   readonly urlId?: string;
   readonly expiresAt?: number;
+  /** True for the per-project stable read capability. */
+  readonly readCapability?: boolean;
 }
 
 export interface CreateArtifactUrlInput {
@@ -64,8 +78,13 @@ export interface CreateArtifactUrlInput {
   readonly procedures: ReadonlyArray<string>;
   readonly scope: ArtifactScope;
   readonly transparent: boolean;
-  readonly previewUrl: (id: string, scope: ArtifactScope, transparent: boolean) => string;
-  readonly copyUrl: (token: string, transparent: boolean) => string;
+  readonly previewUrl: (record: {
+    readonly id: string;
+    readonly artifact: string;
+    readonly scope: ArtifactScope;
+    readonly transparent: boolean;
+  }) => string;
+  readonly copyUrl: (token: string, artifact: string, transparent: boolean) => string;
 }
 
 export interface ArtifactTokenService {
@@ -88,9 +107,11 @@ export interface ArtifactTokenService {
     },
     previewUrl: (record: {
       readonly id: string;
+      readonly artifact: string;
       readonly scope: ArtifactScope;
       readonly transparent: boolean;
     }) => string,
+    copyUrl: (token: string, artifact: string, transparent: boolean) => string,
   ) => Effect.Effect<ReadonlyArray<ArtifactUrlSummary>, AgentError>;
   readonly revokeUrl: (id: string) => Effect.Effect<void, AgentError>;
   readonly listConfirmations: (projectId?: string) => Effect.Effect<
@@ -105,6 +126,8 @@ export interface ArtifactTokenService {
   >;
   readonly getConfirmation: (id: string) => Effect.Effect<ArtifactUrlConfirmation | undefined>;
   readonly rejectConfirmation: (id: string) => Effect.Effect<void, AgentError>;
+  /** The stable per-project read capability derived from project state. */
+  readonly readToken: (project: ProjectRecord) => Effect.Effect<string, AgentError>;
   readonly resolve: (token: string) => Effect.Effect<ArtifactGrant | undefined>;
   readonly revocations: PubSub.PubSub<string>;
   /** Emitted after a successful renewal so open gateway sockets reschedule. */
@@ -167,6 +190,7 @@ const readUrls = (
       }
       const lastUsedAt = entry["lastUsedAt"];
       const revokedAt = entry["revokedAt"];
+      const token = entry["token"];
       urls.push({
         id,
         artifact,
@@ -175,6 +199,7 @@ const readUrls = (
         createdAt,
         tokenHash,
         tokenFingerprint,
+        ...(typeof token === "string" && token !== "" ? { token } : {}),
         ...(typeof lastUsedAt === "number" ? { lastUsedAt } : {}),
         ...(typeof revokedAt === "number" ? { revokedAt } : {}),
       });
@@ -200,6 +225,7 @@ const summaryOf = (
   project: ProjectRecord,
   record: StoredArtifactUrl,
   preview: (record: StoredArtifactUrl) => string,
+  copy?: (token: string, artifact: string, transparent: boolean) => string,
 ): ArtifactUrlSummary => ({
   id: record.id,
   projectId: project.id,
@@ -209,6 +235,9 @@ const summaryOf = (
   createdAt: record.createdAt,
   urlPreview: preview(record),
   tokenFingerprint: record.tokenFingerprint,
+  ...(record.token === undefined || copy === undefined
+    ? {}
+    : { url: copy(record.token, record.artifact, record.transparent) }),
   ...(record.lastUsedAt === undefined ? {} : { lastUsedAt: record.lastUsedAt }),
   ...(record.revokedAt === undefined ? {} : { revokedAt: record.revokedAt }),
 });
@@ -334,17 +363,29 @@ export const ArtifactTokensLive = Layer.effect(
           createdAt: Date.now(),
           tokenHash: hash,
           tokenFingerprint: fingerprint(hash),
+          token,
         };
         const existing = yield* readUrls(input.project);
         yield* writeUrls(input.project, [...existing, record]);
         return {
           _tag: "created",
-          url: summaryOf(input.project, record, () => input.previewUrl(id, "read", input.transparent)),
-          copyUrl: input.copyUrl(token, input.transparent),
+          url: summaryOf(
+            input.project,
+            record,
+            () =>
+              input.previewUrl({
+                id,
+                artifact: input.artifact,
+                scope: "read",
+                transparent: input.transparent,
+              }),
+            input.copyUrl,
+          ),
+          copyUrl: input.copyUrl(token, input.artifact, input.transparent),
         };
       }));
 
-    const listUrls: ArtifactTokenService["listUrls"] = (filter, previewUrl) =>
+    const listUrls: ArtifactTokenService["listUrls"] = (filter, previewUrl, copyUrl) =>
       provide(Effect.gen(function* () {
         const all = yield* projects.projects;
         const chosen = filter.projectId === undefined
@@ -364,9 +405,11 @@ export const ArtifactTokensLive = Layer.effect(
                 (entry) =>
                   previewUrl({
                     id: entry.id,
+                    artifact: entry.artifact,
                     scope: entry.scope,
                     transparent: entry.transparent,
                   }),
+                copyUrl,
               ),
             );
           }
@@ -424,14 +467,24 @@ export const ArtifactTokensLive = Layer.effect(
           createdAt: Date.now(),
           tokenHash: hash,
           tokenFingerprint: fingerprint(hash),
+          token,
         };
         const existing = yield* readUrls(input.project);
         yield* writeUrls(input.project, [...existing, record]);
         return {
-          url: summaryOf(input.project, record, (entry) =>
-            input.previewUrl(entry.id, "action", entry.transparent),
+          url: summaryOf(
+            input.project,
+            record,
+            (entry) =>
+              input.previewUrl({
+                id: entry.id,
+                artifact: entry.artifact,
+                scope: "action",
+                transparent: entry.transparent,
+              }),
+            input.copyUrl,
           ),
-          copyUrl: input.copyUrl(token, confirmation.transparent),
+          copyUrl: input.copyUrl(token, confirmation.artifact, confirmation.transparent),
         };
       }));
 
@@ -455,6 +508,22 @@ export const ArtifactTokensLive = Layer.effect(
           return next;
         });
       });
+
+    const readToken: ArtifactTokenService["readToken"] = (project) =>
+      provide(
+        Effect.gen(function* () {
+          const secret = yield* Effect.tryPromise({
+            try: () => ensureArtifactSecret(project.root),
+            catch: (cause) =>
+              agentError(
+                "internal",
+                "Could not read the project artifact secret: " +
+                  (cause instanceof Error ? cause.message : String(cause)),
+              ),
+          });
+          return artifactReadToken(secret, project.id);
+        }),
+      );
 
     const resolve: ArtifactTokenService["resolve"] = (token) =>
       provide(Effect.gen(function* () {
@@ -495,6 +564,28 @@ export const ArtifactTokensLive = Layer.effect(
             urlId: record.id,
           };
         }
+        // Stable read tokens are self-describing and need no stored record:
+        // verify the HMAC against the project's secret. They only ever grant
+        // read scope for one project.
+        const parsed = parseArtifactReadToken(token);
+        if (parsed !== undefined) {
+          const project = all.find((candidate) => candidate.id === parsed.projectId);
+          if (project === undefined) return undefined;
+          const secret = yield* Effect.tryPromise({
+            try: () => ensureArtifactSecret(project.root),
+            catch: () => undefined,
+          }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          if (secret === undefined || !verifyArtifactReadToken(token, secret)) {
+            return undefined;
+          }
+          return {
+            projectId: project.id,
+            scopes: ["read"],
+            transparent: false,
+            tokenHash: hash,
+            readCapability: true,
+          };
+        }
         return undefined;
       }));
 
@@ -508,6 +599,7 @@ export const ArtifactTokensLive = Layer.effect(
       getConfirmation,
       approveConfirmation,
       rejectConfirmation,
+      readToken,
       resolve,
       revocations,
       renewals,

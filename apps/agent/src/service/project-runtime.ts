@@ -40,6 +40,7 @@ import {
 } from "@ballast/agent-protocol";
 import { emptyManifest, type Manifest, type ParamManifest, type TimerManifest } from "@ballast/core";
 import { decodeManifest, diffProject, planProject, resolveProjectEntry } from "@ballast/planner";
+import { artifactHostFor, artifactOriginFromEnv } from "../artifact-url.ts";
 import { bundleScript } from "../bundle.ts";
 import { startRuntimeSession } from "../runtime-session.ts";
 import { ProjectStores } from "./artifact-stores.ts";
@@ -130,6 +131,23 @@ export interface ProjectRuntimeService {
   readonly reject: (consentId: string, reason?: string) => Effect.Effect<ProjectDetail, AgentError>;
   readonly syncProject: (projectId: string) => Effect.Effect<void>;
   readonly syncAll: Effect.Effect<void>;
+  /**
+   * Run `effect` with the background file sync paused for one project, after
+   * any in-flight sync finished. Used to swap a share's files in without a
+   * reload per file.
+   */
+  readonly withSyncPaused: <A, E>(
+    projectId: string,
+    effect: Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E>;
+  /**
+   * Sync one project now even while paused: plan the files on disk and, when
+   * running, cut over to one new generation (the old worker keeps running if
+   * the new version fails). Consent rules apply as for any file change.
+   */
+  readonly reloadNow: (projectId: string) => Effect.Effect<void>;
+  /** Re-read the registry record (name, share state) and publish the summary. */
+  readonly refreshProject: (projectId: string) => Effect.Effect<void>;
   readonly removeProject: (projectId: string) => Effect.Effect<void>;
   readonly resumeEnabled: () => Effect.Effect<void>;
   readonly running: () => Effect.Effect<ReadonlyArray<ActiveScript>>;
@@ -361,6 +379,16 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
+    // The stable artifact URL is a plan/runtime bundle constant: fixed origin
+    // plus a per-project read capability derived from project state.
+    const artifactOrigin = artifactOriginFromEnv();
+    const hostFor = (
+      project: ProjectRecord,
+    ): Effect.Effect<import("@ballast/core").ArtifactHost | undefined> =>
+      Effect.tryPromise({
+        try: () => artifactHostFor(artifactOrigin, project),
+        catch: () => undefined,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
     const platform = yield* Effect.context<
       Crypto.Crypto | FileSystem.FileSystem | Path.Path
     >();
@@ -931,6 +959,7 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
       createdAt: record.project.createdAt,
       updatedAt: record.updatedAt,
       issues,
+      ...(record.project.share === undefined ? {} : { share: record.project.share }),
     });
 
     const liveSummary = (record: ProjectRuntimeRecord): Effect.Effect<ProjectSummary> =>
@@ -1265,9 +1294,11 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           yield* publish(recovered);
           return recovered;
         }
+        const artifactHost = yield* hostFor(record.project);
         const planned = yield* planProject(record.project.root, {
           projectId: record.project.id,
           resolveDir: serviceResolveDir,
+          ...(artifactHost === undefined ? {} : { artifactHost }),
         }).pipe(
           Effect.mapError((error) => agentError("invalid", error.message)),
         );
@@ -1421,7 +1452,8 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           bindings: bindingMap,
         });
         yield* reconcile([], record);
-        const bundle = yield* provide(bundleScript(record.entryFile, generation)).pipe(
+        const artifactHost = yield* hostFor(record.project);
+        const bundle = yield* provide(bundleScript(record.entryFile, generation, artifactHost)).pipe(
           Effect.mapError((error) => agentError("internal", error.message)),
         );
         const timerDeclaration = (name: string): TimerManifest | undefined => manifest.timers.find((timer) => timer.name === name);
@@ -1693,9 +1725,11 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
             error: message,
           };
         }
+        const artifactHost = yield* hostFor(record.project);
         const planned = yield* planProject(record.project.root, {
           projectId: record.project.id,
           resolveDir: serviceResolveDir,
+          ...(artifactHost === undefined ? {} : { artifactHost }),
         }).pipe(Effect.exit);
         if (Exit.isFailure(planned)) {
           const failure = Cause.squash(planned.cause);
@@ -2016,7 +2050,42 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         record === undefined ? Effect.succeed(undefined) : liveSummary(record),
       );
 
+    const paused = yield* Ref.make<ReadonlySet<string>>(new Set());
+
     const syncProject = (projectId: string): Effect.Effect<void> =>
+      Effect.flatMap(Ref.get(paused), (set) =>
+        set.has(projectId) ? Effect.void : reloadNow(projectId),
+      );
+
+    const withSyncPaused = <A, E>(
+      projectId: string,
+      effect: Effect.Effect<A, E>,
+    ): Effect.Effect<A, E> =>
+      Effect.acquireUseRelease(
+        Ref.update(paused, (set) => new Set([...set, projectId])).pipe(
+          // Wait out a sync that started before the pause.
+          Effect.andThen(semaphore.withPermit(Effect.void)),
+        ),
+        () => effect,
+        () =>
+          Ref.update(paused, (set) => {
+            const next = new Set(set);
+            next.delete(projectId);
+            return next;
+          }),
+      );
+
+    // Under the permit: a sync in flight holds a record snapshot and would
+    // otherwise write the stale registry entry back over this one.
+    const refreshProject = (projectId: string): Effect.Effect<void> =>
+      semaphore.withPermit(Effect.gen(function* () {
+        const project = yield* projects.get(projectId);
+        const record = yield* getRecord(projectId);
+        if (project === undefined || record === undefined) return;
+        yield* publish(yield* setRecord({ ...record, project }));
+      }));
+
+    const reloadNow = (projectId: string): Effect.Effect<void> =>
       semaphore.withPermit(Effect.gen(function* () {
         const project = yield* projects.get(projectId);
         if (project === undefined) return;
@@ -2318,6 +2387,9 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
         })),
       syncProject,
       syncAll,
+      withSyncPaused,
+      reloadNow,
+      refreshProject,
       removeProject,
       resumeEnabled,
       running,

@@ -261,6 +261,7 @@ describe("integration drivers through the service", () => {
         const env = {
           BALLAST_STATE_DIR: stateDir,
           BALLAST_DATA_DIR: dataDir,
+          BALLAST_ARTIFACT_PORT: "0",
           BALLAST_WEB_DIR: join(root, "missing-web"),
         };
         const service = yield* Effect.acquireRelease(spawnService(env, false), (process) => process.kill);
@@ -459,6 +460,7 @@ describe("integration drivers through the service", () => {
         const env = {
           BALLAST_STATE_DIR: stateDir,
           BALLAST_DATA_DIR: dataDir,
+          BALLAST_ARTIFACT_PORT: "0",
           BALLAST_WEB_DIR: join(root, "missing-web"),
         };
         const service = yield* Effect.acquireRelease(spawnService(env, false), (process) => process.kill);
@@ -545,6 +547,7 @@ describe("integration drivers through the service", () => {
         const env = {
           BALLAST_STATE_DIR: stateDir,
           BALLAST_DATA_DIR: dataDir,
+          BALLAST_ARTIFACT_PORT: "0",
           BALLAST_WEB_DIR: join(root, "missing-web"),
           BALLAST_DEV_FAKE_INPUT: "1",
         };

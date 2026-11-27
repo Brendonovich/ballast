@@ -150,6 +150,17 @@ and unused requirements are not persisted. Removing a binding either unbinds
 - Connection summaries report `boundBy` from explicit bindings only. An
   unbound slot does not claim an instance even if its old id looked like
   `obs/main`.
+- Active instances reconnect on their own. A driver that fails to start (OBS
+  offline, a WebSocket server whose port is taken, VTube Studio not running)
+  keeps retrying with exponential backoff (1 s, doubling, capped at 30 s) until
+  it connects, its settings change or the project stops; `nextRetryAt` reports
+  the next attempt. `DisconnectConnection` marks the instance explicitly
+  disabled: it stops and is not retried until `ConnectConnection` or
+  `ConfigureConnection`.
+- A `websocket-server` instance may back several slots. Each slot's declared
+  `ws:listen:` address wins; the instance's port setting is only the fallback
+  for a script that declared no port (`ws:listen:*`). Slots that declare the
+  same address share one listener; different addresses get one listener each.
 
 ### Twitch and cloud ownership
 

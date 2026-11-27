@@ -1,0 +1,8 @@
+// Local Artifacts simulator bridge (local dev of the shares API).
+// Run with `pnpm --filter @ballast/shares-api bridge`. Never deployed.
+{
+  "name": "ballast-shares-dev-bridge",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "artifacts": [{ "binding": "SHARES", "namespace": "ballast-shares", "remote": false }]
+}

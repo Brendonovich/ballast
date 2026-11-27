@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { planRescope, titleBarOptions } from "../src/main/window-scope.ts";
+import { devWindowUrl, planRescope, titleBarOptions } from "../src/main/window-scope.ts";
 
 const windows = [
   { id: 1, kind: "project" as const, projectId: "a" },
@@ -27,6 +27,22 @@ describe("project re-scope", () => {
   it("refuses artifact and unknown windows", () => {
     expect(planRescope(windows, 4, "b").action).toBe("reject");
     expect(planRescope(windows, 99, "b").action).toBe("reject");
+  });
+});
+
+describe("dev window URL", () => {
+  it("connects the Vite UI to the live service and preserves the route", () => {
+    const target = new URL(
+      devWindowUrl(
+        "http://127.0.0.1:5173/",
+        { url: "http://127.0.0.1:51234", token: "token&secret" },
+        "#/projects/project%20one",
+      ),
+    );
+    expect(target.origin).toBe("http://127.0.0.1:5173");
+    expect(target.searchParams.get("service")).toBe("http://127.0.0.1:51234");
+    expect(target.searchParams.get("token")).toBe("token&secret");
+    expect(target.hash).toBe("#/projects/project%20one");
   });
 });
 

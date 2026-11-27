@@ -12,6 +12,9 @@
     },
     {
       "path": "../../packages/integrations/twitch"
+    },
+    {
+      "path": "../../packages/shares-api"
     }
   ]
 }

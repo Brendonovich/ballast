@@ -107,6 +107,7 @@ describe("real MCP stdio client against a real Ballast service", () => {
           "ballast_project_init",
           "ballast_check",
           "ballast_apply",
+          "ballast_share",
           "ballast_status",
           "ballast_logs",
           "ballast_events",

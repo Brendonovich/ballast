@@ -14,7 +14,7 @@ describe("routes", () => {
     expect(path).toBe("/projects/proj%20main/connections");
     expect(projectIdFromPath(path)).toBe("proj main");
     expect(projectSectionFromPath(path)).toBe("connections");
-    expect(projectSectionFromPath(projectSectionPath("p", "settings"))).toBe("settings");
+    expect(projectSectionFromPath("/projects/p/settings")).toBeUndefined();
     expect(projectSectionFromPath(projectPath("p"))).toBeUndefined();
     expect(projectSectionFromPath("/projects/p/artifacts/connections")).toBeUndefined();
     expect(artifactFromPath("/projects/p/artifacts/dash%20board")).toBe("dash board");

@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
+import type { ArtifactHost } from "@ballast/core";
 import { Effect } from "effect";
 import { plan } from "@ballast/planner";
 
@@ -8,6 +9,9 @@ const sceneifyExample = fileURLToPath(
 );
 const sceneifyStream = fileURLToPath(
   new URL("../../../../examples/sceneify-stream/ballast.ts", import.meta.url),
+);
+const alertOverlay = fileURLToPath(
+  new URL("../../../../examples/obs-alert-overlay/ballast.ts", import.meta.url),
 );
 const syncInInit = fileURLToPath(
   new URL("./fixtures/sync-in-init.ts", import.meta.url),
@@ -64,6 +68,32 @@ describe("plan Sceneify scripts", () => {
       expect(manifest.timers.map((timer) => timer.name).sort()).toEqual(["go-live", "hype-off"]);
       expect(manifest.runs.map((run) => run.name)).toEqual(["sync-layout"]);
       expect(manifest.params.map((param) => param.key)).toHaveLength(8);
+    }),
+  );
+
+  it.effect("reads the artifact URL in init when an artifact host is present", () =>
+    Effect.gen(function* () {
+      const artifactHost: ArtifactHost = {
+        origin: "http://127.0.0.1:47831",
+        readToken: "r1.obs-alert-overlay.test",
+      };
+      const manifest = yield* plan(alertOverlay, { artifactHost });
+
+      expect(manifest.artifacts).toMatchObject([
+        { name: "alerts", entry: "./artifacts/alerts/main.ts", title: "Alert overlay" },
+      ]);
+      expect(manifest.unresolved).toEqual([]);
+    }),
+  );
+
+  it.effect("records an unresolved artifact when planning without an artifact host", () =>
+    Effect.gen(function* () {
+      const manifest = yield* plan(alertOverlay);
+
+      expect(manifest.unresolved).toEqual([
+        expect.objectContaining({ path: "artifact:alerts" }),
+      ]);
+      expect(manifest.unresolved[0]?.reason).toContain("no URL while planning");
     }),
   );
 

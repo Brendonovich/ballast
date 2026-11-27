@@ -213,6 +213,7 @@ export const startService = async (options: {
     BALLAST_STATE_DIR: stateDir,
     BALLAST_DATA_DIR: dataDir,
     BALLAST_LOG_DIR: join(options.root, "logs"),
+    BALLAST_ARTIFACT_PORT: "0",
   };
   const child = spawnLogged(
     [

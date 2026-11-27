@@ -24,6 +24,7 @@ import { Lifecycle } from "./lifecycle.ts";
 import { ProjectManager } from "./projects.ts";
 import type { ProjectRecord } from "./projects.ts";
 import { ProjectRuntime } from "./project-runtime.ts";
+import { ProjectShares } from "./shares.ts";
 import { ensureProjectTypes, scaffoldProject } from "./scaffold.ts";
 import { EventHistory } from "./event-history.ts";
 import { EventLog, Logs, ServiceHub } from "./telemetry.ts";
@@ -48,6 +49,7 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
     const events = yield* EventLog;
     const history = yield* EventHistory;
     const hub = yield* ServiceHub;
+    const shares = yield* ProjectShares;
 
     const info = Effect.gen(function* () {
       const all = yield* projects.projects;
@@ -252,6 +254,21 @@ export const AgentRpcsLive = (options: AgentRpcOptions) => {
           yield* hub.publish({ _tag: "project-removed", projectId });
           yield* publishHealth;
         }),
+
+      ShareProject: (request: { readonly projectId: string; readonly message?: string }) =>
+        shares.share(request.projectId, request.message),
+      DeployProject: (request: { readonly projectId: string; readonly message?: string }) =>
+        shares.deploy(request.projectId, request.message),
+      SubscribeProject: (request: {
+        readonly shareCode: string;
+        readonly directory?: string;
+        readonly name?: string;
+      }) =>
+        Effect.tap(shares.subscribe(request), () => publishHealth),
+      UnsubscribeProject: ({ projectId }: { readonly projectId: string }) =>
+        shares.unsubscribe(projectId),
+      ApplyProjectUpdate: ({ projectId }: { readonly projectId: string }) =>
+        shares.applyUpdate(projectId),
 
       CheckProject: ({ projectId }: { readonly projectId: string }) => runtime.check(projectId),
       PlanProject: ({ projectId }: { readonly projectId: string }) => runtime.plan(projectId),

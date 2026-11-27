@@ -135,6 +135,7 @@ const adapter = (state: AdapterState): ProjectAdapter => ({
       detail({ summary: { ...summary, enabled: true, status: "running" }, appliedAt: 1 }),
     );
   },
+  shareProject: () => Effect.fail(toolError("sharing is not used in these tests")),
   listConnections: () => Effect.succeed([]),
   health: () => Effect.succeed(health),
   logs: () => Effect.succeed([]),

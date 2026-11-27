@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,7 @@ const apiSource = [
   "",
   "export const DashboardApi = RpcGroup.make(",
   '  Rpc.make("Snapshot", {',
-  "    success: Schema.Struct({ count: Schema.Number }),",
+  "    success: Schema.Struct({ count: Schema.Number, url: Schema.optional(Schema.String) }),",
   "  }),",
   "  Ballast.Api.action(",
   '    Rpc.make("Increment", {',
@@ -47,7 +48,7 @@ const projectSource = [
   '  const views = yield* Ballast.Store.counter("views", { initial: 0 });',
   '  const greeting = yield* Ballast.Param.string("greeting", { default: "hello" });',
   '  yield* Ballast.run("greeting", Effect.gen(function* () { yield* Effect.log(yield* greeting); }));',
-  '  yield* Ballast.Artifact("dashboard", {',
+  '  const artifact = yield* Ballast.Artifact("dashboard", {',
   '    title: "Stream dashboard",',
   '    entry: "./artifacts/dashboard/main.ts",',
   "  });",
@@ -55,7 +56,12 @@ const projectSource = [
   "    Snapshot: () =>",
   "      Effect.gen(function* () {",
   "        const count = yield* views.get;",
-  "        return { count };",
+  "        try {",
+  "          return { count, url: artifact.url };",
+  "        } catch {",
+  "          // Ephemeral-port test services have no stable artifact URL.",
+  "          return { count };",
+  "        }",
   "      }),",
   "    Increment: ({ by }) => views.increment(by),",
   "    Counts: () =>",
@@ -237,6 +243,26 @@ const startProject = (root: string, projectId: string): Effect.Effect<void, Erro
     }
     return yield* Effect.fail(new Error("Project did not start"));
   });
+
+const freePort = (): Effect.Effect<number> =>
+  Effect.promise(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const server = createServer();
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address();
+          const port = typeof address === "object" && address !== null ? address.port : 0;
+          server.close(() => resolve(port));
+        });
+      }),
+  );
+
+const readTokenFromUrl = (url: string): string => {
+  const match = /\/a\/([^/]+)\//.exec(url);
+  if (match === null || match[1] === undefined) throw new Error("read URL has no token");
+  return match[1];
+};
 
 describe("artifact gateway", () => {
   it.live(
@@ -602,6 +628,105 @@ describe("artifact gateway", () => {
           client.RenewArtifactView({ token: first.token }),
         ).pipe(Effect.exit);
         expect(renewExpired._tag).toBe("Failure");
+      }),
+    120_000,
+  );
+  it.live(
+    "serves a stable read URL that init can see and that survives restarts",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-artifacts-stable-")));
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() => rm(root, { recursive: true, force: true })).pipe(Effect.ignore),
+        );
+        const project = join(root, "project");
+        yield* Effect.promise(() => mkdir(join(project, "src"), { recursive: true }));
+        yield* Effect.promise(() => mkdir(join(project, "artifacts", "dashboard"), { recursive: true }));
+        yield* Effect.promise(() => writeFile(join(project, "ballast.ts"), projectSource, "utf8"));
+        yield* Effect.promise(() => writeFile(join(project, "src", "api.ts"), apiSource, "utf8"));
+        yield* Effect.promise(() =>
+          writeFile(join(project, "artifacts", "dashboard", "main.ts"), artifactSource, "utf8"),
+        );
+
+        const port = yield* freePort();
+        const env = { BALLAST_ARTIFACT_PORT: String(port) };
+        const service = yield* startService(root, env);
+        yield* Effect.addFinalizer(() => service.stop());
+
+        const added = yield* call(root, (client) =>
+          client.AddProject({ path: project, name: "Stable" }),
+        );
+        const projectId = added.summary.id;
+        yield* startProject(root, projectId);
+
+        const artifacts = yield* call(root, (client) =>
+          client.ListArtifacts({ projectId }),
+        );
+        const readUrl = artifacts.artifacts[0]?.readUrl;
+        if (readUrl === undefined) throw new Error("artifact had no stable read URL");
+        expect(readUrl.startsWith("http://127.0.0.1:" + String(port) + "/a/")).toBe(true);
+        expect(readUrl).toContain("/dashboard/index.html");
+        expect(readUrl).not.toContain("••••");
+
+        const page = yield* Effect.promise(() => fetch(readUrl));
+        expect(page.status).toBe(200);
+        expect(yield* Effect.promise(() => page.text())).toContain('id="root"');
+        const script = yield* Effect.promise(() => fetch(new URL("main.js", readUrl)));
+        expect(script.status).toBe(200);
+
+        const readToken = readTokenFromUrl(readUrl);
+        const socket = yield* openSocket("http://127.0.0.1:" + String(port), readToken);
+        yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
+        socket.send(JSON.stringify({ _tag: "Request", id: 21, tag: "Snapshot", payload: null, headers: [] }));
+        const snapshot = yield* waitForMessage(socket, (value) =>
+          isRecord(value) && value["requestId"] === 21 && value["_tag"] === "Exit",
+        );
+        if (!isRecord(snapshot) || !isRecord(snapshot["exit"])) throw new Error("bad snapshot response");
+        expect(snapshot["exit"]["_tag"]).toBe("Success");
+        const value = snapshot["exit"]["value"];
+        if (!isRecord(value)) throw new Error("bad snapshot value");
+        // Init and the service agree on the same stable URL.
+        expect(value["url"]).toBe(readUrl);
+        expect(value["count"]).toBe(0);
+
+        // A read token never grants action procedures.
+        socket.send(JSON.stringify({ _tag: "Request", id: 22, tag: "Increment", payload: { by: 1 }, headers: [] }));
+        const forbidden = yield* waitForMessage(socket, (message) =>
+          isRecord(message) && message["requestId"] === 22 && message["_tag"] === "Exit",
+        );
+        if (!isRecord(forbidden) || !isRecord(forbidden["exit"])) throw new Error("bad forbidden response");
+        expect(forbidden["exit"]["_tag"]).toBe("Failure");
+
+        // A token that addresses another artifact in the same project is fine
+        // for a read capability, but a tampered token is not.
+        const tampered = readToken.slice(0, -2) + (readToken.endsWith("00") ? "11" : "00");
+        const tamperedPage = yield* Effect.promise(() => fetch(readUrl.replace(readToken, tampered)));
+        expect(tamperedPage.status).toBe(401);
+
+        // Restart on the same port: the copied URL and the init URL stay valid.
+        yield* service.stop();
+        const restarted = yield* startService(root, env);
+        yield* Effect.addFinalizer(() => restarted.stop());
+        yield* waitFor("restarted project", () =>
+          call(root, (client) => client.GetProject({ projectId })).pipe(
+            Effect.map((detail) => (detail.summary.status === "running" ? detail : undefined)),
+          ),
+        );
+        const restartedArtifacts = yield* call(root, (client) =>
+          client.ListArtifacts({ projectId }),
+        );
+        expect(restartedArtifacts.artifacts[0]?.readUrl).toBe(readUrl);
+        const restartedPage = yield* Effect.promise(() => fetch(readUrl));
+        expect(restartedPage.status).toBe(200);
+        const restartedSocket = yield* openSocket("http://127.0.0.1:" + String(port), readToken);
+        yield* Effect.addFinalizer(() => Effect.sync(() => restartedSocket.close()));
+        restartedSocket.send(JSON.stringify({ _tag: "Request", id: 23, tag: "Snapshot", payload: null, headers: [] }));
+        const after = yield* waitForMessage(restartedSocket, (message) =>
+          isRecord(message) && message["requestId"] === 23 && message["_tag"] === "Exit",
+        );
+        if (!isRecord(after) || !isRecord(after["exit"])) throw new Error("bad restarted snapshot");
+        expect(after["exit"]["_tag"]).toBe("Success");
+        expect(isRecord(after["exit"]["value"]) ? after["exit"]["value"]["url"] : undefined).toBe(readUrl);
       }),
     120_000,
   );

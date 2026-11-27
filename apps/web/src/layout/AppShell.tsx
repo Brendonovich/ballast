@@ -15,6 +15,7 @@ import { TRAFFIC_LIGHT_INSET, insetTitleBar } from "../lib/titlebar.ts";
 import { ConnectionsIcon, PanelLeftIcon, ProjectsIcon, SettingsIcon } from "../ui/icons.tsx";
 import { isSidebarShortcut } from "../lib/sidebar-layout.ts";
 import { leftSidebarHidden, toggleLeftSidebar } from "../state/left-sidebar.ts";
+import { projectMode } from "../state/project-mode.ts";
 import {
   artifactFromPath,
   projectIdFromPath,
@@ -27,7 +28,7 @@ import type { IconProps } from "../ui/icons.tsx";
 import { Button, Spinner, StatusDot, cx } from "../ui/primitives.tsx";
 import { NewProjectDialog } from "../screens/ProjectsScreen.tsx";
 import { ProjectSwitcher } from "./ProjectSwitcher.tsx";
-import { TopBarSlotContext } from "./top-bar-slot.tsx";
+import { TopBarCenterContext, TopBarEndContext, TopBarSlotContext } from "./top-bar-slot.tsx";
 
 interface NavItem {
   readonly route: HomeRoute;
@@ -69,12 +70,10 @@ interface SectionItem {
 
 const sections: ReadonlyArray<SectionItem> = [
   { section: "connections", label: "Connections", icon: ConnectionsIcon },
-  { section: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 const sectionTitle: Record<ProjectSection, string> = {
   connections: "Connections",
-  settings: "Settings",
 };
 
 export const AppShell = (props: RouteSectionProps): JSX.Element => {
@@ -84,6 +83,8 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   const bridge = getDesktopBridge();
   const inset = insetTitleBar();
   const [actionSlot, setActionSlot] = createSignal<HTMLElement>();
+  const [centerSlot, setCenterSlot] = createSignal<HTMLElement>();
+  const [endSlot, setEndSlot] = createSignal<HTMLElement>();
   const [creating, setCreating] = createSignal(false);
 
   onMount(() => {
@@ -101,12 +102,17 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
   /** The project view itself, where the left sidebar lives. */
   const projectView = (): boolean =>
     projectWindow() && section() === undefined && artifactName() === undefined;
+  /** View mode fixes both panes, so the sidebar toggle and shortcut are off. */
+  const viewMode = (): boolean => {
+    const id = projectId();
+    return id !== undefined && projectMode(id) === "view";
+  };
   const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
   const shortcutLabel = mac ? "⌘B" : "Ctrl+B";
 
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!projectView() || !isSidebarShortcut(event, mac)) return;
+      if (!projectView() || viewMode() || !isSidebarShortcut(event, mac)) return;
       event.preventDefault();
       toggleLeftSidebar();
     };
@@ -164,7 +170,7 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
     navigate(route === "projects" ? "/projects" : `/${route}`);
   };
 
-  // Connections and Settings replace the project view in place; the route
+  // Connections replaces the project view in place; the route
   // keeps the project id, so the window stays scoped to its project.
   const openSection = (target: ProjectSection): void => {
     const id = projectId();
@@ -222,28 +228,12 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
     store.connections().filter((connection) => connectionNeedsAttention(connection)).length;
   const serviceTone = () =>
     reconnecting() ? "warning" : store.watchStatus() === "live" ? "success" : "info";
-  const serviceLabel = (): string => {
-    const state = reconnecting()
-      ? "Reconnecting"
-      : store.watchStatus() === "live"
-        ? "Connected"
-        : "Connecting";
-    const cloud = store.cloud();
-    const cloudLabel =
-      cloud?.state === "linked"
-        ? " · cloud linked"
-        : cloud?.state === "error"
-          ? " · cloud error"
-          : "";
-    const where = store.transport.kind === "mock" ? "mock" : store.transport.label;
-    return `Service ${state.toLowerCase()} (${where})${cloudLabel}`;
-  };
 
   // The project window's bar sits on the window background with no rule
   // under it; the panes below are raised surfaces (as in OpenCode's desktop app).
   const barClass = (variant: "project" | "artifact"): string =>
     cx(
-      "flex h-[40px] shrink-0 items-center gap-2 bg-rail pr-2",
+      "relative flex h-[34px] shrink-0 items-center gap-2 bg-rail pt-1.5 pr-2",
       variant === "artifact" && "border-b border-edge",
       inset ? "titlebar-drag" : "pl-2",
     );
@@ -382,9 +372,14 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
                 aria-label={leftSidebarHidden() ? "Show sidebar" : "Hide sidebar"}
                 aria-pressed={!leftSidebarHidden()}
                 aria-keyshortcuts={mac ? "Meta+B" : "Control+B"}
-                title={`${leftSidebarHidden() ? "Show sidebar" : "Hide sidebar"} (${shortcutLabel})`}
+                title={
+                  viewMode()
+                    ? "The sidebar is available in Develop"
+                    : `${leftSidebarHidden() ? "Show sidebar" : "Hide sidebar"} (${shortcutLabel})`
+                }
+                disabled={viewMode()}
                 class={cx(
-                  "grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-hover hover:text-body",
+                  "grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors enabled:hover:bg-hover enabled:hover:text-body disabled:opacity-40",
                   !projectView() && "invisible",
                 )}
                 tabIndex={projectView() ? 0 : -1}
@@ -392,17 +387,22 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
               >
                 <PanelLeftIcon size={15} />
               </button>
-              <ProjectSwitcher
-                projectId={projectId() ?? ""}
-                canOpenWindows={bridge !== undefined}
-                onSelect={(target, options) => void selectProject(target, options)}
-                onAllProjects={() => openHome("projects")}
-                onNewProject={() => setCreating(true)}
-              />
-              <Show when={store.project(projectId() ?? "")}>
-                {(project) => <ProjectStatusButton project={project()} onSelect={openIssue} />}
-              </Show>
+              <div class="flex min-w-0 items-center gap-1">
+                <ProjectSwitcher
+                  projectId={projectId() ?? ""}
+                  onAllProjects={() => openHome("projects")}
+                  onNewProject={() => setCreating(true)}
+                />
+                <Show when={store.project(projectId() ?? "")}>
+                  {(project) => <ProjectStatusButton project={project()} onSelect={openIssue} />}
+                </Show>
+              </div>
               <span class="min-w-0 flex-1" />
+              <div
+                ref={setCenterSlot}
+                data-testid="top-bar-center"
+                class="absolute inset-y-0 left-1/2 flex -translate-x-1/2 items-center pt-1.5"
+              />
               <div ref={setActionSlot} data-testid="top-bar-actions" class="flex shrink-0 items-center" />
               <nav class="flex shrink-0 items-center gap-0.5" aria-label="Service">
                 <For each={sections}>
@@ -436,21 +436,17 @@ export const AppShell = (props: RouteSectionProps): JSX.Element => {
                   }}
                 </For>
               </nav>
-              <span
-                data-testid="service-status"
-                role="status"
-                aria-label={serviceLabel()}
-                title={serviceLabel()}
-                class="ml-1 grid size-6 shrink-0 place-items-center"
-              >
-                <StatusDot tone={serviceTone()} pulse={reconnecting()} />
-              </span>
+              <div ref={setEndSlot} data-testid="top-bar-end" class="flex shrink-0 items-center" />
             </header>
           </Show>
           {reconnectBanner()}
           <main class="min-h-0 flex-1 overflow-hidden">
             <TopBarSlotContext.Provider value={actionSlot}>
-              <div class="h-full min-h-0">{content()}</div>
+              <TopBarCenterContext.Provider value={centerSlot}>
+                <TopBarEndContext.Provider value={endSlot}>
+                  <div class="h-full min-h-0">{content()}</div>
+                </TopBarEndContext.Provider>
+              </TopBarCenterContext.Provider>
             </TopBarSlotContext.Provider>
           </main>
         </div>

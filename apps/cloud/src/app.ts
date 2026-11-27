@@ -15,6 +15,7 @@ import {
   type WebhookRelayDelivery,
 } from "@ballast/cloud-protocol";
 import { Cause, Clock, Context, Duration, Effect, Layer, Option, Schema } from "effect";
+import type { SharesApiRpc } from "@ballast/shares-api";
 
 import { CloudConfig, type CloudConfigService } from "./config.ts";
 import { decodeJson, header, html, isJsonRequest, json, redirect, text } from "./http.ts";
@@ -55,6 +56,7 @@ import {
   verifyHook,
 } from "./hooks.ts";
 import { RelayGateway, type RelayGatewayService } from "./relay/gateway.ts";
+import { makeShareRoutes } from "./shares/routes.ts";
 import {
   hashMachineToken,
   randomPairingCode,
@@ -252,6 +254,11 @@ export interface CloudAppDeps {
   readonly vault: TokenVaultService;
   readonly twitch: TwitchApiService;
   readonly relay: RelayGatewayService;
+  /**
+   * The shares API Worker (`@ballast/shares-api`) for project sharing
+   * (decision 0013); omitted, the share routes 404.
+   */
+  readonly shares?: SharesApiRpc;
 }
 
 export const makeCloudApp = (
@@ -314,6 +321,11 @@ export const makeCloudApp = (
             Math.ceil(windowMs / 1_000),
           );
       });
+
+    const shares =
+      deps.shares === undefined
+        ? undefined
+        : makeShareRoutes({ api: deps.shares, relay, enforceRateLimit });
 
     const needsFreshToken = (account: TwitchAccountRow, force: boolean): boolean =>
       force ||
@@ -883,9 +895,10 @@ export const makeCloudApp = (
 <body style="font-family: system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; line-height: 1.5">
 <h1>Twitch connected</h1>
 <p>Signed in as <strong>${escapeHtml(twitchUser.displayName)}</strong> (${escapeHtml(twitchUser.login)}).</p>
-<p>Enter this pairing code in Ballast on your machine:</p>
+<p>Re-authorized the account already linked to your machine? Return to Ballast and choose <strong>Check again</strong>; no pairing code is needed.</p>
+<p>Pairing a machine for the first time? Enter this code under <strong>Settings → Cloud</strong> in Ballast:</p>
 <p style="font-size: 2rem; letter-spacing: 0.2em; font-weight: 700">${escapeHtml(pairingCode)}</p>
-<p>It expires in 15 minutes. You can close this tab.</p>
+<p>The code expires in 15 minutes.</p>
 </body></html>`,
         );
       });
@@ -1428,6 +1441,8 @@ export const makeCloudApp = (
           return yield* handlePairingClaim(request);
 
         const machine = yield* authenticateMachine(request);
+        const shareRoute = shares?.route(machine, request, url);
+        if (shareRoute !== undefined) return yield* shareRoute;
         if (request.method === "GET" && path === "/api/connections")
           return yield* handleListConnections(machine);
         if (request.method === "POST" && path === "/api/hooks/register")

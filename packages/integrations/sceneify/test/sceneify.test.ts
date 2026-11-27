@@ -67,6 +67,59 @@ const main = Sceneify.Scene.declare({
 const creates = (mock: ReturnType<typeof MockOBSSocket.make>) =>
   mock.calls.filter((call) => call.requestType.startsWith("Create")).length;
 
+const overlayUrl =
+  "http://127.0.0.1:47831/a/r1.demo.mac123/alerts/index.html?background=transparent";
+
+const overlay = {
+  name: "alerts",
+  url: overlayUrl,
+  transparent: true,
+} satisfies Ballast.ArtifactHandle;
+
+describe("Sceneify browser sources", () => {
+  it.effect("creates an artifact browser source from the handle URL", () =>
+    Effect.gen(function* () {
+      const mock = MockOBSSocket.make();
+      const sceneify = yield* connect(mock);
+
+      const source = Sceneify.Input.declare(Sceneify.BrowserSource, {
+        name: "Alert Overlay",
+        settings: {
+          url: overlay.url,
+          width: 1920,
+          height: 1080,
+          css: "html, body { background: transparent; }",
+          shutdown: false,
+          restart_when_active: true,
+          fps_custom: true,
+          fps: 60,
+        },
+      });
+
+      expect(source.type.kind).toBe("browser_source");
+
+      const scene = Sceneify.Scene.declare({
+        name: "Alerts",
+        items: { overlay: { source, index: 0 } },
+      });
+      yield* sceneify.sync(scene).pipe(Ballast.provideRuntime);
+
+      const input = mock.snapshot().inputs.find((value) => value.name === "Alert Overlay");
+      expect(input?.kind).toBe("browser_source");
+      expect(input?.settings).toMatchObject({
+        url: overlayUrl,
+        width: 1920,
+        height: 1080,
+        css: "html, body { background: transparent; }",
+        shutdown: false,
+        restart_when_active: true,
+        fps_custom: true,
+        fps: 60,
+      });
+    }),
+  );
+});
+
 describe("Sceneify on an OBS connection", () => {
   it.effect("creates a declared scene and tracks it in private settings", () =>
     Effect.gen(function* () {

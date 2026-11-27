@@ -9,6 +9,7 @@
     "tick-echo.ts",
     "obs-scene.ts",
     "obs-sceneify.ts",
+    "obs-alert-overlay/ballast.ts",
     "sceneify-stream",
     "redeem-to-scene.ts",
     "keyboard-hotkey.ts",

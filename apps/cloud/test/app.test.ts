@@ -114,6 +114,22 @@ describe("EventSub signature verification", () => {
 });
 
 describe("OAuth and machine API", () => {
+  it("explains when re-authorization can skip the pairing code", async () => {
+    const test = await makeTestApp();
+    const start = await test.request({
+      method: "GET",
+      path: "/oauth/twitch/start?scopes=user:read:email",
+    });
+    const state = new URL(start.headers?.location ?? "").searchParams.get("state");
+    const callback = await test.request({
+      method: "GET",
+      path: `/oauth/twitch/callback?code=code-1&state=${state ?? ""}`,
+    });
+    expect(callback.status).toBe(200);
+    expect(callback.body).toContain("no pairing code is needed");
+    expect(callback.body).toContain("Pairing a machine for the first time?");
+  });
+
   it("runs OAuth, stores sealed tokens, pairs a machine and serves tokens and Helix", async () => {
     const test = await makeTestApp();
     const start = await test.request({

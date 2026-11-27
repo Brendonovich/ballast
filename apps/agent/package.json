@@ -36,11 +36,12 @@
     "@ballast/planner": "workspace:*",
     "@effect/platform-node": "catalog:",
     "@effect/sql-sqlite-node": "catalog:",
+    "@solidjs/web": "2.0.3",
     "effect": "catalog:",
+    "isomorphic-git": "1.44.19",
     "rolldown": "catalog:",
     "solid-js": "2.0.3",
-    "ws": "catalog:",
-    "@solidjs/web": "2.0.3"
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

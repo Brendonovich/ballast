@@ -19,6 +19,9 @@ Sample Ballast scripts:
   local-app and cloud mode. See `docs/integrations/twitch.md`.
 - `obs-sceneify.ts` — a declared OBS scene (`Sceneify.Scene.declare`) synced on first use
   and driven from an OBS event.
+- `obs-alert-overlay/` — a transparent alert artifact plus a declared OBS
+  scene whose browser source loads it with `overlay.url` (the artifact's
+  read-only overlay URL).
 - `sceneify-stream/` — a multi-file stream project: a four-scene declared
   layout, Twitch alerts as temporary scene items, mod chat commands and durable
   timers. See its README.

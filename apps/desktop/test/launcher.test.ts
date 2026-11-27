@@ -82,6 +82,24 @@ describe("service launcher", () => {
     expect(stopped.status).toMatchObject({ phase: "stopped", running: false });
   });
 
+  it("uses a distinct, self-reporting service version for a Vite UI", async () => {
+    const { root, build } = await setup();
+    const config = configFor(root, {
+      env: {
+        BALLAST_SERVICE_BUILD_DIR: build,
+        BALLAST_USER_DATA_DIR: path.join(root, "userData"),
+        BALLAST_STATE_DIR: path.join(root, "state"),
+        BALLAST_DATA_DIR: path.join(root, "data"),
+        BALLAST_LOG_DIR: path.join(root, "logs"),
+        BALLAST_UI_URL: "http://127.0.0.1:5173",
+        BALLAST_START_TIMEOUT_MS: "10000",
+      },
+    });
+    const started = await launcherFor(config).start();
+    expect(started.ok, started.message ?? undefined).toBe(true);
+    expect(started.status.runningVersion).toBe("0.0.0-stub.1+vite");
+  });
+
   it("replaces a running service of another version with the shipped build", async () => {
     const { root, config, build } = await setup();
     const old = launcherFor(config);
