@@ -1,0 +1,30 @@
+{
+  "name": "@ballast/release",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ballast's release service: update manifests, release files and GitHub OIDC publishing (the anomalyco/release protocol and publish API).",
+  "engines": {
+    "node": ">=22.22.3 <23 || >=24.11.1"
+  },
+  "scripts": {
+    "typecheck": "tsgo -b",
+    "test": "vitest run",
+    "sync-client": "node scripts/sync-client.mjs",
+    "alchemy": "node --experimental-transform-types --no-warnings=ExperimentalWarning node_modules/alchemy/bin/alchemy.js",
+    "deploy": "pnpm alchemy deploy --stage prod",
+    "dev": "pnpm alchemy dev"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare": "catalog:",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "miniflare": "4.20260730.0",
+    "rolldown": "catalog:",
+    "vitest": "catalog:"
+  }
+}

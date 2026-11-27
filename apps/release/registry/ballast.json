@@ -1,0 +1,35 @@
+{
+  "app": "ballast",
+  "description": "Ballast desktop (brendonovich/ballast apps/desktop): macOS arm64 and Windows x64.",
+  "stages": [
+    "production",
+    "dev"
+  ],
+  "artifacts": {
+    "desktop": {
+      "channels": [
+        "stable",
+        "dev"
+      ]
+    }
+  },
+  "publishers": [
+    {
+      "repository": "Brendonovich/ballast",
+      "repository_id": "1474362718",
+      "repository_owner_id": "14191578",
+      "workflow": ".github/workflows/release.yml",
+      "refs": [
+        "refs/heads/dev"
+      ],
+      "environment": "release",
+      "artifacts": [
+        "desktop"
+      ],
+      "channels": [
+        "stable",
+        "dev"
+      ]
+    }
+  ]
+}

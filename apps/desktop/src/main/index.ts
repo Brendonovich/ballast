@@ -17,6 +17,7 @@ import { createPermissionController } from "./permissions.ts";
 import { createServiceLauncher } from "./service/launcher.ts";
 import { createTray, type TrayController } from "./tray.ts";
 import { createUpdateManager } from "./update.ts";
+import { platformInstaller } from "./update/platform.ts";
 import { createWindowController, type WindowController } from "./window.ts";
 import { readWindowSession } from "./window-state.ts";
 
@@ -152,9 +153,15 @@ async function start(): Promise<void> {
 
   update = createUpdateManager({
     isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    execPath: process.execPath,
+    platform: process.platform,
+    arch: process.arch,
+    userDataDir: app.getPath("userData"),
     currentVersion: app.getVersion(),
-    feedUrl: process.env["BALLAST_UPDATE_URL"],
+    origin: process.env["BALLAST_RELEASE_URL"],
+    installer: platformInstaller(process.platform),
+    openExternal: (url) => shell.openExternal(url),
     logger,
     onState: broadcastUpdate,
     beforeInstall: () => launcher.prepareForAppUpdate(),
@@ -283,6 +290,7 @@ async function start(): Promise<void> {
   }
 
   if (!background) windowsController.showInitial();
+  currentUpdate.startSchedule();
 
   let statusTimer: NodeJS.Timeout | undefined;
   const scheduleRefresh = (delayMs: number): void => {

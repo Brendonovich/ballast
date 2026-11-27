@@ -17,13 +17,12 @@
     "typecheck": "tsgo -b",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "pack": "node script/build.mjs && node script/prepare-service.mjs && electron-builder --dir --config electron-builder.config.mjs",
-    "dist": "node script/build.mjs && node script/prepare-service.mjs && electron-builder --config electron-builder.config.mjs"
+    "pack": "node script/pack.mjs",
+    "pack:installer": "node script/pack.mjs --installer"
   },
   "dependencies": {
     "@ballast/agent-protocol": "workspace:*",
-    "effect": "catalog:",
-    "electron-updater": "6.8.9"
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@playwright/test": "catalog:",

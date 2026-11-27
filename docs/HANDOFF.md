@@ -113,6 +113,7 @@ still open, and what to build next.
 | `apps/web` | Solid web UI served by the agent (scripts, source, logs, connections, settings) |
 | `apps/desktop` | Electron shell: service launcher, tray, bridge, updater |
 | `apps/cloud` | Cloudflare Worker: OAuth vault, Twitch EventSub, webhooks, machine relay |
+| `apps/release` | Release service Worker + R2: update manifests, files, GitHub OIDC publishing (anomalyco/release protocol) |
 | `examples` | Example scripts (tick, OBS, Twitch, VTS, MIDI, keyboard, WebSocket, webhook) |
 
 ## 4. Run it
@@ -187,8 +188,10 @@ existing `dist-service`.
    built-ins/using isolates before distributing scripts written by others.
 5. **Windows support.** Run the detached service spawn, stop and app update on a real Windows
    machine (no console window, survives the app quitting).
-6. **Signing/notarization/update feed.** Decide the release channel and whether the service and
-   app update independently or together.
+6. **Release setup.** The pipeline and updater exist (`docs/releasing.md`). Still needed: the GitHub
+   repo, signing credentials, deploying `apps/release` (with the repository id in its registry), and a
+   final bundle id. The
+   service still updates together with the app.
 7. **Input Monitoring.** Electron exposes Accessibility but not Input Monitoring; decide whether a
    native helper is needed for complete macOS keyboard diagnostics.
 8. **VTS approval UX.** The service now exposes a distinct approval flag; decide whether the shell
@@ -211,15 +214,20 @@ existing `dist-service`.
 - **Source-change events** are emitted by the service's one-second project sync, not an OS file
   watcher. That is adequate for the UI refetch but adds up to ~1 s latency.
 - **Windows** has not been exercised; the E2E has only been run on macOS.
-- **App updater** is wired through electron-updater but an unsigned local build has no feed; a
-  signed app-update run is untested.
+- **App updates** come from Ballast's release service (`apps/release`, a port of anomalyco/release's
+  public Worker; `apps/desktop/src/main/update.ts`; the protocol
+  test vectors pass). A macOS update through Squirrel was exercised locally with two signed builds
+  and a local manifest server. A notarized CI release and the Windows NSIS update have not run yet.
 - **Cloud deployment** has unit/protocol tests and a local demo path, but no deployed
   worker + paired machine + Twitch/webhook end-to-end run is recorded here.
 - **Real webhook providers** (Ko-fi/Streamlabs-like payloads) need validation against their live
   signatures/timestamps.
 - **Durable timer UI** is not built yet. The service exposes declarations, pending/fired rows and
   cancel; the web UI still needs a timer list/countdown and a `timer-fired` toast/badge.
-- **Packaging** needs an icon, signing/notarization and a release feed; local `pack` is unsigned.
+- **Packaging**: `.github/workflows/release.yml` builds, signs (Developer ID + notarization,
+  Azure Artifact Signing) and publishes macOS arm64 and Windows x64; local `pack` is unsigned.
+  There's no app icon yet. Packaged builds used to leave the service's `node_modules` out of
+  `Resources/service`; the stage is now nested (`build-service/service`) so electron-builder keeps it.
 - **Concurrent `packages/workflow`** (durable workflow engine) is untracked new work by another
   workstream; its tests fail independently and should be resolved there. Workflow service
   integration (decision 0007) is intentionally deferred until decision 0008 lands. Timer tests use

@@ -1,4 +1,5 @@
 out/
 build-service/
+build-installer/
 test-results/
 playwright-report/

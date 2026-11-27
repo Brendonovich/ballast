@@ -30,7 +30,7 @@ export async function buildDesktop({ minify = true } = {}) {
       target: "node22",
       sourcemap: true,
       minify,
-      external: ["electron", "electron-updater"],
+      external: ["electron"],
       logLevel: "warning",
     }),
     build({

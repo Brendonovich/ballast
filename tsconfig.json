@@ -41,6 +41,9 @@
       "path": "apps/cloud"
     },
     {
+      "path": "apps/release"
+    },
+    {
       "path": "apps/desktop"
     },
     {

@@ -70,7 +70,10 @@ export function createTray(actions: TrayActions): TrayController {
     if (update.phase === "ready") {
       return { label: "Install update" + (update.version ? " " + update.version : "") + "…", click: actions.installUpdate };
     }
-    if (update.phase === "available" || update.phase === "downloading" || update.phase === "checking") {
+    if (update.phase === "available") {
+      return { label: (update.message ?? "Update available") + "…", click: actions.installUpdate };
+    }
+    if (update.phase === "downloading" || update.phase === "checking") {
       return { label: update.message ?? "Checking for updates…", enabled: false };
     }
     return { label: "Check for updates…", click: actions.checkForUpdates };

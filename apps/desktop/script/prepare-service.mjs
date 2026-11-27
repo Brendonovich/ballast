@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Copies the real agent service build into build-service/ so electron-builder
-// can put it outside app.asar (extraResources: build-service -> Resources/service).
+// Copies the real agent service build into build-service/service/ so
+// electron-builder can put it outside app.asar (extraResources: build-service
+// -> Resources, so Resources/service). It is nested because electron-builder
+// always drops a node_modules directly under an extraResources source.
 //
 // By default this builds apps/web and apps/agent/dist-service first. Point it
 // at another directory (or set BALLAST_SERVICE_SKIP_BUILD=1) to reuse a build.
@@ -21,7 +23,7 @@ const source = path.resolve(
   root,
   process.env.BALLAST_SERVICE_BUILD_DIR ?? "../agent/dist-service",
 );
-const destination = path.join(root, "build-service");
+const destination = path.join(root, "build-service", "service");
 
 async function exists(file) {
   try {
@@ -54,7 +56,7 @@ if (!(await exists(path.join(source, "main.mjs")))) {
   throw new Error("service build has no main.mjs: " + source);
 }
 
-await rm(destination, { recursive: true, force: true });
+await rm(path.join(root, "build-service"), { recursive: true, force: true });
 await cp(source, destination, { recursive: true, dereference: true });
 
 const version = await readVersion();

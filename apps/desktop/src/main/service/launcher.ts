@@ -36,7 +36,7 @@ export interface ServiceLauncher {
   restart(): Promise<ServiceAction>;
   /** Copy the shipped service stage and remove stages nothing references. */
   prepare(): Promise<void>;
-  /** Stop the service before electron-updater replaces the app bundle; the relaunched app starts it again. */
+  /** Stop the service before an app update replaces the app (update.ts); the relaunched app starts it again. */
   prepareForAppUpdate(): Promise<void>;
   /** Push shell permissions (macOS Accessibility) to a running service. */
   reportPermissions(): Promise<void>;

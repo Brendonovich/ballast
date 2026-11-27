@@ -20,13 +20,16 @@ shell's unit tests.
 
 ## Tooling choices
 
-- **Electron 44.9.1 / electron-builder 26.15.7 / electron-updater 6.8.9** match the shipping
-  OpenCode Desktop (0003 §1) so packaging and updater behaviour are the same beta line.
+- **Electron 44.9.1 / electron-builder 26.15.7** match the shipping OpenCode Desktop (0003 §1),
+  so packaging behaves the same as on that beta line.
+- **Its own updater, not electron-updater.** Ballast updates from its own release service
+  (`apps/release`, the anomalyco/release protocol), whose manifests electron-updater can't read
+  (SHA-256, display-only versions, rollout). `src/main/update/` follows the service's client rules and passes its test
+  vectors. It verifies each download's size and SHA-256, then hands it to Squirrel.Mac (Electron's
+  `autoUpdater`) or to the signed NSIS setup. See [docs/releasing.md](../../docs/releasing.md).
 - **esbuild, not electron-vite**, bundles main/preload. The product UI is served by the agent
   service; the only bundled renderer is a static "Starting Ballast…" page, so a Vite renderer
   pipeline adds nothing here.
-- **electron-updater is pinned literally (6.8.9)**, not via `catalog:`: electron-builder validates
-  that dependency's version string and cannot parse pnpm's catalog placeholder.
 - **Plain TypeScript in the launcher**, with Effect only behind `src/main/service/controls.ts`.
   The shell is plain process management (`child_process`, `fs`, `fetch`), so staging and
   start/stop stay small and unit-tested. `ShutdownService` and `ReportShellPermission` use the
@@ -77,7 +80,8 @@ Environment overrides, mostly for tests and development:
 | `BALLAST_UI_URL` | load a Vite dev UI instead of the service origin |
 | `BALLAST_AUTOSTART` | `0`: do not start the service on launch (fallback-page E2E) |
 | `BALLAST_START_TIMEOUT_MS` | start/verify budget (default 30000) |
-| `BALLAST_UPDATE_URL` | build-time generic electron-updater feed |
+| `BALLAST_RELEASE_URL` | overrides the stamped release service URL for update checks |
+| `BALLAST_VERSION`, `BALLAST_CHANNEL`, `BALLAST_RELEASE_ORIGIN` | `script/pack.mjs`: app version, release channel and release service URL. Stamping a channel (`out/release.json`) turns the updater on. |
 
 ## Service stage
 
@@ -148,7 +152,7 @@ The service honours `BALLAST_STATE_DIR`, `BALLAST_DATA_DIR`, `BALLAST_LOG_DIR`,
 - Stop: `ShutdownService` over RPC, wait for exit, then `SIGTERM`, then `SIGKILL`. Restart is
   stop + spawn.
 - App update: `update.install` calls `prepareForAppUpdate()` (stop the service), then
-  electron-updater installs. The relaunched app's `start()` spawns the new version. This is the
+  Squirrel.Mac swaps the bundle or the NSIS setup installs over the app. The relaunched app's `start()` spawns the new version. This is the
   "quiesce before replacing the app binary" step in 0003 §2.
 
 ## Renderer bridge (C2)
@@ -233,9 +237,14 @@ handed to the OS browser. The fallback page is local and uses the same preload.
 ## Packaging
 
 ```bash
-pnpm --filter @ballast/desktop run pack   # unsigned .app in dist/mac-arm64 (--dir)
-pnpm --filter @ballast/desktop run dist   # dmg + zip on macOS, NSIS on Windows
+pnpm --filter @ballast/desktop run pack   # unsigned: dist/release/Ballast.app.zip (macOS) or dist/release/app (Windows)
+node apps/desktop/script/pack.mjs --installer <unpacked app> --out <dir>   # Windows: NSIS setup around a (signed) app
 ```
+
+Pack output is always unsigned. `.github/workflows/release.yml` signs, notarizes and publishes it;
+[docs/releasing.md](../../docs/releasing.md) has the details. Ballast ships macOS arm64 and Windows x64. The NSIS
+setup is a one-click, per-user install that writes `install.json` (the receipt that lets the app
+update itself). `script/test-installer.ps1` checks it in CI.
 
 Use `run pack`: bare `pnpm --filter … pack` is pnpm's own tarball command.
 
@@ -248,10 +257,11 @@ Measured locally (macOS 26.5.1, arm64, unsigned):
 | `Contents/Resources/app.asar` | ~1 MB (main + preload; no product UI) |
 | `Contents/Resources/service` | real service stage + runtime `node_modules` |
 
-The service sits **outside app.asar** via `extraResources: build-service → Resources/service`, so
-it can be spawned as a separate process. The app carries no product UI bundle. `BALLAST_APP_ID`
-overrides the bundle id for test builds; release builds still need signing/notarization and an
-icon (`mac.identity` is explicitly `null` for local builds).
+The service sits **outside app.asar**, so it can be spawned as a separate process. It's staged
+in `build-service/service` and copied to `Resources/service` via `extraResources`. It's nested one level
+because electron-builder always drops a `node_modules` directly under an extraResources source.
+The app carries no product UI bundle. `BALLAST_APP_ID` overrides the bundle id for test builds.
+There's no app icon yet.
 
 ## Verification
 
@@ -303,9 +313,10 @@ Nothing is registered with the OS, so `--ballast-demo=stop` (or killing the pid 
    window, including the service origin. The web app can import the type and use
    `permissions.requestAccessibility()`, but should not expect a token; main exchanges it for a
    cookie.
-3. **App updater feed/signing.** `electron-updater` is wired, but an unsigned local build has no
-   `app-update.yml`; `update.status` reports `unavailable`. Release builds need a feed
-   (`BALLAST_UPDATE_URL`), signing/notarization and an app icon.
+3. **App updates.** Only release builds (stamped with a channel by CI) check for updates. Dev and
+   local builds report `unavailable`. The macOS path was exercised locally: two builds signed with
+   the release entitlements updated through Squirrel from a local manifest server. The Windows NSIS
+   update path (`--updated /S --force-run`) and a notarized release have not been run yet.
 4. **Windows not executed here.** The detached spawn uses `windowsHide`; confirm on Windows that
    no console flashes and the service survives the app quitting.
 5. **Permissions.** macOS Accessibility is queried by the shell; Input Monitoring has no public
@@ -315,7 +326,6 @@ Nothing is registered with the OS, so `--ballast-demo=stop` (or killing the pid 
    prevent two different userData roots from starting a service.
 7. **No crash restart or start at login.** Nothing restarts a crashed service until the app or CLI
    is opened again (by design; there is no OS supervisor).
-8. **Service update E2E**: version replacement is covered by the launcher tests against the stub;
-   a full signed app-update (electron-updater replacing the bundle) still needs a real feed.
+8. **Service update E2E**: version replacement is covered by the launcher tests against the stub.
 9. **Real-world integrations** (OBS, Twitch, VTube Studio, MIDI, keyboard hooks) still need
    validation against the actual applications/devices; the service tests use mocks and fakes.

@@ -3,7 +3,7 @@
 // Run with `pnpm --filter @ballast/agent build:service`.
 import { createRequire } from "node:module";
 import { access, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rolldown } from "rolldown";
 import { serviceContentHash } from "./service-version.mjs";
@@ -54,7 +54,7 @@ const packageRootFor = async (request, name) => {
 const packageRoot = (name) => packageRootFor(requireFromAgent, name);
 
 const skipPath = (source) => {
-  const name = source.split("/").at(-1);
+  const name = basename(source);
   return name === "node_modules" || name === ".alchemy" || name === "test" || name === "tests";
 };
 
@@ -83,7 +83,7 @@ const copyWorkspacePackage = async (name, sourceDir) => {
     dereference: true,
     filter: (path) =>
       path === sourceDir ||
-      (!skipPath(path) && path.split("/").at(-1) !== "dist"),
+      (!skipPath(path) && basename(path) !== "dist"),
   });
 };
 
@@ -198,6 +198,19 @@ await copyWorkspacePackage("module-http", join(repoRoot, "packages", "integratio
   await copyFrom(uiohookRoot, "uiohook-napi");
   await copyFrom(join(dirname(uiohookRoot), "node-gyp-build"), "node-gyp-build");
   await copyFrom(midiRoot, "@julusian/midi");
+  // Ship only this platform's native addons: the others are dead weight, and
+  // macOS notarization requires every Mach-O file to be signed.
+  const platform = `${process.platform}-${process.arch}`;
+  for (const prebuilds of [
+    join(outDir, "node_modules", "uiohook-napi", "prebuilds"),
+    join(outDir, "node_modules", "@julusian", "midi", "prebuilds"),
+  ]) {
+    for (const entry of await readdir(prebuilds)) {
+      if (entry !== platform && entry !== `midi-${platform}`) {
+        await rm(join(prebuilds, entry), { recursive: true, force: true });
+      }
+    }
+  }
   const midiModules = dirname(dirname(midiRoot));
   for (const name of ["pkg-prebuilds", "tslib", "node-addon-api"]) {
     await copyFrom(join(midiModules, name), name);
