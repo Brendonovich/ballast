@@ -13,7 +13,8 @@ export const agentRoot = path.join(repoRoot, "apps", "agent");
 
 const run = (command, args, cwd) =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: "inherit", env: process.env });
+    // pnpm is pnpm.cmd on Windows, which only a shell runs.
+    const child = spawn(command, args, { cwd, stdio: "inherit", env: process.env, shell: process.platform === "win32" });
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
