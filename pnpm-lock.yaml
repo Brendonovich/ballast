@@ -267,8 +267,8 @@ importers:
         specifier: 'catalog:'
         version: 4.0.6(effect@4.0.6)(vitest@4.1.12(@types/node@24.13.3)(vite@8.3.8(@types/node@24.13.3)))
       '@sceneify/core-rewrite':
-        specifier: file:../../../sceneify/packages/core-rewrite
-        version: file:../sceneify/packages/core-rewrite(effect@4.0.6)(supports-color@7.2.0)
+        specifier: file:../../vendor/sceneify-core-rewrite
+        version: file:vendor/sceneify-core-rewrite(effect@4.0.6)(supports-color@7.2.0)
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -691,8 +691,8 @@ importers:
         specifier: workspace:*
         version: link:../obs
       '@sceneify/core-rewrite':
-        specifier: file:../../../../sceneify/packages/core-rewrite
-        version: file:../sceneify/packages/core-rewrite(effect@4.0.6)(supports-color@7.2.0)
+        specifier: file:../../../vendor/sceneify-core-rewrite
+        version: file:vendor/sceneify-core-rewrite(effect@4.0.6)(supports-color@7.2.0)
       effect:
         specifier: 'catalog:'
         version: 4.0.6
@@ -2097,8 +2097,8 @@ packages:
   '@rolldown/pluginutils@1.1.1':
     resolution: {integrity: sha512-glFIJDvLNDtJhT9qrMFWLPbvS+skxgt4L0K8Ei2YtnhPysAJnsI7nyxSJxKj4ADeKX0OLjC4ntRkwpLOoS3rwA==}
 
-  '@sceneify/core-rewrite@file:../sceneify/packages/core-rewrite':
-    resolution: {directory: ../sceneify/packages/core-rewrite, type: directory}
+  '@sceneify/core-rewrite@file:vendor/sceneify-core-rewrite':
+    resolution: {directory: vendor/sceneify-core-rewrite, type: directory}
     peerDependencies:
       effect: ^4.0.6
 
@@ -5017,7 +5017,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.1.1': {}
 
-  '@sceneify/core-rewrite@file:../sceneify/packages/core-rewrite(effect@4.0.6)(supports-color@7.2.0)':
+  '@sceneify/core-rewrite@file:vendor/sceneify-core-rewrite(effect@4.0.6)(supports-color@7.2.0)':
     dependencies:
       effect: 4.0.6
       obs-websocket-js: 5.0.8(supports-color@7.2.0)

@@ -1,0 +1,24 @@
+{
+  "name": "@sceneify/core-rewrite",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./obs-websocket": {
+      "types": "./dist/OBSWebSocket.d.ts",
+      "import": "./dist/OBSWebSocket.js"
+    }
+  },
+  "dependencies": {
+    "obs-websocket-js": "^5.0.6"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.6"
+  }
+}

@@ -13,7 +13,7 @@
   "dependencies": {
     "@ballast/core": "workspace:*",
     "@ballast/module-obs": "workspace:*",
-    "@sceneify/core-rewrite": "file:../../../../sceneify/packages/core-rewrite",
+    "@sceneify/core-rewrite": "file:../../../vendor/sceneify-core-rewrite",
     "effect": "catalog:"
   },
   "devDependencies": {

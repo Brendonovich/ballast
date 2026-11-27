@@ -44,7 +44,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "@sceneify/core-rewrite": "file:../../../sceneify/packages/core-rewrite",
+    "@sceneify/core-rewrite": "file:../../vendor/sceneify-core-rewrite",
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
     "vitest": "catalog:"
