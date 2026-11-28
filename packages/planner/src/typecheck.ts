@@ -3,9 +3,8 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
 import { parseConfigText, writeGeneratedConfig } from "./generated-config.ts";
 import type { ConfigObject } from "./generated-config.ts";
 
@@ -31,129 +30,132 @@ export class TypecheckError extends Error {
   }
 }
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const requireFromPlanner = createRequire(import.meta.url);
 const cache = new Map<string, TypecheckResult>();
 
-interface Toolchain {
+/** Config paths are written with forward slashes on every platform. */
+const toPosix = (path: Path.Path, value: string): string => value.split(path.sep).join("/");
+
+type PathMap = Readonly<Record<string, ReadonlyArray<string>>>;
+
+export interface Toolchain {
   readonly modulesRoot: string;
   readonly ballastRoot: string;
   readonly effectRoot: string;
   readonly tsgo: string;
+  readonly nodeTypesRoot: string | undefined;
+  readonly solidPaths: PathMap;
+  readonly artifactPaths: PathMap;
 }
 
-const nativeTsgo = (): string | undefined => {
+/** Resolves a bare specifier to a file path, throwing when it is missing. */
+export type ModuleResolver = (specifier: string) => string;
+
+const tryResolve = (resolve: () => string): string | undefined => {
   try {
-    const previewPackage = requireFromPlanner.resolve("@typescript/native-preview/package.json");
-    const previewRequire = createRequire(previewPackage);
+    return resolve();
+  } catch {
+    return undefined;
+  }
+};
+
+const nativeTsgo = (path: Path.Path, resolveModule: ModuleResolver): string | undefined =>
+  tryResolve(() => {
+    const previewPackage = resolveModule("@typescript/native-preview/package.json");
     const platformName =
       "@typescript/native-preview-" + process.platform + "-" + process.arch;
-    const platformPackage = previewRequire.resolve(platformName + "/package.json");
-    return join(
-      dirname(platformPackage),
+    const platformPackage = createRequire(previewPackage).resolve(platformName + "/package.json");
+    return path.join(
+      path.dirname(platformPackage),
       "lib",
       process.platform === "win32" ? "tsgo.exe" : "tsgo",
     );
-  } catch {
-    return undefined;
-  }
-};
+  });
 
-const locateToolchain = (): Toolchain => {
-  const effectRoot = dirname(requireFromPlanner.resolve("effect/package.json"));
-  const coreEntry = requireFromPlanner.resolve("@ballast/core");
-  const marker = join("node_modules", "@ballast");
-  const markerIndex = coreEntry.lastIndexOf(marker + "/");
-  if (markerIndex >= 0) {
-    const modulesRoot = coreEntry.slice(0, markerIndex + "node_modules".length);
-    const ballastRoot = join(modulesRoot, "@ballast");
-    return {
-      modulesRoot,
-      ballastRoot,
-      effectRoot,
-      tsgo: nativeTsgo() ?? join(modulesRoot, ".bin", "tsgo"),
-    };
+/**
+ * Locate the Ballast packages as the directory holding `core`:
+ * `node_modules/@ballast` in a staged service, `packages` in the workspace
+ * (pnpm resolves the workspace link to its real path).
+ */
+export const locateToolchain = (path: Path.Path, resolveModule: ModuleResolver): Toolchain => {
+  const effectRoot = path.dirname(resolveModule("effect/package.json"));
+  let coreRoot = path.dirname(resolveModule("@ballast/core"));
+  while (path.basename(coreRoot) !== "core") {
+    const parent = path.dirname(coreRoot);
+    if (parent === coreRoot) throw new TypecheckError("Could not locate the @ballast/core package");
+    coreRoot = parent;
   }
-  const modulesRoot = join(repoRoot, "node_modules");
+  const ballastRoot = path.dirname(coreRoot);
+  const modulesRoot =
+    path.basename(ballastRoot) === "@ballast"
+      ? path.dirname(ballastRoot)
+      : path.join(path.dirname(ballastRoot), "node_modules");
+  const nodeTypesRoot = tryResolve(() =>
+    path.dirname(path.dirname(resolveModule("@types/node/package.json"))),
+  );
+  const solidRoot = tryResolve(() => path.dirname(resolveModule("solid-js/package.json")));
+  // @solidjs/web has no ./package.json export, so resolve its entry and walk
+  // back out of dist/.
+  const webRoot = tryResolve(() => path.dirname(path.dirname(resolveModule("@solidjs/web"))));
+  const solidPaths: PathMap = {
+    ...(solidRoot === undefined
+      ? {}
+      : { "solid-js": [path.join(solidRoot, "types", "index.d.ts")] }),
+    ...(webRoot === undefined
+      ? {}
+      : {
+          "@solidjs/web": [path.join(webRoot, "types", "index.d.ts")],
+          "@solidjs/web/jsx-runtime": [path.join(webRoot, "types", "jsx.d.ts")],
+          "@solidjs/web/jsx-dev-runtime": [path.join(webRoot, "types", "jsx.d.ts")],
+        }),
+  };
+  const artifactPaths: PathMap = {
+    "@ballast/artifact": [path.join(ballastRoot, "artifact", "src", "index.ts")],
+    "@ballast/artifact/protocol": [path.join(ballastRoot, "artifact", "src", "protocol.ts")],
+    "@ballast/artifact/solid": [path.join(ballastRoot, "artifact", "src", "solid.ts")],
+    ...solidPaths,
+    "@ballast/*": [
+      path.join(ballastRoot, "*", "src", "index.ts"),
+      path.join(ballastRoot, "integrations", "*", "src", "index.ts"),
+    ],
+    effect: [path.join(effectRoot, "dist", "index.d.ts")],
+    "effect/*": [
+      path.join(effectRoot, "dist", "*.d.ts"),
+      path.join(effectRoot, "dist", "*", "index.d.ts"),
+    ],
+  };
   return {
     modulesRoot,
-    ballastRoot: join(repoRoot, "packages"),
+    ballastRoot,
     effectRoot,
-    tsgo: nativeTsgo() ?? join(modulesRoot, ".bin", "tsgo"),
+    tsgo: nativeTsgo(path, resolveModule) ?? path.join(modulesRoot, ".bin", "tsgo"),
+    nodeTypesRoot,
+    solidPaths,
+    artifactPaths,
   };
 };
 
-const toolchain = locateToolchain();
-
-const nodeTypesRoot = ((): string | undefined => {
-  try {
-    return dirname(dirname(requireFromPlanner.resolve("@types/node/package.json")));
-  } catch {
-    return undefined;
-  }
-})();
-
-const solidTypes = ((): { readonly root: string; readonly entry: string } | undefined => {
-  try {
-    const root = dirname(requireFromPlanner.resolve("solid-js/package.json"));
-    return { root, entry: join(root, "types", "index.d.ts") };
-  } catch {
-    return undefined;
-  }
-})();
-
-const webTypes = ((): { readonly entry: string; readonly jsx: string } | undefined => {
-  try {
-    // @solidjs/web has no ./package.json export, so resolve its entry and walk
-    // back out of dist/.
-    const root = dirname(dirname(requireFromPlanner.resolve("@solidjs/web")));
-    return {
-      entry: join(root, "types", "index.d.ts"),
-      jsx: join(root, "types", "jsx.d.ts"),
-    };
-  } catch {
-    return undefined;
-  }
-})();
-
-const solidPaths: Readonly<Record<string, ReadonlyArray<string>>> = {
-  ...(solidTypes === undefined ? {} : { "solid-js": [solidTypes.entry] }),
-  ...(webTypes === undefined
-    ? {}
-    : {
-        "@solidjs/web": [webTypes.entry],
-        "@solidjs/web/jsx-runtime": [webTypes.jsx],
-        "@solidjs/web/jsx-dev-runtime": [webTypes.jsx],
-      }),
+let toolchainCache: Toolchain | undefined;
+const toolchainFor = (path: Path.Path): Toolchain => {
+  toolchainCache ??= locateToolchain(path, (specifier) => requireFromPlanner.resolve(specifier));
+  return toolchainCache;
 };
 
-const artifactPaths: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "@ballast/artifact": [join(toolchain.ballastRoot, "artifact", "src", "index.ts")],
-  "@ballast/artifact/protocol": [join(toolchain.ballastRoot, "artifact", "src", "protocol.ts")],
-  "@ballast/artifact/solid": [join(toolchain.ballastRoot, "artifact", "src", "solid.ts")],
-  ...solidPaths,
-  "@ballast/*": [
-    join(toolchain.ballastRoot, "*", "src", "index.ts"),
-    join(toolchain.ballastRoot, "integrations", "*", "src", "index.ts"),
-  ],
-  effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
-  "effect/*": [
-    join(toolchain.effectRoot, "dist", "*.d.ts"),
-    join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
-  ],
-};
-
-const walk = async (directory: string, files: Array<string>): Promise<void> => {
+const walk = async (
+  path: Path.Path,
+  directory: string,
+  files: Array<string>,
+): Promise<void> => {
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === "node_modules" || entry.name === ".ballast" || entry.name === "dist") {
       continue;
     }
-    const path = join(directory, entry.name);
+    const file = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      await walk(path, files);
+      await walk(path, file, files);
     } else if (entry.isFile() && /\.(?:[cm]?[jt]sx?)$/.test(entry.name)) {
-      files.push(path);
+      files.push(file);
     }
   }
 };
@@ -161,7 +163,7 @@ const walk = async (directory: string, files: Array<string>): Promise<void> => {
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const probeResolution = async (candidate: string): Promise<string> => {
+const probeResolution = async (path: Path.Path, candidate: string): Promise<string> => {
   const wildcard = candidate.indexOf("*");
   const prefix = wildcard === -1 ? candidate : candidate.slice(0, wildcard);
   const missing: Array<string> = [];
@@ -169,17 +171,18 @@ const probeResolution = async (candidate: string): Promise<string> => {
   for (;;) {
     try {
       const resolved = await realpath(current);
-      return [...missing].reverse().reduce((value, part) => join(value, part), resolved);
+      return [...missing].reverse().reduce((value, part) => path.join(value, part), resolved);
     } catch {
-      const parent = dirname(current);
+      const parent = path.dirname(current);
       if (parent === current) return candidate + ":missing";
-      missing.push(basename(current));
+      missing.push(path.basename(current));
       current = parent;
     }
   }
 };
 
 const resolutionKey = async (
+  path: Path.Path,
   projectRoot: string,
   config: Readonly<Record<string, unknown>>,
 ): Promise<string> => {
@@ -194,7 +197,7 @@ const resolutionKey = async (
   add(compiler["paths"]);
   const resolved = await Promise.all(
     candidates.map((candidate) =>
-      probeResolution(isAbsolute(candidate) ? candidate : resolve(projectRoot, candidate)),
+      probeResolution(path, path.resolve(projectRoot, candidate)),
     ),
   );
   resolved.sort();
@@ -202,22 +205,23 @@ const resolutionKey = async (
 };
 
 const hashProject = async (
+  path: Path.Path,
   projectRoot: string,
   configPaths: ReadonlyArray<string>,
   entry: string | undefined,
 ): Promise<string> => {
   const files: Array<string> = [];
-  await walk(projectRoot, files);
+  await walk(path, projectRoot, files);
   files.sort();
   const hash = createHash("sha256");
   for (const file of files) {
-    hash.update(relative(projectRoot, file).split("\\").join("/"));
+    hash.update(toPosix(path, path.relative(projectRoot, file)));
     hash.update("\u0000");
     hash.update(await readFile(file));
     hash.update("\u0000");
   }
   for (const special of ["package.json", "tsconfig.json"]) {
-    const file = join(projectRoot, special);
+    const file = path.join(projectRoot, special);
     if (existsSync(file)) {
       hash.update(special + "\u0000");
       hash.update(await readFile(file));
@@ -233,7 +237,7 @@ const hashProject = async (
     hash.update("\u0000");
     const parsedConfig = parseConfigText(configText);
     if (parsedConfig !== undefined) {
-      hash.update("resolution\u0000" + (await resolutionKey(projectRoot, parsedConfig)) + "\u0000");
+      hash.update("resolution\u0000" + (await resolutionKey(path, projectRoot, parsedConfig)) + "\u0000");
     }
   }
   if (entry !== undefined) {
@@ -244,6 +248,7 @@ const hashProject = async (
 };
 
 const parseDiagnostics = (
+  path: Path.Path,
   output: string,
   projectRoot: string,
   kind?: "worker" | "artifact",
@@ -259,9 +264,8 @@ const parseDiagnostics = (
     if (file === undefined || line === undefined || column === undefined || message === undefined) {
       continue;
     }
-    const absolute = file.startsWith("/") ? file : resolve(projectRoot, file);
     diagnostics.push({
-      file: relative(projectRoot, absolute).split("\\").join("/"),
+      file: toPosix(path, path.relative(projectRoot, path.resolve(projectRoot, file))),
       line: Number(line),
       column: Number(column),
       message: `${match[4] ?? "TS"}: ${message}`,
@@ -272,12 +276,13 @@ const parseDiagnostics = (
 };
 
 const artifactDiagnosticsFor = (
+  path: Path.Path,
   output: string,
   projectRoot: string,
 ): ReadonlyArray<TypecheckDiagnostic> => {
   const workerOnly =
     /Cannot find (?:module|name) ['"]node:|Cannot find name ['"](?:process|Buffer|__dirname|__filename|require|global|MessagePort)['"]|Cannot find namespace ['"]NodeJS['"]/;
-  return parseDiagnostics(output, projectRoot, "artifact").map((diagnostic) =>
+  return parseDiagnostics(path, output, projectRoot, "artifact").map((diagnostic) =>
     workerOnly.test(diagnostic.message)
       ? {
           ...diagnostic,
@@ -289,12 +294,12 @@ const artifactDiagnosticsFor = (
 };
 
 const runTsgo = (
+  tsgo: string,
   projectRoot: string,
   config: string,
 ): Promise<{ readonly code: number; readonly output: string }> =>
   new Promise((resolvePromise, reject) => {
-    const binary = toolchain.tsgo;
-    const command = existsSync(binary) ? binary : "tsgo";
+    const command = existsSync(tsgo) ? tsgo : "tsgo";
     execFile(
       command,
       ["-p", config],
@@ -313,16 +318,18 @@ const runTsgo = (
     );
   });
 
-const generatedConfig = (projectRoot: string): string => {
-  const configPath = join(projectRoot, ".ballast", "tsconfig.generated.json");
-  return configPath;
+/** A config `extends` value: posix and explicitly relative. */
+const relativeSpecifier = (path: Path.Path, from: string, to: string): string => {
+  const specifier = toPosix(path, path.relative(from, to));
+  return specifier.startsWith(".") ? specifier : "./" + specifier;
 };
 
 const configWarning = (
+  path: Path.Path,
   projectRoot: string,
   file: string,
 ): TypecheckDiagnostic => ({
-  file: relative(projectRoot, file).split("\\").join("/"),
+  file: toPosix(path, path.relative(projectRoot, file)),
   line: 1,
   column: 1,
   message:
@@ -331,12 +338,13 @@ const configWarning = (
 });
 
 const noteConfigWrite = (
+  path: Path.Path,
   projectRoot: string,
   file: string,
   result: Awaited<ReturnType<typeof writeGeneratedConfig>>,
   warnings: Array<TypecheckDiagnostic>,
 ): void => {
-  if (result.edited) warnings.push(configWarning(projectRoot, file));
+  if (result.edited) warnings.push(configWarning(path, projectRoot, file));
 };
 
 /** An unmarked config with Ballast's path map predates the marker. */
@@ -360,16 +368,18 @@ const isGeneratedArtifactShape = (config: ConfigObject): boolean => {
 };
 
 const ensureBaseConfig = async (
+  path: Path.Path,
+  toolchain: Toolchain,
   projectRoot: string,
   warnings: Array<TypecheckDiagnostic>,
 ): Promise<string> => {
-  const projectConfig = join(projectRoot, "tsconfig.json");
+  const projectConfig = path.join(projectRoot, "tsconfig.json");
   if (existsSync(projectConfig)) return projectConfig;
-  const configPath = generatedConfig(projectRoot);
-  await mkdir(dirname(configPath), { recursive: true });
+  const configPath = path.join(projectRoot, ".ballast", "tsconfig.generated.json");
+  await mkdir(path.dirname(configPath), { recursive: true });
   const packagePaths = [
-    join(toolchain.ballastRoot, "*", "src", "index.ts"),
-    join(toolchain.ballastRoot, "integrations", "*", "src", "index.ts"),
+    path.join(toolchain.ballastRoot, "*", "src", "index.ts"),
+    path.join(toolchain.ballastRoot, "integrations", "*", "src", "index.ts"),
   ];
   const integrationPackages: Readonly<Record<string, string>> = {
     "@ballast/fake": "fake",
@@ -385,16 +395,16 @@ const ensureBaseConfig = async (
   const exactPaths: Record<string, ReadonlyArray<string>> = {};
   for (const [name, directory] of Object.entries(integrationPackages)) {
     exactPaths[name] = [
-      join(toolchain.ballastRoot, name.slice("@ballast/".length), "src", "index.ts"),
-      join(toolchain.ballastRoot, "integrations", directory, "src", "index.ts"),
+      path.join(toolchain.ballastRoot, name.slice("@ballast/".length), "src", "index.ts"),
+      path.join(toolchain.ballastRoot, "integrations", directory, "src", "index.ts"),
     ];
   }
   // Browser artifacts import the package's subpath exports directly.
   exactPaths["@ballast/artifact/protocol"] = [
-    join(toolchain.ballastRoot, "artifact", "src", "protocol.ts"),
+    path.join(toolchain.ballastRoot, "artifact", "src", "protocol.ts"),
   ];
   exactPaths["@ballast/artifact/solid"] = [
-    join(toolchain.ballastRoot, "artifact", "src", "solid.ts"),
+    path.join(toolchain.ballastRoot, "artifact", "src", "solid.ts"),
   ];
   const config: ConfigObject = {
     compilerOptions: {
@@ -417,22 +427,23 @@ const ensureBaseConfig = async (
       allowImportingTsExtensions: true,
       paths: {
         ...exactPaths,
-        ...solidPaths,
+        ...toolchain.solidPaths,
         "@ballast/*": packagePaths,
-        effect: [join(toolchain.effectRoot, "dist", "index.d.ts")],
+        effect: [path.join(toolchain.effectRoot, "dist", "index.d.ts")],
         "effect/*": [
-          join(toolchain.effectRoot, "dist", "*.d.ts"),
-          join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
+          path.join(toolchain.effectRoot, "dist", "*.d.ts"),
+          path.join(toolchain.effectRoot, "dist", "*", "index.d.ts"),
         ],
       },
-      ...(nodeTypesRoot === undefined
+      ...(toolchain.nodeTypesRoot === undefined
         ? {}
-        : { typeRoots: [nodeTypesRoot], types: ["node"] }),
+        : { typeRoots: [toolchain.nodeTypesRoot], types: ["node"] }),
     },
     include: ["../**/*.ts"],
     exclude: ["../node_modules", "../dist", "../.ballast"],
   };
   noteConfigWrite(
+    path,
     projectRoot,
     configPath,
     await writeGeneratedConfig(configPath, config, {
@@ -449,7 +460,7 @@ interface ProjectConfigs {
   readonly warnings: ReadonlyArray<TypecheckDiagnostic>;
 }
 
-const artifactCompilerOptions = (): Readonly<Record<string, unknown>> => ({
+const artifactCompilerOptions = (toolchain: Toolchain): Readonly<Record<string, unknown>> => ({
   lib: ["ES2024", "DOM", "DOM.Iterable"],
   jsx: "preserve",
   jsxImportSource: "@solidjs/web",
@@ -461,7 +472,7 @@ const artifactCompilerOptions = (): Readonly<Record<string, unknown>> => ({
   emitDeclarationOnly: false,
   sourceMap: false,
   incremental: false,
-  paths: artifactPaths,
+  paths: toolchain.artifactPaths,
 });
 
 /**
@@ -469,18 +480,22 @@ const artifactCompilerOptions = (): Readonly<Record<string, unknown>> => ({
  * DOM lib) and typecheck them in a second generated config with DOM + Solid
  * JSX. Projects without an `artifacts/` directory keep exactly one config.
  */
-const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
+const ensureConfigs = async (
+  path: Path.Path,
+  toolchain: Toolchain,
+  projectRoot: string,
+): Promise<ProjectConfigs> => {
   const warnings: Array<TypecheckDiagnostic> = [];
-  const base = await ensureBaseConfig(projectRoot, warnings);
-  if (!existsSync(join(projectRoot, "artifacts"))) {
+  const base = await ensureBaseConfig(path, toolchain, projectRoot, warnings);
+  if (!existsSync(path.join(projectRoot, "artifacts"))) {
     return { worker: base, artifact: undefined, warnings };
   }
-  const directory = join(projectRoot, ".ballast");
+  const directory = path.join(projectRoot, ".ballast");
   await mkdir(directory, { recursive: true });
-  const extendsPath = relative(directory, base).split("\\").join("/");
-  const extendsValue = extendsPath.startsWith(".") ? extendsPath : "./" + extendsPath;
-  const worker = join(directory, "tsconfig.worker.json");
+  const extendsValue = relativeSpecifier(path, directory, base);
+  const worker = path.join(directory, "tsconfig.worker.json");
   noteConfigWrite(
+    path,
     projectRoot,
     worker,
     await writeGeneratedConfig(worker, {
@@ -490,18 +505,14 @@ const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
     warnings,
   );
 
-  const artifactsDirectory = join(projectRoot, "artifacts");
-  const projectArtifact = join(artifactsDirectory, "tsconfig.json");
-  if (existsSync(join(projectRoot, "tsconfig.json"))) {
+  const artifactsDirectory = path.join(projectRoot, "artifacts");
+  const projectArtifact = path.join(artifactsDirectory, "tsconfig.json");
+  if (existsSync(path.join(projectRoot, "tsconfig.json"))) {
     // Prefer the editor's artifacts/tsconfig.json. Generate it on plan when
     // missing, and refresh it while it is still exactly what Ballast wrote.
-    const artifactsExtends = relative(artifactsDirectory, base).split("\\").join("/");
-    const artifactsExtendsValue = artifactsExtends.startsWith(".")
-      ? artifactsExtends
-      : "./" + artifactsExtends;
     const config: ConfigObject = {
-      extends: artifactsExtendsValue,
-      compilerOptions: artifactCompilerOptions(),
+      extends: relativeSpecifier(path, artifactsDirectory, base),
+      compilerOptions: artifactCompilerOptions(toolchain),
       include: ["**/*.ts", "**/*.tsx"],
       exclude: ["../node_modules", "../dist", "../.ballast"],
     };
@@ -512,6 +523,7 @@ const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
       include: ["**/*.ts", "**/*.tsx", "../src/**/*.ts"],
     };
     noteConfigWrite(
+      path,
       projectRoot,
       projectArtifact,
       await writeGeneratedConfig(projectArtifact, config, {
@@ -528,13 +540,14 @@ const ensureConfigs = async (projectRoot: string): Promise<ProjectConfigs> => {
 
   // Projects without a root config (tests, ad-hoc folders) keep the generated
   // hidden artifact config.
-  const artifact = join(directory, "tsconfig.artifacts.json");
+  const artifact = path.join(directory, "tsconfig.artifacts.json");
   noteConfigWrite(
+    path,
     projectRoot,
     artifact,
     await writeGeneratedConfig(artifact, {
       extends: extendsValue,
-      compilerOptions: artifactCompilerOptions(),
+      compilerOptions: artifactCompilerOptions(toolchain),
       include: ["../artifacts/**/*.ts", "../artifacts/**/*.tsx"],
       exclude: ["../node_modules", "../dist", "../.ballast"],
     }),
@@ -571,16 +584,16 @@ interface EntryCheck {
  * assignment fails and the diagnostic is mapped back to the entry file.
  */
 const ensureEntryCheck = async (
+  path: Path.Path,
   projectRoot: string,
   baseConfig: string,
   entry: string,
 ): Promise<EntryCheck> => {
-  const directory = join(projectRoot, ".ballast");
-  const file = join(directory, "entry-check.ts");
-  const config = join(directory, "tsconfig.check.json");
+  const directory = path.join(projectRoot, ".ballast");
+  const file = path.join(directory, "entry-check.ts");
+  const config = path.join(directory, "tsconfig.check.json");
   await mkdir(directory, { recursive: true });
-  const importPath = relative(directory, entry).split("\\").join("/");
-  const entryImport = importPath.startsWith(".") ? importPath : "./" + importPath;
+  const entryImport = relativeSpecifier(path, directory, entry);
   await writeFile(
     file,
     [
@@ -595,12 +608,11 @@ const ensureEntryCheck = async (
     ].join("\n"),
     "utf8",
   );
-  const extendsPath = relative(directory, baseConfig).split("\\").join("/");
   await writeFile(
     config,
     JSON.stringify(
       {
-        extends: extendsPath.startsWith(".") ? extendsPath : "./" + extendsPath,
+        extends: relativeSpecifier(path, directory, baseConfig),
         compilerOptions: {
           noEmit: true,
           composite: false,
@@ -631,27 +643,29 @@ const ensureEntryCheck = async (
 export const typecheckProject = (
   projectRoot: string,
   options: { readonly entry?: string } = {},
-): Effect.Effect<TypecheckResult, TypecheckError> =>
+): Effect.Effect<TypecheckResult, TypecheckError, Path.Path> =>
   Effect.gen(function* () {
-    const root = resolve(projectRoot);
-    const entry = options.entry === undefined ? undefined : resolve(options.entry);
-    const configs = yield* Effect.promise(() => ensureConfigs(root));
+    const path = yield* Path.Path;
+    const toolchain = toolchainFor(path);
+    const root = path.resolve(projectRoot);
+    const entry = options.entry === undefined ? undefined : path.resolve(options.entry);
+    const configs = yield* Effect.promise(() => ensureConfigs(path, toolchain, root));
     const check =
       entry === undefined
         ? undefined
-        : yield* Effect.promise(() => ensureEntryCheck(root, configs.worker, entry));
+        : yield* Effect.promise(() => ensureEntryCheck(path, root, configs.worker, entry));
     const runConfig = check?.config ?? configs.worker;
     const configPaths = [
       configs.worker,
       ...(configs.artifact === undefined ? [] : [configs.artifact]),
       ...(check === undefined ? [] : [check.config, check.file]),
     ];
-    const key = yield* Effect.promise(() => hashProject(root, configPaths, entry));
+    const key = yield* Effect.promise(() => hashProject(path, root, configPaths, entry));
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
     const result = yield* Effect.tryPromise({
-      try: () => runTsgo(root, runConfig),
+      try: () => runTsgo(toolchain.tsgo, root, runConfig),
       catch: (cause) =>
         new TypecheckError(`tsgo failed to start: ${String(cause)}`),
     });
@@ -660,15 +674,15 @@ export const typecheckProject = (
       artifactConfig === undefined
         ? undefined
         : yield* Effect.tryPromise({
-            try: () => runTsgo(root, artifactConfig),
+            try: () => runTsgo(toolchain.tsgo, root, artifactConfig),
             catch: (cause) =>
               new TypecheckError(`tsgo failed to start: ${String(cause)}`),
           });
-    const parsed = parseDiagnostics(result.output, root, "worker");
+    const parsed = parseDiagnostics(path, result.output, root, "worker");
     const entryFile =
-      entry === undefined ? undefined : relative(root, entry).split("\\").join("/");
+      entry === undefined ? undefined : toPosix(path, path.relative(root, entry));
     const checkFile =
-      check === undefined ? undefined : relative(root, check.file).split("\\").join("/");
+      check === undefined ? undefined : toPosix(path, path.relative(root, check.file));
     const runtimeMessage = "TS_INIT_RUNTIME: " + RUNTIME_IN_INIT_MESSAGE;
     const entryRuntime =
       entryFile === undefined
@@ -712,7 +726,7 @@ export const typecheckProject = (
     })();
 
     const artifactDiagnostics =
-      artifactResult === undefined ? [] : artifactDiagnosticsFor(artifactResult.output, root);
+      artifactResult === undefined ? [] : artifactDiagnosticsFor(path, artifactResult.output, root);
     const checked: TypecheckResult = {
       ok:
         result.code === 0 &&

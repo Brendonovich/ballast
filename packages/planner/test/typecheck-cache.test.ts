@@ -2,7 +2,8 @@ import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "@effect/vitest";
+import { NodePath } from "@effect/platform-node";
+import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { typecheckProject } from "../src/typecheck.ts";
 
@@ -31,7 +32,7 @@ const writeConfig = async (root: string, typeRoot: string): Promise<void> => {
   await writeFile(join(root, "ballast.ts"), "export default 1;\n", "utf8");
 };
 
-describe("typecheck cache", () => {
+layer(NodePath.layer)("typecheck cache", (it) => {
   it.effect("retries missing types and keys on the resolved types target", () =>
     Effect.gen(function* () {
       const base = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "ballast-typecheck-cache-")));

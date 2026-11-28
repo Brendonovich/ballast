@@ -1,8 +1,8 @@
-import { basename } from "node:path";
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Path from "effect/Path";
 import { emptyManifest, type Manifest } from "@ballast/core";
 import { bundleArtifacts } from "./artifacts.ts";
 import type { BuiltArtifact } from "./artifacts.ts";
@@ -33,9 +33,11 @@ export const planProject = (
   options: Omit<PlanOptions, "projectRoot"> = {},
 ): Effect.Effect<
   PlannedProject,
-  ProjectPlanError | ProjectEntryError | TypecheckError
+  ProjectPlanError | ProjectEntryError | TypecheckError,
+  Path.Path
 > =>
   Effect.gen(function* () {
+    const path = yield* Path.Path;
     const entry = yield* resolveProjectEntry(projectRoot).pipe(
       Effect.mapError(
         (error) =>
@@ -49,7 +51,7 @@ export const planProject = (
     const plannedEffect = planDetails(entry.entryFile, {
       ...options,
       scriptId: entry.entry,
-      projectId: options.projectId ?? basename(entry.root),
+      projectId: options.projectId ?? path.basename(entry.root),
       projectRoot: entry.root,
       projectEntry: entry.entry,
     }).pipe(

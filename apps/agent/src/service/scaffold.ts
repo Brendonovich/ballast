@@ -1,4 +1,4 @@
-import { cp } from "node:fs/promises";
+import { cp, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import * as Config from "effect/Config";
@@ -72,11 +72,14 @@ const serviceModulesRoot = (
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     try {
-      const coreEntry = requireFromService.resolve("@ballast/core");
-      const normalized = coreEntry.split("\\").join("/");
-      const marker = "/node_modules/@ballast/";
-      const index = normalized.lastIndexOf(marker);
-      if (index >= 0) return normalized.slice(0, index + "/node_modules".length);
+      let coreRoot = path.dirname(requireFromService.resolve("@ballast/core"));
+      while (path.basename(coreRoot) !== "core" && path.dirname(coreRoot) !== coreRoot) {
+        coreRoot = path.dirname(coreRoot);
+      }
+      const scope = path.dirname(coreRoot);
+      if (path.basename(scope) === "@ballast" && path.basename(path.dirname(scope)) === "node_modules") {
+        return path.dirname(scope);
+      }
       const moduleDir = yield* path.fromFileUrl(new URL(".", import.meta.url)).pipe(
         Effect.catch(() => Effect.succeed("")),
       );
@@ -88,6 +91,16 @@ const serviceModulesRoot = (
     } catch {
       return undefined;
     }
+  });
+
+/**
+ * Directory symlinks need admin rights or Developer Mode on Windows; junctions
+ * do not. Other platforms ignore the type.
+ */
+const linkDirectory = (target: string, link: string): Effect.Effect<void, Error> =>
+  Effect.tryPromise({
+    try: () => symlink(target, link, "junction"),
+    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
   });
 
 /**
@@ -122,16 +135,16 @@ export const ensureProjectTypes = (input: {
       const existing = yield* fs.readLink(versionDir).pipe(
         Effect.catch(() => Effect.succeed(undefined)),
       );
-      if (existing !== source) {
+      if (existing === undefined || path.resolve(existing) !== path.resolve(source)) {
         yield* fs.remove(versionDir, { recursive: true, force: true });
-        yield* fs.symlink(source, versionDir);
+        yield* linkDirectory(source, versionDir);
       }
       const currentTarget = yield* fs.readLink(current).pipe(
         Effect.catch(() => Effect.succeed(undefined)),
       );
-      if (currentTarget !== versionDir) {
+      if (currentTarget === undefined || path.resolve(currentTarget) !== path.resolve(versionDir)) {
         yield* fs.remove(current, { recursive: true, force: true });
-        yield* fs.symlink(versionDir, current);
+        yield* linkDirectory(versionDir, current);
       }
       yield* fs.lstat(current);
     }).pipe(

@@ -2,7 +2,8 @@ import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "@effect/vitest";
+import { NodePath } from "@effect/platform-node";
+import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import {
   plan,
@@ -26,7 +27,7 @@ const duplicateProject = fileURLToPath(
   new URL("./fixtures/duplicate/ballast.ts", import.meta.url),
 );
 
-describe("plan", () => {
+layer(NodePath.layer)("plan", (it) => {
   it.effect("produces the tick-echo manifest", () =>
     Effect.gen(function* () {
       const manifest = yield* plan(example);

@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@ballast/workflow": "workspace:*",
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/babel__core": "7.20.5",
     "@types/node": "catalog:",

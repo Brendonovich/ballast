@@ -1292,11 +1292,13 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           return recovered;
         }
         const artifactHost = yield* hostFor(record.project);
-        const planned = yield* planProject(record.project.root, {
-          projectId: record.project.id,
-          resolveDir: serviceResolveDir,
-          ...(artifactHost === undefined ? {} : { artifactHost }),
-        }).pipe(
+        const planned = yield* provide(
+          planProject(record.project.root, {
+            projectId: record.project.id,
+            resolveDir: serviceResolveDir,
+            ...(artifactHost === undefined ? {} : { artifactHost }),
+          }),
+        ).pipe(
           Effect.mapError((error) => agentError("invalid", error.message)),
         );
         const previous = record.appliedManifest ?? emptyManifest(record.project.id, resolved.entry);
@@ -1723,11 +1725,13 @@ export const ProjectRuntimeLive = (options: ProjectRuntimeOptions) =>
           };
         }
         const artifactHost = yield* hostFor(record.project);
-        const planned = yield* planProject(record.project.root, {
-          projectId: record.project.id,
-          resolveDir: serviceResolveDir,
-          ...(artifactHost === undefined ? {} : { artifactHost }),
-        }).pipe(Effect.exit);
+        const planned = yield* provide(
+          planProject(record.project.root, {
+            projectId: record.project.id,
+            resolveDir: serviceResolveDir,
+            ...(artifactHost === undefined ? {} : { artifactHost }),
+          }),
+        ).pipe(Effect.exit);
         if (Exit.isFailure(planned)) {
           const failure = Cause.squash(planned.cause);
           const diagnostics: ReadonlyArray<ProjectDiagnostic> =

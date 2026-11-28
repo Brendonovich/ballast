@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { NodePath } from "@effect/platform-node";
 import { Effect } from "effect";
 import { planProject } from "@ballast/planner";
 import { afterEach, describe, expect, it } from "vitest";
@@ -65,6 +66,7 @@ describe("guide code samples", () => {
           projectId: "guide-" + index,
           resolveDir: resolveRoot,
         }).pipe(
+          Effect.provide(NodePath.layer),
           Effect.mapError((error) => new Error("guide sample " + sample.name + ": " + error.message)),
         ),
       );
