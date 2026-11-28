@@ -927,7 +927,7 @@ export const ArtifactGatewayLive = Layer.effect(
             String(listening) +
             " ws://localhost:" +
             String(listening) +
-            "; frame-ancestors http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'",
+            "; frame-ancestors http://127.0.0.1:* http://localhost:* ballast://app; base-uri 'none'; form-action 'none'",
           "referrer-policy": "no-referrer",
           "x-content-type-options": "nosniff",
           "cache-control": requestUrl.pathname.includes("/index.html") || requestUrl.pathname.endsWith("/")

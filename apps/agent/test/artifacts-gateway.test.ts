@@ -307,6 +307,8 @@ describe("artifact gateway", () => {
         expect(csp).toContain("default-src 'none'");
         expect(csp).toContain("connect-src ws://127.0.0.1:");
         expect(csp).toContain("frame-ancestors http://127.0.0.1:*");
+        // The desktop shell serves the UI from ballast://app and embeds artifacts from there.
+        expect(csp).toMatch(/frame-ancestors [^;]*ballast:\/\/app/);
         expect(yield* Effect.promise(() => page.text())).toContain("<div id=\"root\">");
         const script = yield* Effect.promise(() => fetch(new URL("main.js", view.pageUrl)));
         expect(script.status).toBe(200);
