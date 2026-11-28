@@ -2,7 +2,6 @@
 // the artifact page starts with `?background=transparent`, and the CSS below
 // keeps every layer transparent so OBS composites it over the scene.
 const style = `
-  :root { color-scheme: normal; }
   html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
   .overlay { position: fixed; inset: 0; display: grid; place-items: center; }
   .alert {

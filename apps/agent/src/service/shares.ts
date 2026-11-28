@@ -44,7 +44,8 @@ import {
   type ShareFile,
 } from "./share-files.ts";
 import { pushShare } from "./share-git.ts";
-import { GENERATED_CONFIG_NOTICE } from "@ballast/planner";
+import { GENERATED_CONFIG_NOTICE, parseConfigText } from "@ballast/planner";
+import { isAbsolutePath } from "./config.ts";
 import { projectSlug } from "./scaffold.ts";
 import { Logs, ServiceHub } from "./telemetry.ts";
 
@@ -82,14 +83,35 @@ export class ProjectShares extends Context.Service<ProjectShares, ProjectSharesS
 
 const CHECK_INTERVAL_MS = 5 * 60_000;
 
+const pointsOutsideProject = (config: Readonly<Record<string, unknown>>): boolean => {
+  const compiler = config["compilerOptions"];
+  if (typeof compiler !== "object" || compiler === null) return false;
+  const values: Array<unknown> = [];
+  if ("typeRoots" in compiler) values.push(compiler.typeRoots);
+  if ("paths" in compiler && typeof compiler.paths === "object" && compiler.paths !== null) {
+    values.push(...Object.values(compiler.paths));
+  }
+  return values.some(
+    (value) =>
+      Array.isArray(value) &&
+      value.some((entry) => typeof entry === "string" && isAbsolutePath(entry)),
+  );
+};
+
 /**
  * Service-generated tsconfigs point at this machine's type root by absolute
  * path, so they are not shared; a subscriber's planner generates its own.
+ * Configs written before the generated marker existed are recognized by
+ * their absolute paths.
  */
-const isMachineConfig = (path: string, bytes: Uint8Array): boolean =>
-  (/(^|\/)tsconfig[^/]*\.json$/.test(path) &&
-    new TextDecoder().decode(bytes).includes(GENERATED_CONFIG_NOTICE)) ||
-  isMachineAgentConfig(path, bytes);
+export const isMachineConfig = (path: string, bytes: Uint8Array): boolean => {
+  if (isMachineAgentConfig(path, bytes)) return true;
+  if (!/(^|\/)tsconfig[^/]*\.json$/.test(path)) return false;
+  const text = new TextDecoder().decode(bytes);
+  if (text.includes(GENERATED_CONFIG_NOTICE)) return true;
+  const config = parseConfigText(text);
+  return config !== undefined && pointsOutsideProject(config);
+};
 
 const errorText = (cause: unknown): string =>
   typeof cause === "object" && cause !== null && "message" in cause && typeof cause.message === "string"

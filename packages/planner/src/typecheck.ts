@@ -5,7 +5,11 @@ import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
-import { parseConfigText, writeGeneratedConfig } from "./generated-config.ts";
+import {
+  GENERATED_CONFIG_NOTICE,
+  parseConfigText,
+  writeGeneratedConfig,
+} from "./generated-config.ts";
 import type { ConfigObject } from "./generated-config.ts";
 
 export interface TypecheckDiagnostic {
@@ -507,7 +511,13 @@ const ensureConfigs = async (
 
   const artifactsDirectory = path.join(projectRoot, "artifacts");
   const projectArtifact = path.join(artifactsDirectory, "tsconfig.json");
-  if (existsSync(path.join(projectRoot, "tsconfig.json"))) {
+  // A generated artifacts/tsconfig.json follows the base config, so it is
+  // refreshed even after the root tsconfig is removed (it would otherwise
+  // extend a missing file and lose every inherited option).
+  const generatedArtifact =
+    existsSync(projectArtifact) &&
+    (await readFile(projectArtifact, "utf8")).includes(GENERATED_CONFIG_NOTICE);
+  if (existsSync(path.join(projectRoot, "tsconfig.json")) || generatedArtifact) {
     // Prefer the editor's artifacts/tsconfig.json. Generate it on plan when
     // missing, and refresh it while it is still exactly what Ballast wrote.
     const config: ConfigObject = {

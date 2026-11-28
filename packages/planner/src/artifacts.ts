@@ -54,10 +54,11 @@ const html = (): string => `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>Ballast artifact</title>
     <style>
       html, body, #root { margin: 0; min-height: 100%; background: transparent; }
-      body { color: #e6edf7; font-family: ui-sans-serif, system-ui, sans-serif; }
+      body { color: CanvasText; font-family: ui-sans-serif, system-ui, sans-serif; }
     </style>
   </head>
   <body>
@@ -72,6 +73,16 @@ const html = (): string => `<!doctype html>
  * inline script. Same behaviour as the old inline module.
  */
 const bootstrap = (): string => `import mount from "./main.js";
+// The app iframe sends its color scheme so the page's canvas matches it (a
+// mismatch makes the browser paint an opaque canvas). An artifact's own
+// :root color-scheme still wins over this meta tag.
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent) return;
+  const data = event.data;
+  if (data === null || typeof data !== "object" || data.type !== "ballast:color-scheme") return;
+  if (data.scheme !== "light" && data.scheme !== "dark") return;
+  document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", data.scheme);
+});
 const root = document.getElementById("root") ?? document.body;
 try {
   // createArtifact() mounts from module scope and returns a no-arg cleanup.

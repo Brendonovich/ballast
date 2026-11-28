@@ -60,7 +60,8 @@ const parsePort = (raw: string): number => {
   return port;
 };
 
-const isAbsolutePath = (path: string): boolean =>
+/** Absolute on any platform, so a path written on another OS is still recognized. */
+export const isAbsolutePath = (path: string): boolean =>
   path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
 
 const envValue = (env: Environment, key: string): string | undefined => {

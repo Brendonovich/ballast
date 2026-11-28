@@ -23,6 +23,7 @@ export type { BundledPlanScript } from "./bundle.ts";
 export {
   GENERATED_CONFIG_NOTICE,
   generatedConfigText,
+  parseConfigText,
   writeGeneratedConfig,
 } from "./generated-config.ts";
 export type {

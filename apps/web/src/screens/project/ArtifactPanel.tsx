@@ -10,6 +10,7 @@ import {
   MoreIcon,
 } from "../../ui/icons.tsx";
 import { Button, IconButton, Spinner } from "../../ui/primitives.tsx";
+import { colorScheme } from "../../ui/theme.ts";
 import { ArtifactUrlsDialog } from "./ArtifactUrlsDialog.tsx";
 
 /**
@@ -152,6 +153,19 @@ export const ArtifactPanel = (props: {
 
   const errorSource = () => artifactErrorSource(props.artifact.error);
 
+  let frame: HTMLIFrameElement | undefined;
+  // The artifact shell sets its color-scheme from this, so the iframe's canvas
+  // stays transparent and the app background shows through.
+  const sendColorScheme = (): void => {
+    const current = view();
+    if (frame?.contentWindow == null || current === undefined) return;
+    frame.contentWindow.postMessage(
+      { type: "ballast:color-scheme", scheme: colorScheme() },
+      new URL(current.pageUrl, window.location.href).origin,
+    );
+  };
+  createEffect(sendColorScheme);
+
   return (
     <section
       data-testid="artifact-panel"
@@ -239,11 +253,13 @@ export const ArtifactPanel = (props: {
           >
             {(current) => (
               <iframe
+                ref={frame}
+                onLoad={sendColorScheme}
                 title={props.artifact.title ?? props.artifact.name}
                 src={current().pageUrl}
                 sandbox={ARTIFACT_SANDBOX}
                 referrerpolicy="no-referrer"
-                class="h-full w-full border-0 bg-[#0b1020]"
+                class="h-full w-full border-0 bg-canvas"
               />
             )}
           </Show>
