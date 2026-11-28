@@ -8,6 +8,7 @@ import type {
   ServiceStatus,
   UpdateState,
 } from "../bridge.ts";
+import { handleAppProtocol, registerAppScheme } from "./app-protocol.ts";
 import { resolveConfig } from "./config.ts";
 import { applyTestOnboarding } from "./test-onboarding.ts";
 import { registerBridgeIpc } from "./ipc.ts";
@@ -45,6 +46,7 @@ if (userDataOverride !== undefined && userDataOverride.length > 0) {
   app.setPath("userData", path.resolve(userDataOverride));
 }
 app.setName("Ballast");
+registerAppScheme();
 
 let windows: WindowController | null = null;
 
@@ -63,6 +65,7 @@ if (!hasLock) {
 
 async function start(): Promise<void> {
   await app.whenReady();
+  handleAppProtocol();
 
   const config = resolveConfig({
     env: process.env,

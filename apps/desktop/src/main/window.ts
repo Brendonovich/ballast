@@ -10,6 +10,7 @@ import {
   type UpdateState,
   type WindowContext,
 } from "../bridge.ts";
+import { APP_ORIGIN, setAppProtocolTarget } from "./app-protocol.ts";
 import type { DesktopConfig } from "./config.ts";
 import type { Logger } from "./logger.ts";
 import {
@@ -92,6 +93,14 @@ const isHttpUrl = (raw: string): boolean => {
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
+  }
+};
+
+const originOf = (raw: string): string | null => {
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
   }
 };
 
@@ -216,12 +225,12 @@ export function createWindowController(options: WindowControllerOptions): Window
     key: string,
   ): Promise<void> => {
     if (record.window.isDestroyed()) return;
-    const url = new URL("/", connection.url);
-    url.searchParams.set("token", connection.token);
+    setAppProtocolTarget(connection);
+    const url = new URL(APP_ORIGIN + "/");
     const hash = routeHash(record);
     if (hash !== "") url.hash = hash;
     record.mode = "service";
-    record.loadedOrigin = connection.url;
+    record.loadedOrigin = APP_ORIGIN;
     record.loadedPid = status.pid;
     record.loadedKey = key;
     try {
@@ -277,7 +286,7 @@ export function createWindowController(options: WindowControllerOptions): Window
     const key = [status.url, status.pid ?? "none", routeHash(record)].join("|");
     if (
       record.mode === "service" &&
-      record.loadedOrigin === status.url &&
+      record.loadedKey?.startsWith(status.url + "|") === true &&
       record.loadedPid === status.pid &&
       record.loadedKey === key
     ) {
@@ -309,11 +318,7 @@ export function createWindowController(options: WindowControllerOptions): Window
         event.preventDefault();
         return;
       }
-      if (
-        record.loadedOrigin !== null &&
-        isHttpUrl(url) &&
-        new URL(url).origin === record.loadedOrigin
-      ) {
+      if (record.loadedOrigin !== null && originOf(url) === record.loadedOrigin) {
         return;
       }
       if (isHttpUrl(url)) {
@@ -331,7 +336,7 @@ export function createWindowController(options: WindowControllerOptions): Window
     const trustedPage = (contents: Electron.WebContents): boolean => {
       try {
         const url = new URL(contents.getURL());
-        return url.protocol === "http:" || url.protocol === "https:";
+        return url.protocol === "http:" || url.protocol === "https:" || url.origin === APP_ORIGIN;
       } catch {
         return false;
       }
@@ -560,7 +565,7 @@ export function createWindowController(options: WindowControllerOptions): Window
       source.kind = "project";
       source.projectId = projectId;
       if (source.mode === "service") {
-        source.loadedKey = [source.loadedOrigin, source.loadedPid ?? "none", routeHash(source)].join("|");
+        source.loadedKey = [source.loadedKey?.split("|")[0] ?? "", source.loadedPid ?? "none", routeHash(source)].join("|");
       } else if (source.mode === "dev" && config.uiUrl !== undefined) {
         const target = new URL(source.loadedKey ?? config.uiUrl);
         target.hash = routeHash(source);

@@ -518,6 +518,8 @@ export const originAllowed = (
   dev: boolean,
 ): boolean => {
   if (origin === undefined || origin === "") return true;
+  // The desktop shell serves the UI from its own scheme (apps/desktop/src/main/app-protocol.ts).
+  if (origin === "ballast://app") return true;
   if (!origin.startsWith("http://")) return false;
   const host = origin.slice("http://".length);
   if (dev && loopbackAnyPort(host)) return true;

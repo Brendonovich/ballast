@@ -417,7 +417,7 @@ test("real service + Electron UI survives quitting the window", async () => {
       timeout: 60_000,
     });
     page = await ui.firstWindow();
-    await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 60_000 });
+    await page.waitForURL(/^ballast:\/\/app\//, { timeout: 60_000 });
     expect(await page.evaluate(() => globalThis.location.href)).not.toContain("token=");
 
     const bridgeStatus = await page.evaluate(async () => {
@@ -717,9 +717,9 @@ test("recovers from the bundled fallback once the service starts", async () => {
     if (servicePid === undefined) throw new Error("started service has no pid");
 
     // No Retry click: the shell polls and navigates on its own.
-    await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 30_000 });
+    await page.waitForURL(/^ballast:\/\/app\//, { timeout: 30_000 });
     await page.waitForLoadState("domcontentloaded");
-    expect(new URL(page.url()).protocol).toBe("http:");
+    expect(new URL(page.url()).protocol).toBe("ballast:");
   } finally {
     await ui.close().catch(() => undefined);
     if (servicePid !== undefined && alive(servicePid)) {
@@ -765,9 +765,9 @@ test("waits for the initial service before loading the window", async () => {
   });
   try {
     const page = await ui.firstWindow();
-    await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 45_000 });
+    await page.waitForURL(/^ballast:\/\/app\//, { timeout: 45_000 });
     await page.waitForLoadState("domcontentloaded");
-    expect(new URL(page.url()).protocol).toBe("http:");
+    expect(new URL(page.url()).protocol).toBe("ballast:");
     const status = await runDemo("status", env);
     servicePid = status.status.pid ?? undefined;
     expect(status.status.running).toBe(true);

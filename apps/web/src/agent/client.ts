@@ -192,11 +192,34 @@ export const probeSameOriginService = async (): Promise<TransportConfig | undefi
   }
 };
 
+/**
+ * The desktop shell serves the UI from `ballast://app` and hands the agent
+ * URL and token to the page through a same-origin endpoint
+ * (apps/desktop/src/main/app-protocol.ts).
+ */
+export const probeDesktopService = async (): Promise<TransportConfig | undefined> => {
+  if (!isBrowser() || window.location.protocol !== "ballast:") return undefined;
+  try {
+    const response = await fetch("/.ballast/connection", { cache: "no-store" });
+    if (!response.ok) return undefined;
+    const body: unknown = await response.json();
+    if (body === null || typeof body !== "object") return undefined;
+    if (!("service" in body) || typeof body.service !== "string") return undefined;
+    if (!("token" in body) || typeof body.token !== "string") return undefined;
+    const configured = resolveTransport({
+      search: "?" + new URLSearchParams({ service: body.service, token: body.token }).toString(),
+    });
+    return configured.kind === "websocket" ? configured : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /** Explicit transport first; otherwise detect the agent that served this page. */
 export const resolvePageTransport = async (): Promise<TransportConfig> => {
   const configured = resolveTransport();
   if (configured.kind === "websocket") return configured;
-  return (await probeSameOriginService()) ?? configured;
+  return (await probeDesktopService()) ?? (await probeSameOriginService()) ?? configured;
 };
 
 export interface AgentRuntime {
