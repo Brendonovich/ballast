@@ -33,6 +33,9 @@ export default {
     },
   ],
   asar: true,
+  // Builds without an update channel (pull requests, local packs) are never published, so their
+  // setup skips the slow LZMA pass.
+  compression: process.env.BALLAST_CHANNEL ? "normal" : "store",
   publish: null,
   mac: {
     target: ["dir"],

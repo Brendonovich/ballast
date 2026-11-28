@@ -75,26 +75,19 @@ jobs:
 
   # ---- Build: repository code; no environment, secrets or id-token ------------------------------
 
-  build:
+  build-macos:
     needs: plan
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { target: macos-arm64, host: macos-26 }
-          - { target: windows-x64, host: windows-2025 }
-    runs-on: ${{ matrix.host }}
+    runs-on: macos-26
     timeout-minutes: 60
-    env:
+    env: &build-env
       BALLAST_VERSION: ${{ needs.plan.outputs.version }}
       BALLAST_CHANNEL: ${{ needs.plan.outputs.build-channel }}
       BALLAST_RELEASE_ORIGIN: ${{ vars.BALLAST_RELEASE_ORIGIN || 'https://ballast-release.brendonovich.workers.dev/release' }}
-    # One output per target: a matrix job's outputs are shared by its legs.
     outputs:
-      digest-macos-arm64: ${{ steps.digest.outputs.digest-macos-arm64 }}
-      digest-windows-x64: ${{ steps.digest.outputs.digest-windows-x64 }}
+      digest: ${{ steps.upload.outputs.digest }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -109,29 +102,66 @@ jobs:
         name: Install
         run: pnpm install --frozen-lockfile
       - name: Typecheck
-        if: matrix.target == 'macos-arm64'
         run: pnpm typecheck
-      - name: Test the desktop shell
+      - &test-shell
+        name: Test the desktop shell
         run: pnpm --filter @ballast/desktop test
-      - name: Pack
+      - &pack
+        name: Pack
         run: node apps/desktop/script/pack.mjs --out "$RUNNER_TEMP/build"
       - id: upload
         uses: ./.github/release/upload
         with:
-          name: build-${{ matrix.target }}
+          name: build-macos-arm64
           path: ${{ runner.temp }}/build
           retention-days: "7"
-      - id: digest
-        run: echo "digest-${{ matrix.target }}=${{ steps.upload.outputs.digest }}" >> "$GITHUB_OUTPUT"
 
-  # The setup around the unpacked app: the signed one when this run signs, else the unsigned build.
-  # Repository code, so a build job after sign-windows (as OpenCode's
-  # build-desktop-windows-installer); sign-windows-setup signs the setup next.
+  # Unsigned runs (pull requests, and every run until Azure signing is configured) pack and test the
+  # setup here; signed runs hand the app to sign-windows, and package-windows packs the setup.
+  build-windows:
+    needs: plan
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env: *build-env
+    outputs:
+      app-digest: ${{ steps.upload-app.outputs.digest }}
+      setup-digest: ${{ steps.upload-setup.outputs.digest }}
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *test-shell
+      - *pack
+      - id: upload-app
+        if: needs.plan.outputs.sign-windows == 'true'
+        uses: ./.github/release/upload
+        with:
+          name: build-windows-x64
+          path: ${{ runner.temp }}/build
+          retention-days: "7"
+      - name: Pack the setup
+        if: needs.plan.outputs.sign-windows != 'true'
+        run: node apps/desktop/script/pack.mjs --installer "$RUNNER_TEMP/build/app" --out "$RUNNER_TEMP/setup"
+      - name: Test the setup
+        if: needs.plan.outputs.sign-windows != 'true'
+        shell: pwsh
+        run: |
+          $channel = if ($env:BALLAST_CHANNEL) { $env:BALLAST_CHANNEL } else { 'stable' }
+          apps/desktop/script/test-installer.ps1 -Setup "$env:RUNNER_TEMP/setup/Ballast-$env:BALLAST_VERSION-windows-x64-setup.exe" -Channel $channel
+      - id: upload-setup
+        if: needs.plan.outputs.sign-windows != 'true'
+        uses: ./.github/release/upload
+        with:
+          name: setup-windows-x64
+          path: ${{ runner.temp }}/setup
+          retention-days: "7"
+
+  # The setup around the signed app. Repository code, so a build job after sign-windows (as
+  # OpenCode's build-desktop-windows-installer); sign-windows-setup signs the setup next.
   package-windows:
-    needs: [plan, build, sign-windows]
-    if: >-
-      ${{ !cancelled() && needs.build.result == 'success'
-      && (needs.sign-windows.result == 'success' || needs.plan.outputs.sign-windows != 'true') }}
+    needs: [plan, sign-windows]
+    if: ${{ needs.plan.outputs.sign-windows == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 30
     env:
@@ -140,27 +170,16 @@ jobs:
     outputs:
       digest: ${{ steps.upload.outputs.digest }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          persist-credentials: false
+      - *checkout
       - *setup-pnpm
       - *setup-node
       - *install
-      - if: needs.plan.outputs.sign-windows == 'true'
-        uses: ./.github/release/download
+      - uses: ./.github/release/download
         with:
           pattern: sign-windows-app
           digests: sign-windows-app=${{ needs.sign-windows.outputs.digest }}
-      - if: needs.plan.outputs.sign-windows != 'true'
-        uses: ./.github/release/download
-        with:
-          pattern: build-windows-x64
-          digests: build-windows-x64=${{ needs.build.outputs.digest-windows-x64 }}
       - name: Pack the setup
-        run: |
-          if [ "${{ needs.plan.outputs.sign-windows }}" = true ]; then app="$RUNNER_TEMP/in/sign-windows-app/app"; else app="$RUNNER_TEMP/in/build-windows-x64/app"; fi
-          node apps/desktop/script/pack.mjs --installer "$app" --out "$RUNNER_TEMP/setup"
+        run: node apps/desktop/script/pack.mjs --installer "$RUNNER_TEMP/in/sign-windows-app/app" --out "$RUNNER_TEMP/setup"
       - name: Test the setup
         shell: pwsh
         run: |
@@ -176,7 +195,7 @@ jobs:
   # ---- Sign: release environment; only .github/release/ is checked out --------------------------
 
   sign-macos:
-    needs: [plan, build]
+    needs: [plan, build-macos]
     if: ${{ needs.plan.outputs.sign == 'true' }}
     # notarytool on older Xcode needs --issuer even for an individual API key.
     runs-on: macos-26
@@ -199,7 +218,7 @@ jobs:
       - uses: ./.github/release/download
         with:
           pattern: build-macos-arm64
-          digests: build-macos-arm64=${{ needs.build.outputs.digest-macos-arm64 }}
+          digests: build-macos-arm64=${{ needs.build-macos.outputs.digest }}
       - name: Import the certificate and notary key
         run: bash .github/release/macos-credentials.sh "$RUNNER_TEMP/credentials"
         env:
@@ -226,7 +245,7 @@ jobs:
   # Electron's DLLs, and the agent service's .node addons and tsgo.exe) through Azure Artifact
   # Signing, over GitHub OIDC into the release environment's AZURE_* values.
   sign-windows:
-    needs: [plan, build]
+    needs: [plan, build-windows]
     if: ${{ needs.plan.outputs.sign-windows == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 30
@@ -241,7 +260,7 @@ jobs:
       - uses: ./.github/release/download
         with:
           pattern: build-windows-x64
-          digests: build-windows-x64=${{ needs.build.outputs.digest-windows-x64 }}
+          digests: build-windows-x64=${{ needs.build-windows.outputs.app-digest }}
       - name: Lay out the app
         run: |
           temp=$(cygpath -u "$RUNNER_TEMP")
@@ -290,7 +309,7 @@ jobs:
 
   sign-windows-setup:
     needs: [plan, package-windows]
-    if: ${{ !cancelled() && needs.plan.outputs.sign-windows == 'true' && needs.package-windows.result == 'success' }}
+    if: ${{ needs.plan.outputs.sign-windows == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 30
     environment: release
@@ -323,11 +342,11 @@ jobs:
   # together, or not at all.
 
   publish:
-    needs: [plan, sign-macos, package-windows, sign-windows-setup]
+    needs: [plan, build-windows, sign-macos, sign-windows-setup]
     if: >-
       ${{ !cancelled() && needs.plan.outputs.sign == 'true' && needs.sign-macos.result == 'success'
       && (needs.sign-windows-setup.result == 'success'
-        || (needs.plan.outputs.sign-windows != 'true' && needs.package-windows.result == 'success')) }}
+        || (needs.plan.outputs.sign-windows != 'true' && needs.build-windows.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -355,7 +374,7 @@ jobs:
         uses: ./.github/release/download
         with:
           pattern: setup-windows-x64
-          digests: setup-windows-x64=${{ needs.package-windows.outputs.digest }}
+          digests: setup-windows-x64=${{ needs.build-windows.outputs.setup-digest }}
           folder: windows
       - name: Publish
         run: |

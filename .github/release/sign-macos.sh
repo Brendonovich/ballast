@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # sign-macos.sh <unsigned Ballast.app.zip> <out dir>: signs Ballast.app inside-out with the
-# Developer ID identity (hardened runtime, secure timestamp), notarizes and staples it, then writes:
-#   Ballast-<version>-macos-arm64.zip  (root Ballast.app, for the updater: Squirrel.Mac)
+# Developer ID identity (hardened runtime, secure timestamp), wraps it in a signed DMG and notarizes
+# that once (the service issues tickets for the DMG and the app inside it), then writes:
+#   Ballast-<version>-macos-arm64.zip  (root Ballast.app, stapled, for the updater: Squirrel.Mac)
 #   Ballast-<version>-macos-arm64.dmg  (signed, notarized and stapled, with an /Applications link)
 #
 # Environment: VERSION, APPLE_NOTARY_KEY_ID, APPLE_NOTARY_ISSUER_ID (team keys only; empty for an
@@ -56,15 +57,9 @@ while IFS= read -r item; do sign "$item"; done < "$list"
 sign "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$work/notarize.zip"
-notarize "$work/notarize.zip"
-xcrun stapler staple "$app"
-xcrun stapler validate "$app"
-spctl --assess --type execute --verbose=2 "$app"
-
+# One notarization covers both: the DMG's ticket for the DMG, and the app's own ticket (looked up
+# by its code directory hash) for the app it holds.
 rm -f "$zip" "$dmg"
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
-
 mkdir "$work/staging"
 /usr/bin/ditto "$app" "$work/staging/Ballast.app"
 ln -s /Applications "$work/staging/Applications"
@@ -74,5 +69,10 @@ notarize "$dmg"
 xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+
+xcrun stapler staple "$app"
+xcrun stapler validate "$app"
+spctl --assess --type execute --verbose=2 "$app"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
 codesign -dv "$app" 2>&1 | grep -E '^(Identifier|TeamIdentifier|Authority=Developer)' || true
 ls -l "$out"

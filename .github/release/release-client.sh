@@ -10,8 +10,8 @@
 #   client.sh action --app <app> --artifact <artifact> --channel <channel> --action <name> [--body '<json>']
 #
 # It trades the job's GitHub OIDC token (which expires within minutes) for a
-# one-hour publish session scoped to one app, artifact and channel, uploads in
-# parallel (skipping files the service already has), retries with backoff and
+# one-hour publish session scoped to one app, artifact and channel, uploads files
+# and their parts in parallel (skipping files the service already has), retries with backoff and
 # then publishes. `release.json` holds the release fields (channel, version,
 # notes_url, distributions, …); the client fills in `targets`. RELEASE is the
 # service origin, e.g. https://ballast-release.brendonovich.workers.dev/release; it is required.
@@ -102,9 +102,11 @@ upload() {
     split -b "$PART_SIZE" "$path" "$work/parts/$id/part."
     part=1
     for chunk in "$work/parts/$id"/part.*; do
-      api -X PUT --data-binary @"$chunk" "$RELEASE/$app/files/$name?upload=$id&part=$part" > /dev/null
+      { (api -X PUT --data-binary @"$chunk" "$RELEASE/$app/files/$name?upload=$id&part=$part" > /dev/null) || touch "$work/parts/$id/failed"; } &
       part=$((part + 1))
     done
+    wait
+    [ ! -e "$work/parts/$id/failed" ] || die "a part of $name failed to upload"
     api -X POST -H "x-checksum-sha256: $sha256" "$RELEASE/$app/files/$name?upload=$id" > /dev/null
   fi
   log "uploaded $name ($size bytes, $sha256) in $(($(date +%s) - started))s"
@@ -142,7 +144,7 @@ publish() {
     case " $queued " in *" $key "*) continue ;; esac
     queued="$queued $key"
     while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do wait -n || true; done
-    { upload "$app" "$path" "$name" || touch "$work/failed"; } &
+    { (upload "$app" "$path" "$name") || touch "$work/failed"; } &
   done
   wait
   [ ! -e "$work/failed" ] || die "an upload failed"

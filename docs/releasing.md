@@ -26,10 +26,13 @@ Download links that always point at a channel's current build:
 service URL, `https://ballast-release.brendonovich.workers.dev/release` unless the
 `BALLAST_RELEASE_ORIGIN` repository variable says otherwise.
 
-Job graph: `plan` → `build` (macOS and Windows, unsigned) → `sign-macos` (sign inside out,
-notarize, staple, zip and dmg) and `sign-windows` (Authenticode every exe, dll and node file) →
-`package-windows` (NSIS around the signed app, then a silent install/uninstall test) →
-`sign-windows-setup` → `publish` (both platforms in one release) → `tag` (stable only).
+Job graph: `plan` → `build-macos` and `build-windows` (unsigned, in parallel). `build-macos` →
+`sign-macos` (sign inside out, wrap in a signed DMG, notarize the DMG once, staple the DMG and the
+app, zip the app). On Windows, an unsigned run packs and tests the setup (NSIS, then a silent
+install/uninstall test) in `build-windows`; a signed run goes `build-windows` → `sign-windows`
+(Authenticode every exe, dll and node file) → `package-windows` (the setup around the signed app,
+then the same test) → `sign-windows-setup`. Then `publish` (both platforms in one release) →
+`tag` (stable only).
 
 ## How the app updates
 

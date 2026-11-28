@@ -15,9 +15,8 @@ die() {
   exit 1
 }
 
-sha256() {
-  if command -v sha256sum > /dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi
-}
+if command -v sha256sum > /dev/null; then sha256_tool=(sha256sum); else sha256_tool=(shasum -a 256); fi
+sha256() { "${sha256_tool[@]}" "$@"; }
 
 # Windows runners pass D:\a\_temp style paths; Git Bash tools want /d/a/_temp.
 posix() {
