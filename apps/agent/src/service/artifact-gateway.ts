@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import type { MessagePort } from "node:worker_threads";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -906,7 +906,8 @@ export const ArtifactGatewayLive = Layer.effect(
         const requested = segments.slice(2).join("/") === "" ? "index.html" : segments.slice(2).join("/");
         const normalized = normalize(requested).replace(/^(\.\.[/\\])+/, "");
         const file = resolve(root, normalized);
-        if (!file.startsWith(resolve(root) + "/") && file !== resolve(root, "index.html")) {
+        const inside = relative(resolve(root), file);
+        if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) {
           response.writeHead(403, { "content-type": "text/plain" });
           response.end("forbidden");
           return;

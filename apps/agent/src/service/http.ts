@@ -101,7 +101,8 @@ const staticResponse = (
     }
     const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
     const candidate = path.resolve(webDir, path.normalize(relative));
-    if (!candidate.startsWith(path.resolve(webDir) + "/") && candidate !== path.resolve(webDir, "index.html")) {
+    const inside = path.relative(path.resolve(webDir), candidate);
+    if (inside === "" || inside.startsWith("..") || path.isAbsolute(inside)) {
       return HttpServerResponse.text("Not found\n", { status: 404 });
     }
     const exists = yield* fileExists(candidate).pipe(
