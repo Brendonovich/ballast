@@ -21,7 +21,7 @@ import {
   writeCloudPairing,
 } from "../twitch/config.ts";
 import type { CloudPairing } from "../twitch/config.ts";
-import { machineName as hostMachineName } from "./config.ts";
+import { defaultCloudUrl, machineName as hostMachineName } from "./config.ts";
 import { removeFile } from "./fs.ts";
 import { EventRouter, Logs } from "./telemetry.ts";
 
@@ -200,15 +200,7 @@ export const CloudLinkLive = (options: {
       const beginPairing = (name: string) =>
         Effect.gen(function* () {
           const stored = yield* Ref.get(pairing);
-          const url = options.cloudUrl ?? stored?.url;
-          if (url === undefined) {
-            return yield* Effect.fail(
-              agentError(
-                "invalid",
-                "No Ballast cloud URL is configured. Pass --cloud <url> or set BALLAST_CLOUD_URL.",
-              ),
-            );
-          }
+          const url = options.cloudUrl ?? stored?.url ?? defaultCloudUrl;
           const base = url.replace(/\/$/, "");
           const expiresAt = Date.now() + 15 * 60_000;
           yield* setStatus({
@@ -230,12 +222,7 @@ export const CloudLinkLive = (options: {
       const pair = (code: string, name: string): Effect.Effect<CloudStatus, AgentError> =>
         Effect.gen(function* () {
           const stored = yield* Ref.get(pairing);
-          const url = options.cloudUrl ?? stored?.url;
-          if (url === undefined) {
-            return yield* Effect.fail(
-              agentError("invalid", "No Ballast cloud URL is configured."),
-            );
-          }
+          const url = options.cloudUrl ?? stored?.url ?? defaultCloudUrl;
           yield* setStatus({ state: "linking", cloudUrl: url, machine: { id: "", name } });
           const claimed = yield* claimPairing({
             url,

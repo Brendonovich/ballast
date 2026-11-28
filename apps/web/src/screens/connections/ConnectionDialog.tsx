@@ -581,7 +581,7 @@ export const ConnectionDialog = (props: {
               when={store.cloud()?.state === "linked"}
               fallback={
                 <p class="text-[11px] text-warning">
-                  This machine is not linked to the Ballast cloud.
+                  This machine is not linked to the Ballast cloud. Pair it under Settings → Cloud.
                 </p>
               }
             >

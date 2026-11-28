@@ -35,6 +35,12 @@ export const readEnvironment = (
     return Object.fromEntries(entries);
   });
 
+/**
+ * The cloud a machine pairs with when neither --cloud nor BALLAST_CLOUD_URL is
+ * set and it has no stored pairing, so packaged builds can link out of the box.
+ */
+export const defaultCloudUrl = "https://ballast-cloud-dev-brendonovich.brendonovich.workers.dev";
+
 export interface ServeOptions {
   readonly port: number;
   readonly dev: boolean;

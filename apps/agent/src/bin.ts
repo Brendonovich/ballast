@@ -61,6 +61,7 @@ import {
 import type { RunningService } from "./service/background.ts";
 import { withAgentClient } from "./service/client.ts";
 import {
+  defaultCloudUrl,
   parseServeOptions,
   readEnvironment,
   resolveServiceDirectories,
@@ -555,7 +556,7 @@ interface PairArgs {
 
 const parsePairArgs = (
   args: ReadonlyArray<string>,
-  defaultCloudUrl: string | undefined,
+  envCloudUrl: string | undefined,
 ): PairArgs => {
   let code: string | undefined;
   let cloud: string | undefined;
@@ -595,10 +596,7 @@ const parsePairArgs = (
   }
 
   if (code === undefined) throw new Error("pair requires a pairing code");
-  const url = cloud ?? defaultCloudUrl;
-  if (url === undefined || url === "") {
-    throw new Error("pair requires --cloud <url> (or BALLAST_CLOUD_URL)");
-  }
+  const url = cloud ?? (envCloudUrl === undefined || envCloudUrl === "" ? defaultCloudUrl : envCloudUrl);
   return { code, cloud: url, machineName };
 };
 

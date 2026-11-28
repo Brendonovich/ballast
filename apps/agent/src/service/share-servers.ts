@@ -24,7 +24,7 @@ import {
 } from "@ballast/cloud-protocol";
 
 import { CloudLink } from "./cloud-link.ts";
-import { machineName } from "./config.ts";
+import { defaultCloudUrl, machineName } from "./config.ts";
 import { readJson, writeJsonAtomic } from "./fs.ts";
 import { ProjectManager } from "./projects.ts";
 import { Logs, ServiceHub } from "./telemetry.ts";
@@ -217,7 +217,7 @@ export const ShareServersLive = (options: {
         });
 
       const builtInDefault = Effect.gen(function* () {
-        for (const candidate of [options.shareServer, options.cloudUrl, (yield* cloud.status).cloudUrl]) {
+        for (const candidate of [options.shareServer, options.cloudUrl, (yield* cloud.status).cloudUrl, defaultCloudUrl]) {
           const normalized = candidate === undefined ? undefined : normalizeShareServer(candidate);
           if (normalized !== undefined) return normalized;
         }
